@@ -1,0 +1,5 @@
+/build/
+/result
+.task
+/.build/
+host/.build/

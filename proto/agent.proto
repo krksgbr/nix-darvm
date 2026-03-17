@@ -1,0 +1,61 @@
+syntax = "proto3";
+package darvm;
+option go_package = "github.com/unbody/darvm/agent/gen";
+
+service Agent {
+  rpc Exec(stream ExecRequest) returns (stream ExecResponse);
+  rpc ResolveIP(ResolveIPRequest) returns (ResolveIPResponse);
+  rpc Activate(ActivateRequest) returns (ActivateResponse);
+  rpc Status(StatusRequest) returns (StatusResponse);
+}
+
+message ExecRequest {
+  oneof type {
+    Command command = 1;
+    IOChunk standard_input = 2;
+    TerminalSize terminal_resize = 3;
+  }
+}
+
+message Command {
+  string name = 1;
+  repeated string args = 2;
+  bool interactive = 3;
+  bool tty = 4;
+  TerminalSize terminal_size = 5;
+  string working_directory = 6;
+}
+
+message ExecResponse {
+  oneof type {
+    Exit exit = 1;
+    IOChunk standard_output = 2;
+    IOChunk standard_error = 3;
+  }
+}
+
+message Exit { int32 code = 1; }
+message TerminalSize { uint32 rows = 1; uint32 cols = 2; }
+message IOChunk { bytes data = 1; }
+
+message ResolveIPRequest {}
+message ResolveIPResponse { string ip = 1; }
+
+message ActivateRequest {
+  string closure_path = 1;
+  bool update_profile = 2;
+}
+
+message ActivateResponse {
+  bool success = 1;
+  string error = 2;
+  string activated_path = 3;
+}
+
+message StatusRequest {}
+
+message StatusResponse {
+  repeated string mounts = 1;
+  string activation = 2;
+  map<string, string> services = 3;
+}
