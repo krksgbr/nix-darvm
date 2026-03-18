@@ -49,9 +49,18 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	// TTY sessions get TERM=xterm-256color injected (sudo -i resets env).
 	execUser := resolveUID501User()
 
-	var envPrefix string
+	// Build env prefix: TERM for TTY + any env vars from the gRPC request.
+	// These are prepended to the shell command so they survive sudo -iu's env reset.
+	var envParts []string
 	if command.Tty {
-		envPrefix = "export TERM=xterm-256color; "
+		envParts = append(envParts, "export TERM=xterm-256color")
+	}
+	for _, ev := range command.Environment {
+		envParts = append(envParts, fmt.Sprintf("export %s=%s", ev.Name, shellQuote(ev.Value)))
+	}
+	var envPrefix string
+	if len(envParts) > 0 {
+		envPrefix = strings.Join(envParts, "; ") + "; "
 	}
 
 	var cmd *exec.Cmd
@@ -59,6 +68,13 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 		cmd = exec.CommandContext(stream.Context(), command.Name, command.Args...)
 		if command.WorkingDirectory != "" {
 			cmd.Dir = command.WorkingDirectory
+		}
+		// For sudo commands, inject env vars directly into cmd.Env if present.
+		if len(command.Environment) > 0 {
+			cmd.Env = os.Environ()
+			for _, ev := range command.Environment {
+				cmd.Env = append(cmd.Env, ev.Name+"="+ev.Value)
+			}
 		}
 	} else if command.WorkingDirectory != "" || envPrefix != "" {
 		inner := shellQuote(command.Name)

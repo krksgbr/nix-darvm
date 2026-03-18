@@ -24,6 +24,12 @@ message Command {
   bool tty = 4;
   TerminalSize terminal_size = 5;
   string working_directory = 6;
+  repeated EnvVar environment = 7;
+}
+
+message EnvVar {
+  string name = 1;
+  string value = 2;
 }
 
 message ExecResponse {

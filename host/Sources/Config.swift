@@ -50,4 +50,28 @@ struct DVMConfig: Codable {
         let contents = try String(contentsOfFile: path, encoding: .utf8)
         return try TOMLDecoder().decode(DVMConfig.self, from: contents)
     }
+
+    /// Discover credential manifests from mounted project directories.
+    /// Returns (projectPath, manifestPath) pairs for each project that has
+    /// a `.dvm/credentials.toml`.
+    ///
+    /// - Parameter additionalDirs: Extra directories (e.g. from CLI `--dir`) to scan
+    ///   beyond the config file's `mounts.mirror` list.
+    func credentialManifestPaths(additionalDirs: [String] = []) -> [(project: String, manifest: String)] {
+        // Deduplicate by resolved path so a dir in both config and CLI isn't scanned twice
+        var seen = Set<String>()
+        var results: [(project: String, manifest: String)] = []
+
+        for dir in mirrorDirs + additionalDirs {
+            let resolved = URL(
+                fileURLWithPath: (dir as NSString).expandingTildeInPath
+            ).standardizedFileURL.path
+            guard seen.insert(resolved).inserted else { continue }
+            let manifestPath = (resolved as NSString).appendingPathComponent(".dvm/credentials.toml")
+            guard FileManager.default.fileExists(atPath: manifestPath) else { continue }
+            results.append((project: resolved, manifest: manifestPath))
+        }
+
+        return results
+    }
 }

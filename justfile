@@ -1,9 +1,16 @@
 entitlements := "host/Resources/dvm.entitlements"
 
+# Detect nono sandbox: nested sandbox-exec is forbidden, so SPM needs --disable-sandbox.
+swift_sandbox_flag := `sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null && echo '' || echo '--disable-sandbox'`
+
 # Build dvm-core (default: debug)
-build config="debug":
-    cd host && swift build -c {{config}} --scratch-path ../build/swift
+build config="debug": build-netstack
+    cd host && swift build -c {{config}} --scratch-path ../build/swift {{swift_sandbox_flag}}
     codesign --force --sign - --entitlements {{entitlements}} build/swift/{{config}}/dvm-core
+
+# Build dvm-netstack sidecar (Go, host-native)
+build-netstack:
+    cd host/netstack && go build -o ../../build/dvm-netstack ./cmd/
 
 # Regenerate Go code from proto definitions
 proto:
@@ -85,9 +92,33 @@ deploy-host-cmd: build-host-cmd
 logs predicate='process BEGINSWITH "darvm"':
     dvm exec -- log stream --style compact --predicate '{{predicate}}'
 
+# Create/rebuild the base VM image (use BASE_IMAGE=tahoe-base to skip OCI pull)
+init:
+    nix run --impure .#dvm -- init
+
+# Snapshot the current VM image (tart clone). Restore with: just restore
+snapshot:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    VM=$(tart list --format json | python3 -c 'import json,sys;vms=json.load(sys.stdin);ms=[v["Name"]for v in vms if v["Name"].startswith("darvm-")];print(ms[0])if ms else sys.exit(1)')
+    SNAP="${VM}-snap"
+    tart delete "$SNAP" 2>/dev/null || true
+    tart clone "$VM" "$SNAP"
+    echo "Snapshot: $SNAP (restore with: just restore)"
+
+# Restore from snapshot
+restore:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SNAP=$(tart list --format json | python3 -c 'import json,sys;vms=json.load(sys.stdin);ms=[v["Name"]for v in vms if v["Name"].endswith("-snap")];print(ms[0])if ms else sys.exit(1)')
+    VM="${SNAP%-snap}"
+    tart delete "$VM" 2>/dev/null || true
+    tart clone "$SNAP" "$VM"
+    echo "Restored $VM from $SNAP"
+
 # Build and run dvm (e.g. just dvm start, just dvm exec -- ls /)
 dvm *args: (build)
-    DVM_CORE="$PWD/build/swift/debug/dvm-core" nix run --impure .#dvm -- {{args}}
+    DVM_CORE="$PWD/build/swift/debug/dvm-core" DVM_NETSTACK="$PWD/build/dvm-netstack" nix run --impure .#dvm -- {{args}}
 
 # Install dvm to nix profile (default: debug, just install release for release)
 install config="debug": (build config)

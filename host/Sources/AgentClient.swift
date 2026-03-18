@@ -49,7 +49,8 @@ struct AgentClient: Sendable {
 
     /// Execute a non-interactive command and return the exit code.
     /// Stdout/stderr are written to the caller's stdout/stderr.
-    func exec(command: [String], cwd: String? = nil) async throws -> Int32 {
+    /// When `env` is provided, those vars are injected into the child process environment.
+    func exec(command: [String], cwd: String? = nil, env: [String: String] = [:]) async throws -> Int32 {
         let cmdName = command[0]
         let cmdArgs = Array(command.dropFirst())
         let workDir = cwd
@@ -63,6 +64,12 @@ struct AgentClient: Sendable {
                     cmd.interactive = false
                     cmd.tty = false
                     if let workDir { cmd.workingDirectory = workDir }
+                    cmd.environment = env.map { key, value in
+                        var ev = Darvm_EnvVar()
+                        ev.name = key
+                        ev.value = value
+                        return ev
+                    }
 
                     var req = Darvm_ExecRequest()
                     req.type = .command(cmd)
@@ -85,7 +92,8 @@ struct AgentClient: Sendable {
     func execInteractive(
         command: [String],
         cwd: String? = nil,
-        tty: Bool = true
+        tty: Bool = true,
+        env: [String: String] = [:]
     ) async throws -> Int32 {
         var termState: TermState?
         if tty && Term.isTerminal() {
@@ -113,6 +121,12 @@ struct AgentClient: Sendable {
                             cmd.interactive = true
                             cmd.tty = useTTY
                             if let workDir { cmd.workingDirectory = workDir }
+                            cmd.environment = env.map { key, value in
+                                var ev = Darvm_EnvVar()
+                                ev.name = key
+                                ev.value = value
+                                return ev
+                            }
                             if useTTY {
                                 let (w, h) = try Term.getSize()
                                 var size = Darvm_TerminalSize()

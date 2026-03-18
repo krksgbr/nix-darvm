@@ -76,12 +76,21 @@ print("\n".join(stale))
       printf "Delete old image and rebuild? [Y/n] "
       read -r answer </dev/tty || answer="y"
       case "$answer" in
-        [nN]*) echo "Aborted."; exit 1 ;;
+        [nN]*)
+          # Use the stale image instead of aborting.
+          STALE_VM=$(echo "$STALE" | head -1)
+          echo "Continuing with stale image: $STALE_VM"
+          echo "$STALE_VM"
+          exit 0
+          ;;
       esac
-      for vm in $STALE; do
-        echo "Deleting $vm..."
-        tart delete "$vm"
-      done
+      # NOTE: VM deletion disabled during credential proxy development.
+      # Uncomment when image hash churn settles down.
+      # for vm in $STALE; do
+      #   echo "Deleting $vm..."
+      #   tart delete "$vm"
+      # done
+      echo "Skipping stale VM deletion (disabled during development)."
     fi
 
     # Check if OCI base image is cached locally

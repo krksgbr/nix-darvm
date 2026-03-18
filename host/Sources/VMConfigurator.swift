@@ -31,9 +31,18 @@ enum VMConfigurator {
         }
     }
 
+    /// Create a configured VM.
+    ///
+    /// - Parameters:
+    ///   - vmDir: Path to the Tart VM directory
+    ///   - mounts: VirtioFS mount configurations
+    ///   - netstackFD: When non-nil, use VZFileHandleNetworkDeviceAttachment with
+    ///     this file descriptor instead of NAT. The FD is the VM-side of a socketpair
+    ///     shared with the dvm-netstack sidecar for transparent credential injection.
     static func create(
         vmDir: URL,
-        mounts: [MountConfig]
+        mounts: [MountConfig],
+        netstackFD: Int32? = nil
     ) throws -> ConfiguredVM {
         let paths = VMPaths(vmDir: vmDir)
         let config = try TartConfig(fromURL: paths.config)
@@ -61,10 +70,15 @@ enum VMConfigurator {
         )
         vzConfig.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)]
 
-        // Network (NAT)
+        // Network: FileHandle (netstack sidecar) or NAT (default)
         let network = VZVirtioNetworkDeviceConfiguration()
         network.macAddress = config.macAddress
-        network.attachment = VZNATNetworkDeviceAttachment()
+        if let fd = netstackFD {
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+            network.attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: handle)
+        } else {
+            network.attachment = VZNATNetworkDeviceAttachment()
+        }
         vzConfig.networkDevices = [network]
 
         // VirtioFS — each mount gets its own VZSingleDirectoryShare device,

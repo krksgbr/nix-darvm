@@ -136,13 +136,17 @@ pkgs.writeShellApplication {
     }
 
     cmd_start() {
-      # Ensure base VM exists (create-vm prompts interactively if needed)
+      # Ensure base VM exists (create-vm prompts interactively if needed).
       "$CREATE_VM"
+
+      # Find the actual darvm-* VM name. There should be exactly one.
+      ACTUAL_VM=$(tart list --format json | python3 -c 'import json,sys;vms=json.load(sys.stdin);ms=[v["Name"]for v in vms if v["Name"].startswith("darvm-")];print(ms[0])if ms else None' 2>/dev/null)
+      ACTUAL_VM="''${ACTUAL_VM:-${escapeShellArg vmName}}"
 
       # Start dvm-core with system closure for implicit activation.
       # Mount agent config dirs at guest home (e.g. ~/.claude, ~/.codex).
       # shellcheck disable=SC2086
-      exec "$DVM_CORE" start --vm-name ${escapeShellArg vmName} --system-closure "$SYSTEM_CLOSURE" ${agentHomeDirFlags} "$@"
+      exec "$DVM_CORE" start --vm-name "$ACTUAL_VM" --system-closure "$SYSTEM_CLOSURE" ${agentHomeDirFlags} "$@"
     }
 
     cmd_switch() {
