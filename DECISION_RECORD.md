@@ -150,3 +150,50 @@ and the control socket protocol.
 
 **Consequence:** ~500 lines of custom networking deleted. DHCP works correctly
 on first try. DNS forwarding uses host resolver automatically.
+
+---
+
+## DR-007: WatchPaths activator for nix-darwin activation
+
+**Date:** 2026-03-19
+**Status:** Accepted
+
+**Context:** `darwin-rebuild activate` may restart the agent's own LaunchDaemon.
+The agent runs activation via gRPC Exec, so the in-flight command could die
+mid-activation. Additionally, first boot has no agent at all — a network-
+independent activation mechanism is needed.
+
+**Alternatives considered:**
+
+1. **`nohup` detached process:** Agent runs activation backgrounded. Simple but
+   fragile — launchd may kill orphaned children when stopping the agent
+   (`SIGTERM` to process group). Requires `AbandonProcessGroup` and careful
+   `EXIT` traps. Also doesn't solve first boot (no agent to exec through).
+
+2. **Bootstrap supervisor binary:** Stable vsock listener + activation job
+   runner baked into image. Architecturally clean but adds a Go binary to the
+   image, couples image to RPC protocol, violates DR-001's minimal image goal.
+
+3. **SSH for first boot, `nohup` for runtime:** Two mechanisms but SSH requires
+   NAT networking, which breaks when the credential proxy is enabled. Bad UX —
+   would require booting twice.
+
+**Decision:** A `WatchPaths` LaunchDaemon baked into the image. One activator
+daemon that runs `darwin-rebuild activate` whenever a trigger file is touched.
+Two triggers:
+
+- **First boot:** Mount script touches the trigger after mounting VirtioFS
+- **Runtime switch:** Agent touches the trigger via gRPC Exec
+
+The activator is independent of the agent — agent restarts don't affect it.
+It's owned by launchd, writes state files for observability, and uses the
+standard macOS service model.
+
+**What's baked into the image:**
+- `/usr/local/bin/dvm-activator` (~15 lines shell script)
+- `/Library/LaunchDaemons/com.dvm.activator.plist` (WatchPaths trigger)
+- Both are truly stable — they don't change unless the activation model changes
+
+**Consequence:** No SSH dependency for first boot. No orphan process management.
+One activation mechanism for both bootstrap and runtime. Network-independent.
+Credential proxy works from first boot.

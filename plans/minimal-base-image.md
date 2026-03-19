@@ -1,4 +1,4 @@
-# Minimal Base Image + SSH Bootstrap
+# Minimal Base Image + Bootstrap
 
 ## Problem
 
@@ -9,9 +9,8 @@ frequently during development. This is the biggest friction in the dev loop.
 ## Goal
 
 The base image should be a stable foundation that almost never needs rebuilding.
-Everything else — agent, host-cmd, mount scripts, services — arrives via
-nix-darwin `switch`. Day-to-day iteration is: edit code → `just build` →
-`dvm switch`. No image rebuild.
+Everything else — agent, host-cmd, services — arrives via nix-darwin `switch`.
+Day-to-day iteration is: edit code → `just build` → `dvm switch`. No image rebuild.
 
 ## Minimal Base Image
 
@@ -22,109 +21,143 @@ Contains only:
 - Passwordless sudo
 - `/etc/zshenv` rename (for nix-darwin to manage)
 - sshd (already in base image)
-- `/nix/store` VirtioFS mount script + LaunchDaemon (~5 lines, truly stable)
+- VirtioFS mount script + LaunchDaemon (mounts `/nix/store` and `dvm-state`)
+- Activator LaunchDaemon with `WatchPaths` trigger
 
-The mount script is required because macOS has no way to automount VirtioFS
-at a custom path (see DECISION_RECORD.md DR-002).
+The mount script and activator are required because macOS has no way to
+automount VirtioFS at a custom path (see DECISION_RECORD.md DR-002) and
+activation must survive agent restarts (see DR-007).
 
 **Not in the image:** agent binary, host-cmd, agent LaunchDaemons, bridge.
 All delivered by nix-darwin.
 
-## Bootstrap Sequence
+## Activation Model
 
-### First boot (fresh image)
+One activator daemon, two triggers. The activator is a launchd-managed
+`WatchPaths` daemon baked into the image. It never restarts during activation
+because it's independent of the agent.
 
-1. VM boots with NAT networking (default — no credential proxy)
-2. sshd is running (from base image)
-3. Host discovers guest IP via vmnet DHCP lease
-4. Host SSHs in:
-   a. Mounts `/nix/store` from host via VirtioFS (`mount_virtiofs nix-store /nix/store`)
-   b. Runs `darwin-rebuild activate` with the system closure
-5. nix-darwin activation installs:
-   - Agent binary (in `/nix/store`, symlinked or launched via wrapper)
-   - Mount-store LaunchDaemon (script on local disk, persists across reboots)
-   - Agent LaunchDaemon
-   - Bridge LaunchDaemon
-   - host-cmd binary
-   - All other services and config
-6. Agent is now running on vsock port 6175
-7. Host switches from SSH to vsock/gRPC for all further communication
+### How it works
 
-### Subsequent boots
+**Baked into the image:**
 
-1. mount-store LaunchDaemon runs (installed by nix-darwin on first boot)
-2. `/nix/store` available via VirtioFS
-3. Agent starts from `/nix/store` (launchd KeepAlive retries until mount ready)
+1. `/usr/local/bin/dvm-activator` — shell script (~15 lines):
+   - Reads closure path from `/var/run/dvm-state/closure-path`
+   - Runs `darwin-rebuild activate`
+   - Writes state files: `running` → `done`/`failed` + `exit-code` + `activation.log`
+
+2. `com.dvm.activator.plist` — LaunchDaemon:
+   - `WatchPaths: ["/var/run/dvm-state/trigger"]`
+   - launchd runs the activator whenever the trigger file is touched
+
+3. `/usr/local/bin/dvm-mount-store` — mount script (~10 lines):
+   - Mounts `nix-store` on `/nix/store`
+   - Mounts `dvm-state` on `/var/run/dvm-state`
+
+### First boot (no agent exists)
+
+1. Host writes closure path + activation script to a host-side temp dir
+2. Host attaches the dir as VirtioFS device `dvm-state` before VM boot
+3. VM boots → mount script mounts `/nix/store` and `/var/run/dvm-state`
+4. Mount script touches `/var/run/dvm-state/trigger`
+5. Activator daemon fires (WatchPaths), reads closure path, runs activation
+6. Activation installs the agent, all services, everything via nix-darwin
+7. Host watches state files on host filesystem (VirtioFS = instant visibility)
+8. Agent comes up on vsock:6175. Host connects via gRPC.
+
+No SSH needed. No network dependency. Works with NAT or credential proxy.
+
+### Runtime switch (agent is running)
+
+1. Host builds new nix-darwin closure
+2. Host writes closure path to the state dir via agent's gRPC Exec:
+   `agentClient.exec(["sh", "-c", "echo <path> > /var/run/dvm-state/closure-path && touch /var/run/dvm-state/trigger"])`
+3. Activator daemon fires, runs activation
+4. Agent may restart (nix-darwin manages it) — doesn't matter, the activator
+   is a separate launchd service
+5. Host catches gRPC disconnect, reconnects when agent comes back
+6. Host reads state files to confirm success
+
+Same activator, same state files, different trigger mechanism.
+
+### Subsequent boots (agent already installed)
+
+1. Mount script runs, mounts `/nix/store` and `/var/run/dvm-state`
+2. No activation needed (nix-darwin state persists across reboots)
+3. Agent starts from `/nix/store` (KeepAlive retries until mount ready)
 4. Host connects via vsock/gRPC
 
-### Updates
+## State Machine
 
-`dvm switch` — rebuild nix-darwin closure on host, activate in guest via gRPC.
-Agent restarts with new binary. No image rebuild needed.
+Per-activation state tracked via files in `/var/run/dvm-state/<run-id>/`:
+
+```
+init         → activation requested (closure path written)
+running      → activator picked it up and is executing
+done         → activation succeeded
+failed       → activation failed
+exit-code    → numeric exit code
+activation.log → stdout/stderr from darwin-rebuild
+```
+
+Atomic renames for transitions. Per-run directory avoids stale state confusion.
+Host polls state files — on first boot via host filesystem (VirtioFS share),
+on runtime switch via gRPC exec or direct file read.
+
+## Observability
+
+- Mount script logs to `/var/log/dvm-boot.log`
+- Activator logs to `/var/run/dvm-state/<run-id>/activation.log`
+  (visible on host filesystem immediately via VirtioFS)
+- Agent logs to `/var/log/darvm-agent.log`
+- All state transitions are file-based and inspectable
 
 ## Open Questions
 
-### Q1: Agent boot ordering
+### Q1: Agent boot ordering — RESOLVED
 
-The agent binary lives in `/nix/store`. The mount-store LaunchDaemon mounts
-`/nix/store` from VirtioFS. launchd doesn't guarantee ordering between
-LaunchDaemons, so the agent may start before the mount is ready.
+The agent binary lives in `/nix/store`. launchd doesn't guarantee ordering
+between LaunchDaemons, so the agent may start before the mount is ready.
 
-**Options:**
-- A: Agent LaunchDaemon uses `KeepAlive` — launchd retries until binary is available.
-  Simple, relies on launchd restart behavior.
-- B: Agent LaunchDaemon uses `WatchPaths: ["/nix/store"]` — only starts when
-  the mount appears.
-- C: Mount script explicitly bootstraps the agent after mounting.
-- D: Fixed-path launcher at `/usr/local/bin/darvm-agent-launcher` that waits
-  for the mount, then execs the store binary. Installed by nix-darwin.
+**Decision:** Rely on launchd `KeepAlive` retries. The agent binary doesn't
+exist until the mount completes; launchd retries automatically.
 
-### Q2: Self-restart during switch
+**Observability:**
+- Agent checks `/nix/store` availability at startup and logs clearly
+- Agent LaunchDaemon plist routes stdout/stderr to `/var/log/darvm-agent.log`
 
-`darwin-rebuild activate` is run via the agent's gRPC Exec. But activation may
-restart the agent's own LaunchDaemon. The in-flight exec command could die.
+### Q2: Self-restart during switch — RESOLVED
 
-**Options:**
-- A: Run activation via SSH instead of gRPC (always available with NAT).
-- B: Run activation as a detached background process that survives agent restart
-  (`nohup ... &`). Host polls for completion.
-- C: The bootstrap proxy idea from the spike: a tiny vsock-to-unix-socket proxy
-  baked into the image. Agent restarts don't kill the vsock listener. But this
-  adds complexity back to the image.
+**Decision:** Use the WatchPaths activator daemon (see Activation Model above).
+The activator is independent of the agent — agent restarts don't affect it.
+No `nohup`, no orphan process management, no `AbandonProcessGroup` needed.
 
-### Q3: First boot detection
+### Q3: First boot detection — RESOLVED
 
-How does the host know it's a first boot (needs SSH bootstrap) vs a subsequent
-boot (agent should be available via vsock)?
+**Decision:** Not needed. The VirtioFS init hook works on every first boot
+regardless of whether the agent exists. The host writes the closure path and
+touches the trigger before booting. If the agent is already installed (not
+first boot), the host uses the agent's exec to touch the trigger instead.
+The activator doesn't care who triggered it.
 
-**Options:**
-- A: Always try vsock first, fall back to SSH after timeout. Simple, no state.
-- B: Store a "bootstrapped" flag on the host side (e.g., in VM metadata or a
-  marker file). Skip SSH if flag exists.
-- C: Check if the nix-darwin system profile exists in the guest via SSH before
-  deciding.
+### Q4: WatchPaths reliability
 
-### Q4: Credential proxy + SSH fallback
+Need to verify:
+- Does `WatchPaths` fire on file modification (not just creation)?
+- Does it work before nix-darwin is activated (plist baked into image)?
+- What happens if the trigger file is touched while the activator is running?
 
-With the credential proxy active (VZFileHandleNetworkDeviceAttachment), SSH from
-host to guest doesn't work — gVisor doesn't route inbound connections. Vsock is
-the only path. If the agent fails to start, the VM is unreachable.
-
-**Current answer:** Acceptable. The credential proxy is opt-in. Without it, NAT
-provides SSH fallback. Users who enable the credential proxy accept the narrower
-failure mode. Can revisit if this becomes a real problem (e.g., add inbound port
-forwarding to the gVisor stack).
+These are testable with the minimal image.
 
 ## Prior Art
 
-This design was proposed during the avm-swift spike but not implemented due to
-time pressure. See memex session `019cf714-0517-7143-b17d-6c190e54ceaf` for:
-- The bootstrap proxy architecture (split agent into stable proxy + nix-managed full agent)
-- Codex's review identifying boot ordering and self-restart concerns
-- The launcher wrapper recommendation
+- avm-swift spike: bootstrap proxy discussion (memex `019cf714`)
+- Codex review: identified boot ordering + self-restart concerns
+- Oracle review: identified launchd process group kill behavior with `nohup`
+- Both Codex and Oracle endorsed the split transport / unified execution model
 
 ## Image Hash
 
-With this design, the content-address hash covers only the Packer template
+Content-address hash covers only the Packer template
 (`guest/image/darvm-base.pkr.hcl`). Changes to `guest/agent`, `guest/host-cmd`,
 or `guest/modules` never trigger an image rebuild.
