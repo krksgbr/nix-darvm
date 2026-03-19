@@ -146,14 +146,55 @@ touches the trigger before booting. If the agent is already installed (not
 first boot), the host uses the agent's exec to touch the trigger instead.
 The activator doesn't care who triggered it.
 
-### Q4: WatchPaths reliability
+### Q4: WatchPaths reliability — VERIFIED
 
-Need to verify:
-- Does `WatchPaths` fire on file modification (not just creation)?
-- Does it work before nix-darwin is activated (plist baked into image)?
-- What happens if the trigger file is touched while the activator is running?
+Tested 2026-03-19 on `darvm-minimal` image:
+- WatchPaths fires on file modification (touch existing file) ✓
+- Works before nix-darwin (plist loaded manually via launchctl) ✓
+- Second touch while running: launchd queues and runs after first completes ✓
 
-These are testable with the minimal image.
+## Success Criteria
+
+The implementation is done when all of these pass:
+
+### SC-1: Fresh image boots and activates via VirtioFS hook
+- Build the minimal image (`just init`)
+- Run `dvm start` for the first time (fresh image, no prior activation)
+- The VM boots, mounts nix-store, activator fires, nix-darwin activates
+- Agent comes up on vsock
+- `dvm exec -- true` succeeds
+- No SSH used at any point
+
+### SC-2: Works with credential proxy from first boot
+- Configure `.dvm/credentials.toml` before first boot
+- `dvm start` uses FileHandle attachment (not NAT)
+- Activation still completes (no SSH/NAT dependency)
+- Credential injection works after activation
+
+### SC-3: `dvm switch` works on running VM
+- VM is running with agent connected
+- Change nix-darwin config
+- Run `dvm switch`
+- Activation completes even though agent restarts mid-activation
+- New agent comes up, host reconnects
+- `dvm exec -- true` succeeds after switch
+
+### SC-4: Subsequent boot works without re-activation
+- Stop VM, start again
+- Mount script runs, agent starts from nix store
+- No activation triggered (no trigger file present)
+- `dvm exec -- true` succeeds within 30s of boot
+
+### SC-5: Image never rebuilds for code changes
+- Change guest agent source code
+- Run `just build && dvm switch`
+- No image rebuild prompted
+- New agent binary deployed via nix-darwin
+
+### SC-6: Observable failure modes
+- Intentionally break the closure path → activator logs clear error
+- Kill the VM mid-activation → stale state doesn't confuse next boot
+- Agent fails to start after mount → logs explain why
 
 ## Prior Art
 
