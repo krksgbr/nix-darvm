@@ -15,16 +15,20 @@ nix-darwin `switch`. Day-to-day iteration is: edit code → `just build` →
 
 ## Minimal Base Image
 
-Contains only what the Cirrus Labs macOS base provides plus Nix:
+Contains only:
 
 - macOS (Cirrus Labs tahoe-base)
 - Nix (Determinate installer)
 - Passwordless sudo
 - `/etc/zshenv` rename (for nix-darwin to manage)
 - sshd (already in base image)
+- `/nix/store` VirtioFS mount script + LaunchDaemon (~5 lines, truly stable)
 
-**Not in the image:** agent binary, host-cmd, mount-store script, LaunchDaemons
-for agent/bridge. All delivered by nix-darwin.
+The mount script is required because macOS has no way to automount VirtioFS
+at a custom path (see DECISION_RECORD.md DR-002).
+
+**Not in the image:** agent binary, host-cmd, agent LaunchDaemons, bridge.
+All delivered by nix-darwin.
 
 ## Bootstrap Sequence
 
@@ -60,20 +64,20 @@ Agent restarts with new binary. No image rebuild needed.
 
 ## Open Questions
 
-### Q1: Agent launcher wrapper
+### Q1: Agent boot ordering
 
-The agent binary lives in `/nix/store` which isn't available until mount-store
-runs. A LaunchDaemon can't point directly at a `/nix/store/...` path because
-launchd may try to start it before the mount.
+The agent binary lives in `/nix/store`. The mount-store LaunchDaemon mounts
+`/nix/store` from VirtioFS. launchd doesn't guarantee ordering between
+LaunchDaemons, so the agent may start before the mount is ready.
 
 **Options:**
-- A: Fixed-path launcher at `/usr/local/bin/darvm-agent-launcher` that polls
-  for the mount, then execs the store binary. Installed by nix-darwin activation
-  (writes to local disk).
-- B: LaunchDaemon with `WatchPaths` or `StartInterval` instead of `RunAtLoad`,
-  so it only starts after the mount exists.
-- C: The mount-store script explicitly starts the agent after mounting
-  (`launchctl bootstrap system ...`).
+- A: Agent LaunchDaemon uses `KeepAlive` — launchd retries until binary is available.
+  Simple, relies on launchd restart behavior.
+- B: Agent LaunchDaemon uses `WatchPaths: ["/nix/store"]` — only starts when
+  the mount appears.
+- C: Mount script explicitly bootstraps the agent after mounting.
+- D: Fixed-path launcher at `/usr/local/bin/darvm-agent-launcher` that waits
+  for the mount, then execs the store binary. Installed by nix-darwin.
 
 ### Q2: Self-restart during switch
 
