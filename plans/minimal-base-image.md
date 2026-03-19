@@ -2,15 +2,21 @@
 
 ## Problem
 
-Every change to `guest/agent` or `guest/host-cmd` triggers a full base image
-rebuild (~5 min). The image hash covers source directories that change
-frequently during development. This is the biggest friction in the dev loop.
+The current base image contains mutable state: agent binaries baked in by
+Packer, hot-swapped via SSH, drifting from what nix-darwin declares. You're
+never sure what's actually running in the guest. Image rebuilds are slow (~5
+min) and triggered by source changes that shouldn't require them.
 
 ## Goal
 
-The base image should be a stable foundation that almost never needs rebuilding.
-Everything else — agent, host-cmd, services — arrives via nix-darwin `switch`.
-Day-to-day iteration is: edit code → `just build` → `dvm switch`. No image rebuild.
+Make the guest state fully reproducible from the nix config. The base image is
+an immutable foundation — macOS + Nix, nothing else. Everything above it is
+declarative: `dvm switch` is the only way to change guest state, and what's
+running always matches what nix describes. No drift, no "did I deploy the
+latest agent?", no hot-swap workflows to distrust.
+
+Day-to-day iteration is: edit code → `just build` → `dvm switch`. No image
+rebuild.
 
 ## Minimal Base Image
 
