@@ -338,76 +338,8 @@ for non-credentialed hosts.
 
 ### 1. Minimize base image + SSH bootstrap
 
-The base image rebuild is the biggest friction in the dev loop. Every change to
-`guest/agent` or `guest/host-cmd` source triggers a full image rebuild (~5 min).
-
-**Goal:** The base image should be a stable foundation that almost never needs
-rebuilding. Everything else — agent, host-cmd, services — arrives via nix-darwin
-`switch`.
-
-#### Design (in progress)
-
-**Minimal base image contains only:**
-- macOS (Cirrus Labs base)
-- Nix (Determinate installer)
-- Passwordless sudo
-- `/etc/zshenv` rename (for nix-darwin to take over)
-- sshd (already in base image)
-
-**No agent, no mount script, no host-cmd in the image.**
-
-**First boot (SSH bootstrap):**
-1. VM boots with NAT (default, no credential proxy)
-2. Host discovers guest IP via vmnet DHCP lease
-3. Host SSHs in, mounts `/nix/store` via VirtioFS
-4. Host SSHs in, runs `darwin-rebuild activate`
-5. nix-darwin installs everything: agent binary (in nix store), mount-store
-   LaunchDaemon (persists on local disk), host-cmd, all services
-6. Agent is now running. Host switches to vsock/gRPC.
-
-**Subsequent boots:**
-1. mount-store LaunchDaemon (installed by nix-darwin, script on local disk) runs
-2. `/nix/store` is available via VirtioFS mount
-3. Agent starts from `/nix/store` (launchd KeepAlive retries until mount ready)
-4. Host connects via vsock/gRPC as normal
-
-**Updates:** Just `dvm switch` — rebuilds nix-darwin config, SSHs or gRPCs in
-to activate. Agent binary updates, service changes, everything via nix.
-
-**Image hash:** Covers only `guest/image/darvm-base.pkr.hcl`. Source changes to
-agent/host-cmd/modules never trigger image rebuild.
-
-#### Open questions
-
-- **Agent launcher wrapper:** Agent binary lives in `/nix/store` which isn't
-  available until mount-store runs. LaunchDaemon can't point directly at a nix
-  store path. Need a fixed-path launcher at `/usr/local/bin/darvm-agent` that
-  waits for the mount, then execs the real binary. Should this be baked into the
-  image, or installed by nix-darwin on first activation?
-
-- **Self-restart during switch:** `darwin-rebuild activate` restarts the agent
-  service, but activation itself runs via the agent's gRPC Exec. The in-flight
-  activation command could die when the agent restarts. Prior discussion
-  (session 019cf714) suggested decoupling activation from the agent, or running
-  it via a separate stable control plane. Needs resolution.
-
-- **First boot detection:** How does the host know it's a first boot (SSH
-  bootstrap needed) vs subsequent boot (agent should be available)? Check for
-  agent on vsock, fall back to SSH if unreachable?
-
-- **Credential proxy + SSH fallback:** With the credential proxy active
-  (VZFileHandleNetworkDeviceAttachment), SSH from host to guest doesn't work —
-  the gVisor stack doesn't route inbound connections. The credential proxy is
-  opt-in, so without it you always have SSH as a fallback. But with it enabled,
-  vsock is the only path. If the agent fails to start, the VM is unreachable.
-  Acceptable for now since credential proxy is opt-in.
-
-#### Prior art
-
-This design was proposed and validated (but not implemented) during the avm-swift
-spike. See memex session `019cf714-0517-7143-b17d-6c190e54ceaf` for the original
-bootstrap proxy discussion and Codex's review of boot ordering / self-restart
-concerns.
+See [plans/minimal-base-image.md](minimal-base-image.md). Separate plan with
+open questions being worked through.
 
 ### 2. Wire env vars into dvm exec/shell
 
