@@ -1,26 +1,53 @@
-{ pkgs, username ? "admin", ... }:
+{ pkgs, username ? "admin", darvm-agent, dvm-host-cmd, ... }:
 
 let
   daemonSock = "/tmp/nix-daemon.sock";
-  # Fixed path — baked into base image via Packer, not from nix store.
-  # The RPC component must run before /nix/store is mounted (it handles the mount).
-  agentBin = "/usr/local/bin/darvm-agent";
 in
 {
   nix.enable = false;
   networking.hostName = "dvm";
   system.primaryUser = username;
 
-  # SSH: keep enabled as fallback, but no longer on the critical boot path
+  # SSH: keep enabled as fallback, but not on the critical boot path
   environment.etc."ssh/sshd_config.d/200-dvm.conf".text = ''
     PasswordAuthentication yes
     UsePAM yes
   '';
 
-  # NOTE: darvm-agent launchd plists (com.darvm.agent-rpc, com.darvm.agent-bridge)
-  # are installed by Packer into the base image, NOT managed by nix-darwin.
-  # This is intentional — nix-darwin activation would restart the agent,
-  # killing the gRPC connection that's driving the activation itself.
+  # Agent LaunchDaemons — managed by nix-darwin, NOT baked into the image.
+  # This is safe because activation is driven by the WatchPaths activator
+  # daemon (independent of the agent). If the agent restarts during activation,
+  # the activator continues running unaffected.
+  # Agent LaunchDaemons use /bin/sh wrappers because the agent binary lives in
+  # /nix/store (VirtioFS mount). On boot, launchd may start these before the
+  # mount script completes. If launchd can't find the binary, it reports exit
+  # code 78 (EX_CONFIG) and PERMANENTLY disables the job — KeepAlive won't help.
+  # The shell wrapper busy-waits for the binary, avoiding the fatal exit code.
+  launchd.daemons.darvm-agent-rpc = {
+    serviceConfig = {
+      Label = "com.darvm.agent-rpc";
+      ProgramArguments = [
+        "/bin/sh" "-c"
+        "while [ ! -x '${darvm-agent}/bin/darvm-agent' ]; do sleep 1; done; exec '${darvm-agent}/bin/darvm-agent' '--run-rpc'"
+      ];
+      RunAtLoad = true;
+      KeepAlive = true;
+      StandardOutPath = "/var/log/darvm-agent.log";
+      StandardErrorPath = "/var/log/darvm-agent.log";
+    };
+  };
+
+  launchd.daemons.darvm-agent-bridge = {
+    serviceConfig = {
+      Label = "com.darvm.agent-bridge";
+      ProgramArguments = [
+        "/bin/sh" "-c"
+        "while [ ! -x '${darvm-agent}/bin/darvm-agent' ]; do sleep 1; done; exec '${darvm-agent}/bin/darvm-agent' '--run-bridge'"
+      ];
+      RunAtLoad = true;
+      KeepAlive = true;
+    };
+  };
 
   # Point the default nix daemon socket to our bridge socket.
   # Determinate Nix creates /nix/var/nix/daemon-socket/socket -> /var/run/nix-daemon.socket.
@@ -42,6 +69,7 @@ in
 
   environment.systemPackages = with pkgs; [
     nix
+    dvm-host-cmd
   ];
 
   environment.variables = {

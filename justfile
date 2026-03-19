@@ -3,8 +3,8 @@ entitlements := "host/Resources/dvm.entitlements"
 # Detect nono sandbox: nested sandbox-exec is forbidden, so SPM needs --disable-sandbox.
 swift_sandbox_flag := `sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null && echo '' || echo '--disable-sandbox'`
 
-# Build dvm-core (default: debug)
-build config="debug": build-netstack
+# Build dvm-core + guest binaries (default: debug)
+build config="debug": build-netstack build-agent build-host-cmd
     cd host && swift build -c {{config}} --scratch-path ../build/swift {{swift_sandbox_flag}}
     codesign --force --sign - --entitlements {{entitlements}} build/swift/{{config}}/dvm-core
 

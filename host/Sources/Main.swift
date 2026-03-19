@@ -320,10 +320,29 @@ struct Start: AsyncParsableCommand {
             netstackSupervisor = supervisor
         }
 
+        // Create state directory for host↔guest activation state exchange.
+        // Shared via VirtioFS as "dvm-state", mounted at /var/run/dvm-state in guest.
+        let stateDir = URL(fileURLWithPath: "/tmp/dvm-state-\(ProcessInfo.processInfo.processIdentifier)")
+        try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
+        DVMLog.log(phase: .configuring, "state dir: \(stateDir.path)")
+
+        // Write activation files if closure provided. The guest's mount script
+        // touches the trigger after mounting, which fires the activator daemon.
+        if let closure = systemClosure {
+            try closure.write(
+                to: stateDir.appendingPathComponent("closure-path"),
+                atomically: true, encoding: .utf8)
+            try DVMLog.runId.write(
+                to: stateDir.appendingPathComponent("run-id"),
+                atomically: true, encoding: .utf8)
+            DVMLog.log(phase: .configuring, "activation requested: \(closure)")
+        }
+
         let configured = try VMConfigurator.create(
             vmDir: vmDirectory,
             mounts: mounts,
-            netstackFD: netstackSupervisor?.vmFD
+            netstackFD: netstackSupervisor?.vmFD,
+            stateDir: stateDir
         )
         let effectiveMounts = configured.effectiveMounts
 
@@ -375,58 +394,77 @@ struct Start: AsyncParsableCommand {
             hostCmdBridge = nil
         }
 
+        let agentClient = AgentClient()
+
+        // Phase: activating (if closure was provided)
+        // Watch state files on host filesystem — the state dir is shared via
+        // VirtioFS, so guest writes are instantly visible to the host.
+        // On first boot, the agent doesn't exist yet; activation installs it.
+        if systemClosure != nil {
+            controlSocket.update(.activating)
+            DVMLog.log(phase: .activating, "waiting for guest activation via state files")
+            tprint("Waiting for guest activation...")
+
+            let runDir = stateDir.appendingPathComponent(DVMLog.runId)
+            let statusFile = runDir.appendingPathComponent("status")
+            let logFile = runDir.appendingPathComponent("activation.log")
+            let deadline = Date().addingTimeInterval(300) // 5 min timeout
+
+            var activationSucceeded = false
+            while Date() < deadline && !stopRequested {
+                if let statusText = try? String(contentsOf: statusFile, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines) {
+                    if statusText == "done" {
+                        activationSucceeded = true
+                        DVMLog.log(phase: .activating, "activation succeeded")
+                        tprint("Activation succeeded.")
+                        break
+                    }
+                    if statusText == "failed" || statusText == "invalid-closure" {
+                        let exitCode = (try? String(contentsOf: runDir.appendingPathComponent("exit-code"),
+                                                    encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
+                        DVMLog.log(phase: .activating, level: "error",
+                                   "activation failed (status=\(statusText), exit=\(exitCode))")
+                        if let log = try? String(contentsOf: logFile, encoding: .utf8) {
+                            let tail = String(log.suffix(2000))
+                            tprint("Activation failed (exit code \(exitCode)). Log tail:")
+                            tprint(tail)
+                        } else {
+                            tprint("Activation failed (exit code \(exitCode)). No log available.")
+                        }
+                        break
+                    }
+                    // "running" — still in progress
+                }
+                try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+            }
+
+            if !activationSucceeded && !stopRequested {
+                if Date() >= deadline {
+                    DVMLog.log(phase: .activating, level: "error", "activation timed out after 5 min")
+                    tprint("Warning: activation did not complete within 5 minutes.")
+                }
+                // Continue anyway — agent might still come up
+            }
+        }
+
         // Phase: waitingForAgent
+        // Simplified: just poll gRPC. On first boot the agent is installed by
+        // activation; on subsequent boots it starts from /nix/store via KeepAlive.
         controlSocket.update(.waitingForAgent)
         DVMLog.log(phase: .waitingForAgent, "waiting for guest agent")
         tprint("Waiting for guest agent...")
 
-        let agentClient = AgentClient()
-
-        // Wait for gRPC agent with SSH-based crash detection.
-        // Instead of a fixed timeout, we poll gRPC and — once SSH is up —
-        // check launchd to detect a crashing agent immediately.
-        // In debug mode, also streams guest logs via `log stream`.
-        var logStreamProcess: Process?
         let agentConnected: Bool = await {
-            let deadline = Date().addingTimeInterval(60)
-            var sshAvailable = false
-            let startTime = Date()
-
+            let deadline = Date().addingTimeInterval(120) // 2 min
             while Date() < deadline && !stopRequested {
-                // Try gRPC
                 if let _ = try? await agentClient.status() {
                     return true
                 }
-
-                // Once SSH is reachable, check if the agent is crashing.
-                // Only start checking after 15s (give VM time to boot).
-                if !sshAvailable,
-                   Date().timeIntervalSince(startTime) > 15,
-                   let ip = runner.resolveIP() {
-                    let ssh = SSHRunner(host: ip)
-                    if (try? ssh.runSilent(command: ["true"])) == 0 {
-                        sshAvailable = true
-                        tprint("VM booted (SSH up). Waiting for agent process...")
-
-                        // Start guest log streaming in debug mode
-                        if effectiveDebug {
-                            let predicate = logPredicate ?? "process BEGINSWITH 'darvm'"
-                            logStreamProcess = try? ssh.launchBackground(command: [
-                                "log", "stream", "--style", "compact",
-                                "--predicate", predicate
-                            ], stdout: FileHandle.standardError)
-                        }
-                    }
-                }
-
-                // Don't bail on agent crash — launchd KeepAlive will restart it.
-                // Just keep polling gRPC until it connects or we timeout.
-
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
             return false
         }()
-        logStreamProcess?.terminate()
 
         if agentConnected {
             DVMLog.log(phase: .waitingForAgent, "agent is reachable")
@@ -466,15 +504,21 @@ struct Start: AsyncParsableCommand {
         }
 
         // Phase: mounting
+        // nix-store is already mounted by the image's mount script at boot.
+        // Mount remaining shares (nix-cache, mirror dirs, home dirs) via gRPC.
+        let remainingMounts = effectiveMounts.filter { mount in
+            guard case .exact(let tag, _, _, _) = mount else { return false }
+            return tag.rawValue != "nix-store"
+        }
         controlSocket.update(.mounting, ip: ip)
-        DVMLog.log(phase: .mounting, "mounting \(effectiveMounts.count) VirtioFS shares")
+        DVMLog.log(phase: .mounting, "mounting \(remainingMounts.count) VirtioFS shares (nix-store handled by image)")
         tprint("Mounting VirtioFS shares...")
 
         // Build mount script and execute via gRPC Exec
         var setupLines: [String] = []
         var mountFunctions: [String] = []
         var mountCalls: [String] = []
-        for mount in effectiveMounts {
+        for mount in remainingMounts {
             let (tag, path): (MountTag, AbsolutePath) = switch mount {
             case .exact(let tag, _, let guestPath, _): (tag, guestPath)
             }
@@ -538,7 +582,7 @@ struct Start: AsyncParsableCommand {
         if !config.hostCommands.isEmpty {
             tprint("Setting up host command forwarding...")
             let symlinkScript = config.hostCommands.map { cmd in
-                "ln -sf /usr/local/bin/dvm-host-cmd /usr/local/bin/\(shellQuote(cmd))"
+                "ln -sf /run/current-system/sw/bin/dvm-host-cmd /usr/local/bin/\(shellQuote(cmd))"
             }.joined(separator: "\n")
             let symlinkCode = try await agentClient.exec(
                 command: ["sudo", "sh", "-c", symlinkScript]
@@ -551,61 +595,10 @@ struct Start: AsyncParsableCommand {
             }
         }
 
-        // Activation
-        let systemProfile = "/nix/var/nix/profiles/system"
-
-        // Resolve the closure to activate.
-        // With --system-closure (normal path via wrapper): use it directly.
-        // Without: re-activate whatever the on-disk profile points to.
-        let closureToActivate: String?
-        if let closure = systemClosure {
-            closureToActivate = closure
-        } else {
-            closureToActivate = try? await agentClient.execCaptureOutput(
-                command: ["readlink", "-f", systemProfile]
-            )
-        }
-
-        if let closure = closureToActivate {
-            controlSocket.update(.activating)
-            DVMLog.log(phase: .activating, "activating closure: \(closure)")
-            tprint("Activating system closure...")
-
-            // Disable link-nix-apps before activation — it calls
-            // `launchctl kickstart gui/501/...` which hangs in headless VMs.
-            _ = try await agentClient.exec(
-                command: ["sudo", "sh", "-c",
-                          "launchctl bootout gui/501/org.nix.link-nix-apps 2>/dev/null; " +
-                          "rm -f /Library/LaunchAgents/org.nix.link-nix-apps.plist; true"]
-            )
-
-            // Update profile symlink BEFORE activation. darwin-rebuild reads the
-            // current profile to diff services and resolve primaryUser. If the old
-            // profile references a user that was renamed, activation fails.
-            _ = try await agentClient.exec(
-                command: ["sudo", "ln", "-sfn", closure, systemProfile]
-            )
-
-            // darwin-rebuild activate handles both system and user-level activation
-            // (hjem, home-manager, etc.) in one shot.
-            let activateCode = try await agentClient.exec(
-                command: ["sudo", "\(closure)/sw/bin/darwin-rebuild", "activate"]
-            )
-            if activateCode == 0 {
-                DVMLog.log(phase: .activating, "activation succeeded")
-                tprint("Activated system closure.")
-            } else {
-                DVMLog.log(phase: .activating, level: "error",
-                           "activation failed (exit code \(activateCode))")
-                tprint("Warning: activation failed (exit code \(activateCode))")
-            }
-        } else {
-            tprint("No system profile found. Pass --system-closure or use the dvm wrapper.")
-        }
-
+        // Activation is handled by the in-image activator daemon (WatchPaths).
+        // It already ran (or is running) before the agent came up.
         // Placeholder env vars are delivered per-process via the gRPC Exec protocol's
         // environment field, not via guest-global state. See AgentClient.exec(env:).
-        // The host computes placeholders at startup and passes them with each exec call.
 
         // Install MITM CA in guest trust store so HTTPS interception works.
         if !resolvedProjects.isEmpty {
@@ -676,6 +669,8 @@ struct Start: AsyncParsableCommand {
         agentProxy.cleanup()
         // Keep hostCmdBridge alive until VM stops (vsock listener needs the object)
         withExtendedLifetime(hostCmdBridge) {}
+        // Clean up state directory
+        try? FileManager.default.removeItem(at: stateDir)
         tprint("VM stopped.")
     }
 }
@@ -713,39 +708,51 @@ struct Switch: AsyncParsableCommand {
         let closure = try NixStorePath(output)
         print("Closure: \(closure.rawValue)")
 
-        let systemProfile = "/nix/var/nix/profiles/system"
         let agentClient = AgentClient()
+        let runId = "switch-\(ProcessInfo.processInfo.processIdentifier)"
 
-        // Disable link-nix-apps (hangs in headless VMs)
-        _ = try await agentClient.exec(
+        // Write closure path + run-id and touch trigger to fire the activator.
+        // The activator daemon (WatchPaths) handles profile symlink, link-nix-apps,
+        // and darwin-rebuild activate autonomously.
+        print("Triggering activation in guest...")
+        let triggerCode = try await agentClient.exec(
             command: ["sudo", "sh", "-c",
-                      "launchctl bootout gui/501/org.nix.link-nix-apps 2>/dev/null; " +
-                      "rm -f /Library/LaunchAgents/org.nix.link-nix-apps.plist; true"]
+                      "printf '%s' '\(closure.rawValue)' > /var/run/dvm-state/closure-path; " +
+                      "printf '%s' '\(runId)' > /var/run/dvm-state/run-id; " +
+                      "touch /var/run/dvm-state/trigger"]
         )
-
-        // Update profile symlink BEFORE activation
-        print("Activating in guest...")
-        _ = try await agentClient.exec(
-            command: ["sudo", "ln", "-sfn", closure.rawValue, systemProfile]
-        )
-
-        let activateCode = try await agentClient.exec(
-            command: ["sudo", "\(closure.rawValue)/sw/bin/darwin-rebuild", "activate"]
-        )
-        guard activateCode == 0 else {
-            throw DVMError.activationFailed("exit code \(activateCode)")
+        guard triggerCode == 0 else {
+            throw DVMError.activationFailed("failed to write trigger files (exit \(triggerCode))")
         }
 
-        // Restart nix daemon bridge
-        _ = try await agentClient.exec(
-            command: ["sudo", "launchctl", "bootout", "system/com.darvm.agent-bridge"]
-        )
-        _ = try await agentClient.exec(
-            command: ["sudo", "launchctl", "bootstrap", "system",
-                      "/Library/LaunchDaemons/com.darvm.agent-bridge.plist"]
-        )
-
-        print("Switch complete.")
+        // Poll status file for completion. The agent may restart during activation
+        // (nix-darwin manages it), so exec calls may transiently fail.
+        print("Waiting for activation...")
+        let deadline = Date().addingTimeInterval(300) // 5 min
+        while Date() < deadline {
+            let statusOutput = try? await agentClient.execCaptureOutput(
+                command: ["cat", "/var/run/dvm-state/\(runId)/status"]
+            )
+            if let status = statusOutput?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                if status == "done" {
+                    print("Switch complete.")
+                    return
+                }
+                if status == "failed" || status == "invalid-closure" {
+                    // Try to get the activation log tail
+                    let logTail = try? await agentClient.execCaptureOutput(
+                        command: ["tail", "-20", "/var/run/dvm-state/\(runId)/activation.log"]
+                    )
+                    if let log = logTail {
+                        print("Activation log:\n\(log)")
+                    }
+                    throw DVMError.activationFailed(status)
+                }
+            }
+            // Agent might be restarting — sleep and retry
+            try await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        throw DVMError.activationFailed("timed out after 5 minutes")
     }
 }
 

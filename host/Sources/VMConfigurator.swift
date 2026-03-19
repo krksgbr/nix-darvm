@@ -39,10 +39,13 @@ enum VMConfigurator {
     ///   - netstackFD: When non-nil, use VZFileHandleNetworkDeviceAttachment with
     ///     this file descriptor instead of NAT. The FD is the VM-side of a socketpair
     ///     shared with the dvm-netstack sidecar for transparent credential injection.
+    ///   - stateDir: When non-nil, expose this host directory as VirtioFS device
+    ///     `dvm-state` for activation state exchange between host and guest.
     static func create(
         vmDir: URL,
         mounts: [MountConfig],
-        netstackFD: Int32? = nil
+        netstackFD: Int32? = nil,
+        stateDir: URL? = nil
     ) throws -> ConfiguredVM {
         let paths = VMPaths(vmDir: vmDir)
         let config = try TartConfig(fromURL: paths.config)
@@ -99,6 +102,15 @@ enum VMConfigurator {
             )
             fsDevices.append(device)
             effectiveMounts.append(mount)
+        }
+
+        // dvm-state VirtioFS: host↔guest activation state exchange.
+        // Guest mount script mounts this at /var/run/dvm-state.
+        if let stateDir {
+            let device = VZVirtioFileSystemDeviceConfiguration(tag: "dvm-state")
+            device.share = VZSingleDirectoryShare(
+                directory: VZSharedDirectory(url: stateDir, readOnly: false))
+            fsDevices.append(device)
         }
 
         if !fsDevices.isEmpty {

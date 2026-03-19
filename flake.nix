@@ -36,8 +36,32 @@
         chmod +x $out/bin/dvm-core
       '';
 
+      # Guest agent and host-cmd: cross-compiled Go binaries (requires --impure).
+      # Build first with: just build-agent && just build-host-cmd
+      darvm-agent = let
+        bin = builtins.path {
+          path = /. + (builtins.getEnv "PWD") + "/build/darvm-agent";
+          name = "darvm-agent-bin";
+        };
+      in pkgs.runCommand "darvm-agent" {} ''
+        mkdir -p $out/bin
+        cp ${bin} $out/bin/darvm-agent
+        chmod +x $out/bin/darvm-agent
+      '';
+
+      dvm-host-cmd = let
+        bin = builtins.path {
+          path = /. + (builtins.getEnv "PWD") + "/build/dvm-host-cmd";
+          name = "dvm-host-cmd-bin";
+        };
+      in pkgs.runCommand "dvm-host-cmd" {} ''
+        mkdir -p $out/bin
+        cp ${bin} $out/bin/dvm-host-cmd
+        chmod +x $out/bin/dvm-host-cmd
+      '';
+
       dvm = mkDarvm {
-        inherit dvm-core;
+        inherit dvm-core darvm-agent dvm-host-cmd;
         modules = [{
           dvm.agents.claude.enable = true;
           dvm.agents.claude.package = llmPkgs.claude-code;

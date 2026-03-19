@@ -2,9 +2,9 @@
 # Checks if the VM already exists, prompts before expensive operations, pulls
 # the OCI base image, and runs the Packer template.
 #
-# The base image includes: Determinate Nix + sshd + passwordless sudo +
-# darvm-agent (built from source inside the VM using nix).
-# nix-darwin and agents are layered on by `dvm switch`.
+# The base image is minimal: Determinate Nix + sshd + passwordless sudo +
+# VirtioFS mount script + WatchPaths activator. No agent, no host-cmd.
+# Everything else is delivered by nix-darwin activation at boot.
 
 { nixpkgs, system ? "aarch64-darwin" }:
 
@@ -21,10 +21,10 @@ let
   };
   inherit (lib) escapeShellArg;
 
-  # Content-addressed tag from image inputs. Changes when agent source
-  # or Packer template changes, triggering a rebuild prompt.
+  # Content-addressed tag from image inputs. Only covers the Packer template
+  # directory — changes to agent/host-cmd/modules never trigger a rebuild.
   imageInputsHash = builtins.substring 0 8 (builtins.hashString "sha256"
-    "${../guest/agent}:${../guest/host-cmd}:${../guest/image}");
+    "${../guest/image-minimal}");
   vmName = "darvm-${imageInputsHash}";
 in
 pkgs.writeShellApplication {
@@ -34,10 +34,8 @@ pkgs.writeShellApplication {
   text = ''
     set -euo pipefail
 
-    TEMPLATE_DIR=${escapeShellArg "${../guest/image}"}
-    AGENT_SRC_DIR=${escapeShellArg "${../guest/agent}"}
-    HOST_CMD_SRC_DIR=${escapeShellArg "${../guest/host-cmd}"}
-    TEMPLATE="$TEMPLATE_DIR/darvm-base.pkr.hcl"
+    TEMPLATE_DIR=${escapeShellArg "${../guest/image-minimal}"}
+    TEMPLATE="$TEMPLATE_DIR/darvm-minimal.pkr.hcl"
     PACKER=${escapeShellArg "${pkgsWithPacker.packer}/bin/packer"}
     DEFAULT_BASE_IMAGE=${escapeShellArg defaultBaseImage}
     VM_NAME=${escapeShellArg vmName}
@@ -117,7 +115,6 @@ raise SystemExit(0 if any(vm["Name"] == target for vm in vms) else 1)
       printf "  \xe2\x86\x92 Base image         ~25GB download\n"
     fi
     printf "  \xe2\x86\x92 Install Nix        ~1 min\n"
-    printf "  \xe2\x86\x92 Build agent        ~30s\n"
     echo ""
     printf "Proceed? [Y/n] "
     read -r answer </dev/tty || answer="y"
@@ -137,14 +134,10 @@ raise SystemExit(0 if any(vm["Name"] == target for vm in vms) else 1)
     "$PACKER" validate \
       -var "base_image=$BASE_IMAGE" \
       -var "vm_name=$VM_NAME" \
-      -var "dvm_agent_src=$AGENT_SRC_DIR" \
-      -var "dvm_host_cmd_src=$HOST_CMD_SRC_DIR" \
       "$TEMPLATE"
     "$PACKER" build \
       -var "base_image=$BASE_IMAGE" \
       -var "vm_name=$VM_NAME" \
-      -var "dvm_agent_src=$AGENT_SRC_DIR" \
-      -var "dvm_host_cmd_src=$HOST_CMD_SRC_DIR" \
       "$TEMPLATE"
 
     echo "Base VM '$VM_NAME' created successfully."

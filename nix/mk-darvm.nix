@@ -20,6 +20,7 @@ let
         ../guest/modules/prelude.nix
         ../guest/modules/direnv.nix
       ] ++ modules;
+      # darvm-agent and dvm-host-cmd are passed via specialArgs from the caller.
       specialArgs = { inherit username; } // specialArgs;
     } // builtins.removeAttrs args [ "modules" "specialArgs" "username" ]);
 
@@ -31,6 +32,8 @@ in
   modules ? [],
   username ? "admin",
   dvm-core,
+  darvm-agent,
+  dvm-host-cmd,
 }:
 
 let
@@ -39,6 +42,7 @@ let
     modules = [
       ../guest/modules/agents.nix
     ] ++ modules;
+    specialArgs = { inherit darvm-agent dvm-host-cmd; };
   };
 
   # Extract enabled agents from evaluated config
@@ -55,9 +59,10 @@ let
     defaultBaseImage = baseImage;
   };
 
-  # Content-addressed VM name — must match the one in create-base-vm.nix
+  # Content-addressed VM name — must match the one in create-base-vm.nix.
+  # Only covers the Packer template; agent/host-cmd/module changes never trigger rebuild.
   imageInputsHash = builtins.substring 0 8 (builtins.hashString "sha256"
-    "${../guest/agent}:${../guest/host-cmd}:${../guest/image}");
+    "${../guest/image-minimal}");
   vmName = "darvm-${imageInputsHash}";
 
   # Per-agent full-access flags
@@ -155,17 +160,29 @@ pkgs.writeShellApplication {
         echo "Error: VM not running. Start it with: dvm start" >&2
         exit 1
       }
+
+      # Write closure path + run ID, then touch trigger to fire the activator.
+      # The activator daemon (WatchPaths) handles profile symlink, link-nix-apps,
+      # and darwin-rebuild activate autonomously.
+      local RUN_ID="switch-$$"
       echo "Activating system closure..."
-      # Disable link-nix-apps (hangs in headless VMs)
-      "$DVM_CORE" exec -- sudo sh -c 'launchctl bootout gui/501/org.nix.link-nix-apps 2>/dev/null; rm -f /Library/LaunchAgents/org.nix.link-nix-apps.plist; true'
-      # Update profile symlink BEFORE activation — darwin-rebuild reads it
-      "$DVM_CORE" exec -- sudo ln -sfn "$SYSTEM_CLOSURE" /nix/var/nix/profiles/system
-      # Full activation (system + user via darwin-rebuild)
-      "$DVM_CORE" exec -- sudo "$SYSTEM_CLOSURE/sw/bin/darwin-rebuild" activate
-      # Restart nix daemon bridge
-      "$DVM_CORE" exec -- sudo launchctl bootout system/com.darvm.agent-bridge 2>/dev/null || true
-      "$DVM_CORE" exec -- sudo launchctl bootstrap system /Library/LaunchDaemons/com.darvm.agent-bridge.plist 2>/dev/null || true
-      echo "Switch complete."
+      "$DVM_CORE" exec -- sudo sh -c "printf '%s' '$SYSTEM_CLOSURE' > /var/run/dvm-state/closure-path; printf '%s' '$RUN_ID' > /var/run/dvm-state/run-id; touch /var/run/dvm-state/trigger"
+
+      # Wait for activation to complete (poll guest state files)
+      echo "Waiting for activation..."
+      for _i in $(seq 1 300); do
+        STATUS=$("$DVM_CORE" exec -- cat "/var/run/dvm-state/$RUN_ID/status" 2>/dev/null || true)
+        case "$STATUS" in
+          done) echo "Switch complete."; return 0 ;;
+          failed|invalid-closure)
+            echo "Activation failed:" >&2
+            "$DVM_CORE" exec -- tail -20 "/var/run/dvm-state/$RUN_ID/activation.log" >&2 || true
+            return 1 ;;
+        esac
+        sleep 1
+      done
+      echo "Activation timed out after 5 minutes." >&2
+      return 1
     }
 
     if [ $# -eq 0 ]; then
