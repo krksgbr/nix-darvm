@@ -19,13 +19,16 @@ dvm (bash wrapper)                    darvm-agent (Go)
      │   (:6176, guest→host cmds)       │   (unix socket → vsock :6174)
      ├─ ControlSocket                   └─ dvm-host-cmd (Go, busybox)
      │   (/tmp/dvm-control.sock)            (argv[0] → vsock :6176 → host)
-     └─ VirtioFS mounts
-        (nix-store, project dirs)       nix-darwin modules configure guest
+     └─ VirtioFS mounts                dvm-mount-store (sh, baked in image)
+        (nix-store, dvm-state,            (mounts nix-store + dvm-state at boot)
+         project dirs)                dvm-activator (sh, baked in image)
+                                          (WatchPaths trigger → darwin-rebuild)
+                                      nix-darwin modules configure guest
 ```
 
 **Vsock ports:** 6174 (nix daemon bridge), 6175 (gRPC agent), 6176 (host command bridge)
 
-**Boot sequence:** configure → boot → waitForAgent → mount VirtioFS → activate nix-darwin closure → running
+**Boot sequence:** configure → boot → activate (state-file watch) → waitForAgent → mount VirtioFS → running
 
 ## Directory layout
 
@@ -49,7 +52,7 @@ guest/agent/           Go guest agent (darvm-agent)
   internal/bridge/       nix daemon socket → vsock bridge
 
 guest/host-cmd/        Go binary forwarding commands to host (busybox pattern)
-guest/image/           Packer template + vsock-bridge for base VM image
+guest/image-minimal/   Packer template for minimal base image (Nix + mount + activator)
 guest/modules/         nix-darwin modules for guest configuration
   guest-plumbing.nix     Core: launchd daemons, nix socket wiring, user setup
   prelude.nix            Defaults: zsh, starship, git, common tools
@@ -70,14 +73,11 @@ proto/agent.proto      gRPC service definition (Exec, ResolveIP, Activate, Statu
 Requires: Xcode (Swift 6.0+), Go, Nix, Tart, just
 
 ```sh
-just build              # Build dvm-core (Swift, debug)
+just build              # Build dvm-core + agent + host-cmd (debug)
 just build release      # Release build
 just proto              # Regenerate Go code from proto/agent.proto
-just build-agent        # Cross-compile guest agent (darwin/arm64)
-just build-host-cmd     # Cross-compile host-cmd shim
-just deploy-agent       # Hot-swap agent in running VM (~5s, no image rebuild)
-just deploy-host-cmd    # Hot-swap host-cmd in running VM
 just dvm start          # Build + run dvm
+just dvm switch         # Rebuild nix-darwin config and activate in guest
 just dvm exec -- ls /   # Run command in guest
 just install            # Install to nix profile
 just logs               # Stream guest agent logs
@@ -85,7 +85,7 @@ just logs               # Stream guest agent logs
 
 **DVM_CORE** env var overrides the dvm-core binary path (set automatically by devShell).
 
-**Base image** is content-addressed: `darvm-<hash>` where hash covers `guest/agent`, `guest/host-cmd`, `guest/image`. Changing any of these requires `dvm init` to rebuild.
+**Base image** is content-addressed: `darvm-<hash>` where hash covers `guest/image-minimal`. Changes to agent, host-cmd, or modules never trigger an image rebuild — they're delivered by nix-darwin activation.
 
 ## Conventions
 
