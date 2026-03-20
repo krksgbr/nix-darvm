@@ -1,0 +1,176 @@
+# dvm switch Redesign
+
+## Problem
+
+`dvm switch` re-activates a closure that was baked into the wrapper at nix eval
+time. It does not build from the user's flake — so editing `flake.nix` and
+running `dvm switch` changes nothing. The only way it works today is via `just
+dvm switch`, which calls `nix run --impure .#dvm` and re-evaluates the flake as
+a side effect. That's a development convenience, not a real design.
+
+Additionally, `dvm start` and `dvm switch` use different closure sources: `start`
+activates the baked-in closure, `switch` (if it were to build from flake) would
+build a fresh one. This means "what's running" depends on *how* the VM was
+started — exactly the kind of silent divergence the minimal base image plan was
+designed to eliminate.
+
+## Goal
+
+`dvm switch` works like `darwin-rebuild switch`: build from the user's flake,
+activate in the guest. One model for how closures enter the system. Day-to-day
+workflow: edit config, run `dvm switch`, done.
+
+## Settled Decisions
+
+### S1: `dvm switch` builds from the user's flake at runtime
+
+No baked-in closure. `dvm switch` calls `nix build` against the user's flake,
+extracts the system closure, and pushes it to the guest for activation.
+
+### S2: `dvm start` uses the same closure source as `dvm switch`
+
+Both commands build from the user's flake at runtime. The baked-in
+`SYSTEM_CLOSURE` in the wrapper goes away entirely. There is exactly one way
+closures enter the system.
+
+### S3: New flake output namespace: `dvmConfigurations.<name>`
+
+Not `darwinConfigurations`. `mkDarvm` injects guest-specific modules (vsock
+bridges, nix daemon socket wiring, agent LaunchDaemons) that would break on a
+real Mac. Putting it under `darwinConfigurations` suggests compatibility with
+`darwin-rebuild switch`, which is dangerous. `dvmConfigurations` is honest about
+what it is.
+
+Named configurations with a default, following the `packages.default` pattern:
+
+```nix
+dvmConfigurations.default = mkDarvm { ... };
+```
+
+### S4: The dvm wrapper stops carrying a closure
+
+The wrapper becomes a thin CLI that knows how to find the flake, call `nix
+build`, and orchestrate `dvm-core`. It still needs to be a nix package (for
+`nix profile install`), but it no longer embeds `SYSTEM_CLOSURE`.
+
+What stays in the wrapper: `dvm-core` binary path, `dvm-create-vm` script,
+CLI orchestration (subcommands, flake resolution).
+
+### S5: Flake resolution order
+
+`--flake` flag > CWD (if `flake.nix` present) > `config.toml` flake path.
+
+CWD takes precedence over config.toml — a local flake should always win over
+a global setting. Matches standard nix tooling conventions.
+
+### S6: Host-side GC root profile
+
+The host must anchor a GC root for whatever closure the guest is using.
+Otherwise `nix-collect-garbage` on the host destroys the guest's filesystem
+through VirtioFS. A single nix profile per VM handles both `start` and `switch`:
+`start` sets it, `switch` updates it, old closures become GC-eligible only after
+the profile moves forward. Proposed path: `~/.local/state/dvm/profiles/<vm-name>`.
+
+### S7: Poll activation status via host filesystem, not gRPC
+
+During `dvm switch`, the agent may restart mid-activation. Polling via `dvm exec
+-- cat /var/run/dvm-state/.../status` routes through the fragile gRPC connection
+that's being torn down. Since `dvm-state` is a VirtioFS mount, the host has
+direct filesystem access to the state files. Read them locally instead.
+
+## Oracle Feedback (Gemini Review)
+
+Key points from the Gemini consultation:
+
+1. **GC root vulnerability is critical.** The host daemon has no visibility into
+   guest GC roots. `nix-collect-garbage` on the host will destroy the running
+   guest. Fix: `nix build --profile <path>` to anchor host-side roots.
+
+2. **Resolution order correction.** Oracle flagged the original order
+   (`--flake` > `config.toml` > CWD) as violating least astonishment. CWD
+   should beat config.toml. Adopted as S5.
+
+3. **Host CLI / guest config impedance mismatch.** If the wrapper no longer
+   knows the closure, it can't generate dynamic agent subcommands (`dvm claude`,
+   `dvm codex`) at build time. Oracle recommends a generic catch-all or
+   requiring `dvm exec -- claude`.
+
+4. **Poll via host filesystem.** VirtioFS gives the host direct access to state
+   files. No need to route polling through gRPC during the dangerous
+   agent-restart window.
+
+5. **WatchPaths must target the exact trigger file**, not the directory.
+   Already the case in our design — confirmed, not an issue.
+
+6. **Building from source every time is fine.** Nix caches aggressively; the
+   performance concern is a non-issue.
+
+## Open Questions
+
+### Q1: Dynamic agent subcommands — RESOLVED
+
+The wrapper no longer generates agent subcommands. Instead:
+
+1. **Catch-all in the wrapper:** Unrecognized commands forward to the guest
+   via `dvm exec -t -- <cmd>`.
+2. **Agent wrappers generated by nix-darwin in the guest:** The guest modules
+   (`claude.nix`, `codex.nix`) generate shell wrapper scripts with the right
+   flags baked in (`--dangerously-skip-permissions`, `--full-auto`, etc.).
+3. **Direnv integration is guest-side:** `dvm.integrations.direnv.enable`
+   configures the guest-side wrapper to include `direnv exec .`, not the
+   host-side command.
+
+The guest is the source of truth for how agents run. The host just provides
+the tunnel. `dvm claude` → `dvm exec -t -- claude` → guest wrapper handles
+flags and direnv.
+
+### Q2: Guest-initiated store paths — DEFERRED
+
+`nix shell`, `nix build`, etc. inside the guest create host store paths via the
+daemon bridge. The GC roots for these live on the guest's virtual disk, invisible
+to the host daemon. A host `nix-collect-garbage` could delete paths the guest is
+actively using. This is the same class of problem as remote nix builders.
+
+**Scope 1 (system closure) is handled by S6** — the host-side profile protects
+the OS. **Scope 2 (guest-initiated paths) is a known limitation** that needs
+separate investigation. Possible approaches: exposing guest gcroots to the host
+via VirtioFS, or storing guest profiles in the shared state dir. Track separately.
+
+### Q3: What remains in the nix-built wrapper? — RESOLVED
+
+The wrapper is a thin nix package. Build-time evaluation embeds only:
+- `dvm-core` binary path
+- `dvm-create-vm` script path
+- Host command allowlist (security boundary, immutable — see `nix-darvm-xuus`)
+
+Everything else is runtime: flake resolution, `nix build`, subcommand dispatch.
+The config evaluation (`mkSandbox`, `darwinConfig`, agent extraction) is removed
+from the wrapper build. The wrapper no longer imports guest modules at build time.
+
+**Key separation:** Host config (security boundaries like the command allowlist)
+is baked into the wrapper at build time. Guest config (what runs in the VM) is
+built at runtime via `dvm switch`. Two concerns, two paths, no coupling.
+
+### Q4: `dvm start` first-boot without flake context — RESOLVED
+
+If no user flake is resolvable, fall back to a minimal default config bundled
+in the dvm flake itself (`dvmConfigurations.minimal`). This gives a working VM
+(nix, shell, agent, basic tools) without requiring user config upfront. The user
+can `dvm switch` to their full config later.
+
+Full resolution chain:
+`--flake` > CWD > `config.toml` > dvm's own `dvmConfigurations.minimal`
+
+The wrapper embeds a reference to its own flake (e.g. `self.outPath` or a pinned
+flake ref) so it can build the minimal config at runtime.
+
+When falling back to the minimal config, print a visible warning (yellow) telling
+the user they're running with defaults and how to configure their own setup
+(create a flake with `dvmConfigurations.default`, or set the flake path in
+`config.toml`).
+
+### Q5: Config.toml vs nix config for flake path — RESOLVED
+
+The flake path stays in `config.toml`. It's a host-side user preference ("where
+is my dvm flake?"), not a guest security boundary like the host command allowlist.
+Different concern from the config.toml migration tracked in `nix-darvm-xuus`.
