@@ -37,5 +37,15 @@ let package = Package(
                 .plugin(name: "GRPCProtobufGenerator", package: "grpc-swift-protobuf"),
             ]
         ),
+        .testTarget(
+            name: "dvm-core-tests",
+            dependencies: [
+                .target(name: "dvm-core"),
+            ],
+            path: "Tests",
+            swiftSettings: [
+                .interoperabilityMode(.Cxx),
+            ]
+        ),
     ]
 )
