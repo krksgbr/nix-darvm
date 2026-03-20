@@ -1,7 +1,7 @@
 ---
 # nix-darvm-8zgv
 title: Integration test harness for credential proxy
-status: todo
+status: completed
 type: task
 created_at: 2026-03-20T13:55:37Z
 updated_at: 2026-03-20T13:55:37Z

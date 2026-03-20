@@ -13,18 +13,14 @@ import (
 )
 
 // SecretRule is a resolved secret passed from dvm-core.
+// The proxy replaces Placeholder with Value in HTTPS request headers for
+// matching Hosts. No inject modes — the guest tool decides how to use the
+// placeholder (Authorization header, query param, etc.).
 type SecretRule struct {
 	Name        string   `json:"name"`
 	Hosts       []string `json:"hosts"`
 	Placeholder string   `json:"placeholder"`
 	Value       string   `json:"value"`
-	Inject      Inject   `json:"inject"`
-}
-
-// Inject describes how a secret is injected into requests.
-type Inject struct {
-	Type string `json:"type"` // "bearer", "basic", "header"
-	Name string `json:"name"` // header name (for type="header")
 }
 
 // NetConfig is the initial configuration sent by dvm-core.
@@ -41,13 +37,13 @@ type NetConfig struct {
 
 // Request is a message from dvm-core to the sidecar.
 type Request struct {
-	Type string `json:"type"` // "load_config", "load", "unload", "status", "shutdown"
+	Type string `json:"type"` // "load_config", "load", "status", "shutdown"
 
-	// For load_config (initial) and load (per-project reload)
+	// For load_config (initial)
 	Config *NetConfig `json:"config,omitempty"`
 
-	// For load/unload (per-project)
-	ProjectRoot string       `json:"project_root,omitempty"`
+	// For load (per-project credential push)
+	ProjectName string       `json:"project_name,omitempty"`
 	Secrets     []SecretRule `json:"secrets,omitempty"`
 }
 
@@ -82,7 +78,7 @@ type Server struct {
 
 	mu        sync.Mutex
 	stack     StackInfo
-	projects  map[string][]SecretRule // project_root -> secrets
+	projects  map[string][]SecretRule // project_name -> secrets
 	caCertPEM string                 // set by SendReady, returned in ready response
 }
 
@@ -152,6 +148,26 @@ func (s *Server) mergedSecrets() []SecretRule {
 	return merged
 }
 
+// checkCollisions detects placeholder conflicts across projects.
+// Same placeholder + different value in a different project is an error.
+// Same project name is fine (overwrite). Caller must hold s.mu.
+func (s *Server) checkCollisions(incomingProject string, incoming []SecretRule) error {
+	for projName, existing := range s.projects {
+		if projName == incomingProject {
+			continue // same project — will be overwritten
+		}
+		for _, es := range existing {
+			for _, is := range incoming {
+				if es.Placeholder == is.Placeholder && es.Value != is.Value {
+					return fmt.Errorf("load: placeholder collision: %q has different values in projects %q and %q",
+						es.Placeholder, projName, incomingProject)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Server) acceptLoop() {
 	for {
 		conn, err := s.listener.Accept()
@@ -191,14 +207,8 @@ func (s *Server) handleRequest(req *Request) *Response {
 		if req.Config == nil {
 			return &Response{Type: "error", Error: "load_config: missing config"}
 		}
-		// Store initial secrets under a default project key.
-		s.mu.Lock()
-		if len(req.Config.Secrets) > 0 {
-			s.projects["_default"] = req.Config.Secrets
-		}
-		s.mu.Unlock()
+		// No secrets at startup — credentials are pushed per-project at exec time.
 		// Non-blocking send; first config wins.
-		// Don't respond yet — main.go will call SendReady() after the stack is up.
 		select {
 		case s.configCh <- *req.Config:
 		default:
@@ -216,35 +226,28 @@ func (s *Server) handleRequest(req *Request) *Response {
 		return &Response{Type: "ready", GuestIP: req.Config.GuestIP, CACertPEM: caPEM}
 
 	case "load":
-		// Per-project secret reload.
+		// Per-project credential push. Same project name overwrites previous.
 		s.mu.Lock()
 		st := s.stack
-		if req.ProjectRoot == "" {
+		if st == nil {
 			s.mu.Unlock()
-			return &Response{Type: "error", Error: "load: missing project_root"}
-		}
-		s.projects[req.ProjectRoot] = req.Secrets
-		merged := s.mergedSecrets()
-		s.mu.Unlock()
-		if st == nil {
 			return &Response{Type: "error", Error: "stack not initialized"}
 		}
-		st.UpdateSecrets(merged)
-		return &Response{Type: "ok"}
-
-	case "unload":
-		// Remove a project's secrets and rebuild merged set.
-		s.mu.Lock()
-		st := s.stack
-		if req.ProjectRoot != "" {
-			delete(s.projects, req.ProjectRoot)
+		if req.ProjectName == "" {
+			s.mu.Unlock()
+			return &Response{Type: "error", Error: "load: missing project_name"}
 		}
+		// Collision detection: same placeholder with different value across
+		// different projects is an error (indicates a placeholder derivation bug
+		// or two projects claiming the same identity).
+		if err := s.checkCollisions(req.ProjectName, req.Secrets); err != nil {
+			s.mu.Unlock()
+			return &Response{Type: "error", Error: err.Error()}
+		}
+		s.projects[req.ProjectName] = req.Secrets
 		merged := s.mergedSecrets()
-		s.mu.Unlock()
-		if st == nil {
-			return &Response{Type: "error", Error: "stack not initialized"}
-		}
 		st.UpdateSecrets(merged)
+		s.mu.Unlock()
 		return &Response{Type: "ok"}
 
 	case "status":

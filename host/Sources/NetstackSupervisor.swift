@@ -31,7 +31,6 @@ final class NetstackSupervisor: @unchecked Sendable {
         let dnsServers: [String]
         let caCertPEM: String
         let caKeyPEM: String
-        let secrets: [ResolvedSecret]
     }
 
     enum SupervisorError: Error, CustomStringConvertible {
@@ -211,29 +210,13 @@ final class NetstackSupervisor: @unchecked Sendable {
         unlink(controlSocketPath)
     }
 
-    /// Send updated secrets for a project to the sidecar.
-    ///
-    /// TODO: Run HostOverlapChecker.check() against all currently loaded projects
-    /// (excluding projectRoot) before sending the reload. Currently overlap checks
-    /// only happen at startup — a reload could introduce conflicting host rules.
-    func reloadSecrets(projectRoot: String, secrets: [ResolvedSecret]) throws {
+    /// Push credentials for a project to the sidecar. Same project name
+    /// overwrites previous mappings (last writer wins).
+    func loadCredentials(projectName: String, secrets: [ResolvedSecret]) throws {
         let msg: [String: Any] = [
             "type": "load",
-            "project_root": projectRoot,
+            "project_name": projectName,
             "secrets": secrets.map { encodeSecret($0) },
-        ]
-        let response = try sendControlMessage(msg)
-        guard response["type"] as? String == "ok" else {
-            let error = response["error"] as? String ?? "unknown error"
-            throw SupervisorError.controlSocketError(error)
-        }
-    }
-
-    /// Remove a project's rules from the sidecar.
-    func unloadProject(projectRoot: String) throws {
-        let msg: [String: Any] = [
-            "type": "unload",
-            "project_root": projectRoot,
         ]
         let response = try sendControlMessage(msg)
         guard response["type"] as? String == "ok" else {
@@ -245,21 +228,12 @@ final class NetstackSupervisor: @unchecked Sendable {
     // MARK: - Private
 
     private func encodeSecret(_ secret: ResolvedSecret) -> [String: Any] {
-        var dict: [String: Any] = [
+        [
             "name": secret.name,
             "placeholder": secret.placeholder,
             "value": secret.value,
             "hosts": secret.hosts,
         ]
-        switch secret.inject {
-        case .bearer:
-            dict["inject"] = ["type": "bearer"]
-        case .basic:
-            dict["inject"] = ["type": "basic"]
-        case .header(let name):
-            dict["inject"] = ["type": "header", "name": name]
-        }
-        return dict
     }
 
     private func buildLoadMessage(config: Config) -> [String: Any] {
@@ -273,7 +247,7 @@ final class NetstackSupervisor: @unchecked Sendable {
                 "dns_servers": config.dnsServers,
                 "ca_cert_pem": config.caCertPEM,
                 "ca_key_pem": config.caKeyPEM,
-                "secrets": config.secrets.map { encodeSecret($0) },
+                "secrets": [] as [[String: Any]],
             ] as [String: Any],
         ]
     }

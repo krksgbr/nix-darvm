@@ -41,11 +41,16 @@ final class ControlSocket: @unchecked Sendable {
     /// Called from the control socket's dispatch queue (synchronous).
     var guestHealthHandler: (@Sendable () -> GuestHealthPayload?)?
 
+    /// Closure to push credentials to the sidecar. Set by Start after sidecar is ready.
+    /// Called from the control socket's dispatch queue (synchronous).
+    var loadCredentialsHandler: (@Sendable (String, [[String: Any]]) -> String?)?
+
     // MARK: - Wire protocol
 
     enum Command: String, Codable {
         case status
         case guestHealth
+        case loadCredentials
     }
 
     struct StatusPayload: Codable {
@@ -194,11 +199,19 @@ final class ControlSocket: @unchecked Sendable {
         let clientFD = accept(listenerFD, nil, nil)
         guard clientFD >= 0 else { return }
 
-        // Read request (up to 1KB, single line)
-        var buf = [UInt8](repeating: 0, count: 1024)
-        let n = read(clientFD, &buf, buf.count)
+        // Read until newline or EOF. The protocol is newline-delimited JSON,
+        // and SOCK_STREAM may fragment large payloads (e.g. loadCredentials).
+        var requestData = Data()
+        var buf = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = read(clientFD, &buf, buf.count)
+            if n <= 0 { break }
+            requestData.append(buf, count: n)
+            // Newline terminates the request
+            if buf[..<n].contains(0x0A) { break }
+        }
 
-        let response = handleRequest(n > 0 ? Data(buf[..<n]) : nil)
+        let response = handleRequest(requestData.isEmpty ? nil : requestData)
 
         if var responseData = try? JSONEncoder().encode(response) {
             responseData.append(0x0A) // newline
@@ -211,8 +224,8 @@ final class ControlSocket: @unchecked Sendable {
 
     private func handleRequest(_ data: Data?) -> Response {
         guard let data,
-              let decoded = try? JSONDecoder().decode([String: String].self, from: data),
-              let cmdStr = decoded["cmd"] else {
+              let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cmdStr = decoded["cmd"] as? String else {
             return .error(message: "invalid request: expected JSON with \"cmd\" field")
         }
         guard let command = Command(rawValue: cmdStr) else {
@@ -240,6 +253,23 @@ final class ControlSocket: @unchecked Sendable {
             } else {
                 return .error(message: "guest health query failed")
             }
+        case .loadCredentials:
+            guard let handler = loadCredentialsHandler else {
+                return .error(message: "credential proxy not available (sidecar not running)")
+            }
+            guard let projectName = decoded["project_name"] as? String, !projectName.isEmpty else {
+                return .error(message: "loadCredentials: missing project_name")
+            }
+            guard let secrets = decoded["secrets"] as? [[String: Any]] else {
+                return .error(message: "loadCredentials: missing or invalid secrets array")
+            }
+            if let errMsg = handler(projectName, secrets) {
+                return .error(message: errMsg)
+            }
+            return .status(StatusPayload(
+                running: true, ip: nil, phase: nil, runId: nil,
+                phaseEnteredAt: nil, phaseError: nil
+            ))
         }
     }
 
@@ -323,6 +353,91 @@ final class ControlSocket: @unchecked Sendable {
             return .failure(.decodeFailed)
         }
         return .success(response)
+    }
+
+    /// Push credentials to the running VM's sidecar via the control socket.
+    /// Returns nil on success, or an error message on failure.
+    static func sendLoadCredentials(
+        projectName: String,
+        secrets: [ResolvedSecret],
+        timeout: TimeInterval = 10
+    ) -> String? {
+        guard FileManager.default.fileExists(atPath: Self.path) else {
+            return "VM not running (control socket not found)"
+        }
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            return "Failed to create socket: \(String(cString: strerror(errno)))"
+        }
+        defer { close(fd) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Self.path.utf8CString
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
+                for (i, byte) in pathBytes.enumerated() {
+                    dest[i] = byte
+                }
+            }
+        }
+
+        let connectResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connectResult == 0 else {
+            return "Failed to connect to control socket: \(String(cString: strerror(errno)))"
+        }
+
+        // Build the JSON payload with embedded secrets
+        let secretDicts: [[String: Any]] = secrets.map { s in
+            [
+                "name": s.name,
+                "placeholder": s.placeholder,
+                "value": s.value,
+                "hosts": s.hosts,
+            ] as [String: Any]
+        }
+        let payload: [String: Any] = [
+            "cmd": "loadCredentials",
+            "project_name": projectName,
+            "secrets": secretDicts,
+        ]
+        guard let requestData = try? JSONSerialization.data(
+            withJSONObject: payload, options: [.sortedKeys]) else {
+            return "Failed to encode loadCredentials request"
+        }
+
+        var data = requestData
+        data.append(0x0A)
+        _ = data.withUnsafeBytes { ptr in
+            write(fd, ptr.baseAddress!, data.count)
+        }
+
+        // Set read timeout
+        var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        var buf = [UInt8](repeating: 0, count: 4096)
+        let n = read(fd, &buf, buf.count)
+        guard n > 0 else { return "Control socket read timed out" }
+
+        // Parse response and verify success positively
+        let responseData = Data(buf[..<n])
+        guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
+            return "Control socket returned invalid JSON"
+        }
+        if let error = json["error"] as? String {
+            return error
+        }
+        // Verify we got a valid response (not truncated/garbled)
+        guard json["running"] != nil || json["type"] != nil else {
+            return "Control socket returned unexpected response: \(json)"
+        }
+        return nil  // success
     }
 
     /// Quick check: is the VM running?

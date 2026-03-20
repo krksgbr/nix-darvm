@@ -1,6 +1,7 @@
-// Package proxy implements HTTP/HTTPS interception and credential injection.
-// It replaces placeholder tokens in request headers and URL query params with
-// real secret values before forwarding upstream.
+// Package proxy implements HTTPS interception and credential injection.
+// It replaces placeholder tokens in request headers with real secret values
+// before forwarding upstream. Only HTTPS requests are rewritten; HTTP passes
+// through without replacement to avoid leaking credentials over cleartext.
 package proxy
 
 import (
@@ -8,7 +9,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -151,64 +151,40 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 	i.serveConn(tlsConn, "https", dstIP, dstPort, true)
 }
 
-// replaceSecrets performs placeholder -> real value substitution in request
-// headers and URL query params, then applies inject rules for secrets that
-// weren't already present via placeholders. Body is intentionally skipped.
-func (i *Interceptor) replaceSecrets(req *http.Request, secrets []control.SecretRule) {
+// replaceSecrets performs single-pass placeholder → real value substitution in
+// request header values. Only runs for HTTPS (scheme must be in the request
+// context). Body and query params are intentionally skipped — the guest tool
+// places the placeholder in the appropriate header.
+//
+// "Single-pass" means each secret sees the original header values, not values
+// already modified by a previous secret. This prevents chain replacement where
+// secret A's resolved value accidentally contains secret B's placeholder.
+func (i *Interceptor) replaceSecrets(req *http.Request, secrets []control.SecretRule, scheme string) {
+	if scheme != "https" {
+		return // never replace in plain HTTP — placeholder leaks as-is, upstream rejects it
+	}
+
+	// Snapshot original header values so each secret replaces against the
+	// originals, not against already-substituted values.
+	originals := make(map[string][]string, len(req.Header))
+	for key, vals := range req.Header {
+		cp := make([]string, len(vals))
+		copy(cp, vals)
+		originals[key] = cp
+	}
+
 	for _, s := range secrets {
-		if s.Value == "" {
+		if s.Value == "" || s.Placeholder == "" {
 			continue
 		}
-
-		// Phase 1: placeholder replacement (only if placeholder is configured).
-		if s.Placeholder != "" {
-			for key, vals := range req.Header {
-				for j, v := range vals {
-					if strings.Contains(v, s.Placeholder) {
-						req.Header[key][j] = strings.ReplaceAll(v, s.Placeholder, s.Value)
-					}
+		for key, orig := range originals {
+			for j, v := range orig {
+				if strings.Contains(v, s.Placeholder) {
+					req.Header[key][j] = strings.ReplaceAll(req.Header[key][j], s.Placeholder, s.Value)
 				}
 			}
-
-			if req.URL.RawQuery != "" && strings.Contains(req.URL.RawQuery, s.Placeholder) {
-				req.URL.RawQuery = strings.ReplaceAll(req.URL.RawQuery, s.Placeholder, s.Value)
-			}
-		}
-
-		// Phase 2: inject rules — synthesize headers if the real value isn't
-		// already present (e.g. guest sent no placeholder at all).
-		if s.Inject.Type == "" {
-			continue
-		}
-
-		switch s.Inject.Type {
-		case "bearer":
-			expected := "Bearer " + s.Value
-			if !headerContains(req, "Authorization", expected) {
-				req.Header.Set("Authorization", expected)
-			}
-		case "basic":
-			encoded := base64.StdEncoding.EncodeToString([]byte(s.Value))
-			expected := "Basic " + encoded
-			if !headerContains(req, "Authorization", expected) {
-				req.Header.Set("Authorization", expected)
-			}
-		case "header":
-			if s.Inject.Name != "" && !headerContains(req, s.Inject.Name, s.Value) {
-				req.Header.Set(s.Inject.Name, s.Value)
-			}
 		}
 	}
-}
-
-// headerContains returns true if any value of the named header contains substr.
-func headerContains(req *http.Request, name, substr string) bool {
-	for _, v := range req.Header.Values(name) {
-		if strings.Contains(v, substr) {
-			return true
-		}
-	}
-	return false
 }
 
 // tcpPassthrough does a bidirectional byte relay without any inspection.
@@ -289,7 +265,7 @@ func (i *Interceptor) rewriteRequest(pr *httputil.ProxyRequest) {
 
 	secrets := i.secretsForHost(hostOnly)
 	if secrets != nil {
-		i.replaceSecrets(pr.Out, secrets)
+		i.replaceSecrets(pr.Out, secrets, info.scheme)
 	}
 }
 

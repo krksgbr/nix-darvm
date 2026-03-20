@@ -1,143 +1,216 @@
+import CommonCrypto
 import Foundation
 import Security
 import TOML
 
 // MARK: - Secret Configuration Types
 
-/// How a secret value is injected into HTTP requests.
-enum InjectMode: Equatable, Sendable {
-    /// `Authorization: Bearer <value>`
-    case bearer
-    /// `Authorization: Basic <value>`
-    case basic
-    /// Custom header: `<name>: <value>`
-    case header(name: String)
-}
-
-/// Where a secret's real value comes from on the host.
-enum SecretProvider: Equatable, Sendable {
-    /// Read from host environment variable.
-    case env(name: String)
-    /// Read from macOS Keychain.
-    case keychain(service: String, account: String)
-    /// Run a command and capture stdout.
-    case command(argv: [String])
-}
-
 /// A single secret declaration from `.dvm/credentials.toml`.
-struct SecretRule: Sendable {
-    let name: String
+/// The TOML key is the env var name (e.g. `[secrets.ANTHROPIC_API_KEY]`).
+struct SecretDecl: Sendable {
+    let envVar: String
     let hosts: [String]
-    let inject: InjectMode
-    let provider: SecretProvider
 }
 
-/// A secret after host-side provider resolution.
-/// The `value` is the real credential — lives in memory only, never in guest.
+/// A secret after host-side resolution. The `value` is the real credential —
+/// lives in host memory only, never in guest. The `placeholder` is the
+/// HMAC-derived token injected into the guest environment.
 struct ResolvedSecret: Sendable {
     let name: String
     let placeholder: String
     let value: String
     let hosts: [String]
-    let inject: InjectMode
 }
 
-/// Parsed per-project credential manifest.
+/// Parsed per-project credential manifest (`.dvm/credentials.toml`).
 struct CredentialManifest: Sendable {
     let version: Int
-    let secrets: [SecretRule]
+    let project: String
+    let secrets: [SecretDecl]
 }
 
-// MARK: - TOML Parsing
+// MARK: - Host Key
 
-/// Raw Codable shapes for TOMLDecoder. Converted to typed domain objects after decode.
+/// 32-byte key for HMAC placeholder derivation. Generated once, stored at
+/// `~/.config/dvm/placeholder.key`, never mounted into the guest.
+struct HostKey: Sendable {
+    let bytes: [UInt8]
+
+    /// Stored under ~/.config/dvm/ (not ~/.local/state/dvm/ which is mounted
+    /// into the guest and recreated on every boot).
+    static let keyPath: String = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return "\(home)/.config/dvm/placeholder.key"
+    }()
+
+    /// Load existing key or generate a new one.
+    static func loadOrCreate() throws -> HostKey {
+        try loadOrCreate(at: keyPath)
+    }
+
+    /// Load or create at a specific path (used by tests).
+    static func loadOrCreate(at path: String) throws -> HostKey {
+        if FileManager.default.fileExists(atPath: path) {
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            guard data.count == 32 else {
+                throw SecretConfigError.invalidHostKey(path, data.count)
+            }
+            return HostKey(bytes: Array(data))
+        }
+
+        // Generate new key
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard status == errSecSuccess else {
+            throw SecretConfigError.hostKeyGenerationFailed(status)
+        }
+
+        // Ensure parent directory exists
+        let dir = (path as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(
+            atPath: dir, withIntermediateDirectories: true)
+
+        // Write atomically
+        let data = Data(bytes)
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+
+        // Restrict permissions to owner only
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600], ofItemAtPath: path)
+
+        return HostKey(bytes: bytes)
+    }
+}
+
+// MARK: - Placeholder Derivation
+
+/// Derive a deterministic, human-readable placeholder from project + secret + host key.
+///
+/// Format: `SANDBOX_CRED_{project_slug}_{secret_slug}_{hmac_hex}`
+/// - HMAC input: `"{normalized_project}\0{env_var_name}"`
+/// - hmac_hex: first 16 hex chars of HMAC-SHA256
+///
+/// The placeholder is stable (same inputs → same output), traceable (project +
+/// secret visible in the string), and not guessable from the guest (HMAC keyed
+/// by host-only key).
+func derivePlaceholder(project: String, envVar: String, hostKey: HostKey) -> String {
+    let normalizedProject = normalizeProjectName(project)
+    let projectSlug = slugify(normalizedProject)
+    let secretSlug = slugify(envVar)
+
+    // HMAC input: normalized_project + NUL + original env var name
+    let input = "\(normalizedProject)\0\(envVar)"
+    let inputBytes = Array(input.utf8)
+
+    var hmac = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+    CCHmac(CCHmacAlgorithm(kCCHmacAlgSHA256),
+           hostKey.bytes, hostKey.bytes.count,
+           inputBytes, inputBytes.count,
+           &hmac)
+
+    // First 8 bytes = 16 hex chars
+    let suffix = hmac.prefix(8).map { String(format: "%02x", $0) }.joined()
+
+    return "SANDBOX_CRED_\(projectSlug)_\(secretSlug)_\(suffix)"
+}
+
+/// Normalize project name for wire protocol and HMAC input.
+/// Lowercase, strip leading/trailing whitespace.
+func normalizeProjectName(_ name: String) -> String {
+    name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+}
+
+/// Slugify a string for display in placeholders.
+/// Lowercase, non-alphanumeric → hyphen, collapse runs, strip leading/trailing hyphens.
+func slugify(_ s: String) -> String {
+    let lowered = s.lowercased()
+    var result = ""
+    var lastWasHyphen = false
+    for c in lowered {
+        if c.isLetter || c.isNumber {
+            result.append(c)
+            lastWasHyphen = false
+        } else if !lastWasHyphen {
+            result.append("-")
+            lastWasHyphen = true
+        }
+    }
+    // Strip leading/trailing hyphens
+    return result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+}
+
+/// Normalize a hostname for matching: lowercase, strip trailing dots.
+/// Matches the Go sidecar's `normalizeHost()`.
+func normalizeHost(_ host: String) -> String {
+    var h = host.lowercased()
+    while h.hasSuffix(".") {
+        h.removeLast()
+    }
+    return h
+}
+
+// MARK: - TOML Parsing (v2 format)
+
+/// Raw Codable shapes for TOMLDecoder.
+/// Format:
+/// ```toml
+/// version = 1
+/// project = "my-project"
+///
+/// [secrets.ANTHROPIC_API_KEY]
+/// hosts = ["api.anthropic.com"]
+/// ```
 private struct RawManifest: Codable {
     let version: Int
-    let secrets: [RawSecret]?
+    let project: String
+    let secrets: [String: RawSecretEntry]?
 }
 
-private struct RawSecret: Codable {
-    let name: String
+private struct RawSecretEntry: Codable {
     let hosts: [String]
-    let inject: RawInject
-    let provider: RawProvider
 }
 
-/// Inject is either a bare string ("bearer", "basic") or an inline table.
-private enum RawInject: Codable {
-    case shorthand(String)
-    case table(type: String, name: String?)
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let s = try? container.decode(String.self) {
-            self = .shorthand(s)
-            return
-        }
-        let tbl = try InjectTable(from: decoder)
-        self = .table(type: tbl.type, name: tbl.name)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        switch self {
-        case .shorthand(let s):
-            var container = encoder.singleValueContainer()
-            try container.encode(s)
-        case .table(let type, let name):
-            try InjectTable(type: type, name: name).encode(to: encoder)
-        }
-    }
-
-    private struct InjectTable: Codable {
-        let type: String
-        let name: String?
-    }
-}
-
-private struct RawProvider: Codable {
-    let type: String
-    let name: String?      // env
-    let service: String?   // keychain
-    let account: String?   // keychain
-    let argv: [String]?    // command
-}
-
-// MARK: - Manifest Loading
+// MARK: - Errors
 
 enum SecretConfigError: Error, CustomStringConvertible {
     case unsupportedVersion(Int)
-    case invalidInject(String)
-    case invalidProvider(String)
-    case missingProviderField(provider: String, field: String)
+    case missingProjectName
     case emptyHosts(secret: String)
     case wildcardHost(secret: String, host: String)
-    case providerFailed(secret: String, detail: String)
-    case overlappingHost(host: String, existingProject: String, newProject: String)
+    case envVarNotSet(secret: String, envVar: String)
+    case envVarEmpty(secret: String, envVar: String)
     case manifestNotFound(String)
+    case manifestUnreadable(String, Error)
+    case invalidHostKey(String, Int)
+    case hostKeyGenerationFailed(OSStatus)
 
     var description: String {
         switch self {
         case .unsupportedVersion(let v):
             return "Unsupported credentials.toml version: \(v) (expected 1)"
-        case .invalidInject(let s):
-            return "Invalid inject mode: \(s). Expected \"bearer\", \"basic\", or { type = \"header\", name = \"...\" }"
-        case .invalidProvider(let s):
-            return "Invalid provider type: \(s). Expected \"env\", \"keychain\", or \"command\""
-        case .missingProviderField(let p, let f):
-            return "Provider '\(p)' requires field '\(f)'"
+        case .missingProjectName:
+            return "credentials.toml missing required 'project' field"
         case .emptyHosts(let s):
             return "Secret '\(s)' has empty hosts list"
         case .wildcardHost(let s, let h):
-            return "Secret '\(s)': wildcard hosts not supported in v1: \(h)"
-        case .providerFailed(let s, let d):
-            return "Provider resolution failed for '\(s)': \(d)"
-        case .overlappingHost(let h, let existing, let new):
-            return "Host '\(h)' declared by project '\(new)' conflicts with project '\(existing)'"
+            return "Secret '\(s)': wildcard hosts not supported: \(h)"
+        case .envVarNotSet(let s, let v):
+            return "Secret '\(s)': environment variable '\(v)' is not set"
+        case .envVarEmpty(let s, let v):
+            return "Secret '\(s)': environment variable '\(v)' is set but empty"
         case .manifestNotFound(let p):
-            return "No credentials.toml found at \(p)"
+            return "Credential manifest not found: \(p)"
+        case .manifestUnreadable(let p, let e):
+            return "Failed to read credential manifest at \(p): \(e)"
+        case .invalidHostKey(let p, let n):
+            return "Host key at \(p) has wrong size (\(n) bytes, expected 32)"
+        case .hostKeyGenerationFailed(let s):
+            return "Failed to generate host key: SecRandomCopyBytes status \(s)"
         }
     }
 }
+
+// MARK: - Manifest Loading
 
 extension CredentialManifest {
 
@@ -146,199 +219,70 @@ extension CredentialManifest {
         guard FileManager.default.fileExists(atPath: path) else {
             throw SecretConfigError.manifestNotFound(path)
         }
-        let contents = try String(contentsOfFile: path, encoding: .utf8)
+        let contents: String
+        do {
+            contents = try String(contentsOfFile: path, encoding: .utf8)
+        } catch {
+            throw SecretConfigError.manifestUnreadable(path, error)
+        }
         let raw = try TOMLDecoder().decode(RawManifest.self, from: contents)
 
         guard raw.version == 1 else {
             throw SecretConfigError.unsupportedVersion(raw.version)
         }
 
-        let rules = try (raw.secrets ?? []).map { try parseSecret($0) }
-        return CredentialManifest(version: raw.version, secrets: rules)
-    }
+        let normalizedProject = normalizeProjectName(raw.project)
+        guard !normalizedProject.isEmpty else {
+            throw SecretConfigError.missingProjectName
+        }
 
-    private static func parseSecret(_ raw: RawSecret) throws -> SecretRule {
-        guard !raw.hosts.isEmpty else {
-            throw SecretConfigError.emptyHosts(secret: raw.name)
-        }
-        for host in raw.hosts {
-            if host.contains("*") {
-                throw SecretConfigError.wildcardHost(secret: raw.name, host: host)
+        let decls: [SecretDecl] = try (raw.secrets ?? [:]).map { envVar, entry in
+            guard !entry.hosts.isEmpty else {
+                throw SecretConfigError.emptyHosts(secret: envVar)
             }
-        }
-        return SecretRule(
-            name: raw.name,
-            hosts: raw.hosts,
-            inject: try parseInject(raw.inject, secret: raw.name),
-            provider: try parseProvider(raw.provider, secret: raw.name)
+            for host in entry.hosts {
+                if host.contains("*") {
+                    throw SecretConfigError.wildcardHost(secret: envVar, host: host)
+                }
+            }
+            return SecretDecl(
+                envVar: envVar,
+                hosts: entry.hosts.map { normalizeHost($0) }
+            )
+        }.sorted(by: { $0.envVar < $1.envVar })  // deterministic order
+
+        return CredentialManifest(
+            version: raw.version,
+            project: normalizedProject,
+            secrets: decls
         )
     }
-
-    private static func parseInject(_ raw: RawInject, secret: String) throws -> InjectMode {
-        switch raw {
-        case .shorthand(let s):
-            switch s {
-            case "bearer": return .bearer
-            case "basic": return .basic
-            default: throw SecretConfigError.invalidInject(s)
-            }
-        case .table(let type, let name):
-            guard type == "header" else {
-                throw SecretConfigError.invalidInject(type)
-            }
-            guard let name, !name.isEmpty else {
-                throw SecretConfigError.missingProviderField(provider: "header", field: "name")
-            }
-            return .header(name: name)
-        }
-    }
-
-    private static func parseProvider(_ raw: RawProvider, secret: String) throws -> SecretProvider {
-        switch raw.type {
-        case "env":
-            guard let name = raw.name, !name.isEmpty else {
-                throw SecretConfigError.missingProviderField(provider: "env", field: "name")
-            }
-            return .env(name: name)
-        case "keychain":
-            guard let service = raw.service, !service.isEmpty else {
-                throw SecretConfigError.missingProviderField(provider: "keychain", field: "service")
-            }
-            guard let account = raw.account, !account.isEmpty else {
-                throw SecretConfigError.missingProviderField(provider: "keychain", field: "account")
-            }
-            return .keychain(service: service, account: account)
-        case "command":
-            guard let argv = raw.argv, !argv.isEmpty else {
-                throw SecretConfigError.missingProviderField(provider: "command", field: "argv")
-            }
-            return .command(argv: argv)
-        default:
-            throw SecretConfigError.invalidProvider(raw.type)
-        }
-    }
 }
 
-// MARK: - Provider Resolution
+// MARK: - Resolution
 
-enum SecretResolver {
+extension CredentialManifest {
 
-    /// Resolve all secrets in a manifest. Validates eagerly — fails on first error.
-    static func resolve(_ manifest: CredentialManifest) throws -> [ResolvedSecret] {
-        try manifest.secrets.map { rule in
-            let value = try resolveProvider(rule.provider, secret: rule.name)
-            let placeholder = generatePlaceholder()
+    /// Resolve all secrets from host environment. Fails loudly on first missing var.
+    func resolve(hostKey: HostKey) throws -> [ResolvedSecret] {
+        try secrets.map { decl in
+            guard let value = ProcessInfo.processInfo.environment[decl.envVar] else {
+                throw SecretConfigError.envVarNotSet(
+                    secret: decl.envVar, envVar: decl.envVar)
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else {
+                throw SecretConfigError.envVarEmpty(
+                    secret: decl.envVar, envVar: decl.envVar)
+            }
+            let placeholder = derivePlaceholder(
+                project: project, envVar: decl.envVar, hostKey: hostKey)
             return ResolvedSecret(
-                name: rule.name,
+                name: decl.envVar,
                 placeholder: placeholder,
-                value: value,
-                hosts: rule.hosts,
-                inject: rule.inject
+                value: trimmed,
+                hosts: decl.hosts
             )
-        }
-    }
-
-    private static func resolveProvider(_ provider: SecretProvider, secret: String) throws -> String {
-        let raw: String
-        switch provider {
-        case .env(let name):
-            guard let value = ProcessInfo.processInfo.environment[name] else {
-                throw SecretConfigError.providerFailed(
-                    secret: secret, detail: "environment variable '\(name)' not set")
-            }
-            raw = value
-
-        case .keychain(let service, let account):
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-            process.arguments = ["find-generic-password", "-w", "-s", service, "-a", account]
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = Pipe()  // suppress stderr noise
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                throw SecretConfigError.providerFailed(
-                    secret: secret,
-                    detail: "keychain lookup failed for service='\(service)' account='\(account)' (exit \(process.terminationStatus))")
-            }
-            raw = String(
-                data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
-
-        case .command(let argv):
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = argv
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = Pipe()
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                throw SecretConfigError.providerFailed(
-                    secret: secret,
-                    detail: "command \(argv) failed (exit \(process.terminationStatus))")
-            }
-            raw = String(
-                data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                encoding: .utf8
-            ) ?? ""
-        }
-
-        // Strip trailing whitespace/newlines, reject empty
-        let trimmed = raw.replacingOccurrences(
-            of: "\\s+$", with: "", options: .regularExpression)
-        guard !trimmed.isEmpty else {
-            throw SecretConfigError.providerFailed(
-                secret: secret, detail: "resolved value is empty after trimming")
-        }
-        return trimmed
-    }
-
-    /// Generate a placeholder token: `SANDBOX_SECRET_` + 32 random hex chars.
-    static func generatePlaceholder() -> String {
-        var bytes = [UInt8](repeating: 0, count: 16)
-        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
-        let hex = bytes.map { String(format: "%02x", $0) }.joined()
-        return "SANDBOX_SECRET_\(hex)"
-    }
-}
-
-// MARK: - Host Overlap Detection
-
-enum HostOverlapChecker {
-
-    /// Check that no host in `newSecrets` overlaps with any host in `existing`.
-    /// `existingProject` / `newProject` are used for error messages.
-    static func check(
-        existing: [(project: String, secrets: [ResolvedSecret])],
-        newProject: String,
-        newSecrets: [ResolvedSecret]
-    ) throws {
-        // Build host -> project index from existing
-        var hostIndex: [String: String] = [:]
-        for (project, secrets) in existing {
-            for secret in secrets {
-                for host in secret.hosts {
-                    hostIndex[host] = project
-                }
-            }
-        }
-
-        // Check new secrets for overlap
-        for secret in newSecrets {
-            for host in secret.hosts {
-                if let existingProject = hostIndex[host] {
-                    throw SecretConfigError.overlappingHost(
-                        host: host,
-                        existingProject: existingProject,
-                        newProject: newProject
-                    )
-                }
-            }
         }
     }
 }
