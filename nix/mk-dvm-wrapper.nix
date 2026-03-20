@@ -128,11 +128,23 @@ pkgs.writeShellApplication {
     }
 
     cmd_switch() {
-      # Check VM is running
-      "$DVM_CORE" status >/dev/null 2>&1 || {
-        echo "Error: VM not running. Start it with: dvm start" >&2
+      # Wait for VM to be fully running (handles switch during boot).
+      # Empty phase means the control socket doesn't exist yet (still starting).
+      local phase=""
+      for _w in $(seq 1 120); do
+        phase=$("$DVM_CORE" status --json 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("phase",""))' 2>/dev/null || true)
+        case "$phase" in
+          running) break ;;
+          failed|stopped)
+            echo "Error: VM not running. Start it with: dvm start" >&2
+            exit 1 ;;
+        esac
+        sleep 1
+      done
+      if [ "$phase" != "running" ]; then
+        echo "Error: VM did not reach running state. Current phase: ${phase:-unknown}" >&2
         exit 1
-      }
+      fi
 
       # Build closure from user's flake
       echo "Building system closure..."
