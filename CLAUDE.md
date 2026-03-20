@@ -88,6 +88,64 @@ just logs               # Stream guest agent logs
 
 **Base image** is content-addressed: `darvm-<hash>` where hash covers `guest/image-minimal`. Changes to agent, host-cmd, or modules never trigger an image rebuild — they're delivered by nix-darwin activation.
 
+## End-to-end testing
+
+After changes to host code, guest modules, or the Packer template, run through
+these checks using the same commands a user would. All commands go through the
+`dvm` wrapper via `just dvm`.
+
+**1. First-time setup (image build):**
+```sh
+just dvm init
+# Expect: "Base VM 'darvm-<hash>' is up to date." if image exists,
+# or a Packer build if the template changed.
+# Tip: set BASE_IMAGE=tahoe-base to skip the 25GB OCI download.
+```
+
+**2. Start the VM:**
+```sh
+just dvm start
+# Expect: "Building system closure" → "Activation succeeded" →
+# "Guest agent connected" → mounts → "VM running"
+# Ctrl-C to stop when done verifying.
+```
+
+**3. Switch on running VM:**
+```sh
+# In another terminal, with the VM running:
+just dvm switch
+# Expect: "Building system closure" → "Switch complete."
+```
+
+**4. Exec and catch-all forwarding:**
+```sh
+just dvm exec -- echo hello     # Expect: "hello"
+just dvm echo hello             # Same — unrecognized commands forward to guest
+```
+
+**5. Subsequent boot (no activation):**
+```sh
+# Stop the VM (Ctrl-C), then start again:
+just dvm start
+# Expect: no "Activation" phase. Agent connects within ~30s.
+```
+
+**6. Image stability after code changes:**
+```sh
+# After changing agent/module/host code (not guest/image-minimal/):
+just dvm init
+# Expect: "Base VM 'darvm-<hash>' is up to date." (no rebuild)
+```
+
+**Notes:**
+- `just dvm` builds everything (Swift + Go + netstack) then runs via
+  `nix run --impure .#dvm`. The `DVM_CORE` and `DVM_NETSTACK` env vars
+  are set automatically.
+- The credential proxy starts automatically if `.dvm/credentials.toml`
+  exists in any mirror directory.
+- `dvm switch` works even if run while the VM is still booting — it waits.
+- State files are at `~/.local/state/dvm/` (readable from host during activation).
+
 ## Conventions
 
 - **Swift 6 strict concurrency.** `@MainActor` for VZ framework types, `@unchecked Sendable` only where unavoidable (delegates).
