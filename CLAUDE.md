@@ -62,7 +62,8 @@ guest/modules/         nix-darwin modules for guest configuration
   direnv.nix             Auto-activate project devShells
 
 nix/
-  mk-darvm.nix           Main composition: modules → system closure → dvm wrapper
+  mk-darvm.nix           Evaluate darwinSystem for dvmConfigurations
+  mk-dvm-wrapper.nix     Thin CLI wrapper (flake resolution, runtime nix build)
   create-base-vm.nix     Packer-based base image creation script
 
 proto/agent.proto      gRPC service definition (Exec, ResolveIP, Activate, Status)

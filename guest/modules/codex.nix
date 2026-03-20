@@ -1,5 +1,16 @@
 { lib, config, pkgs, ... }:
 
+let
+  cfg = config.dvm.agents.codex;
+  direnvEnabled = config.dvm.integrations.direnv.enable;
+  direnvPrefix = lib.optionalString direnvEnabled "direnv exec . ";
+  flags = (lib.optional cfg.fullAccess "--full-auto") ++ cfg.extraArgs;
+  flagsStr = lib.concatStringsSep " " flags;
+
+  codexWrapper = pkgs.writeShellScriptBin "codex" ''
+    exec ${direnvPrefix}${cfg.package}/bin/codex ${flagsStr} "$@"
+  '';
+in
 {
   options.dvm.agents.codex = {
     enable = lib.mkEnableOption "Codex agent";
@@ -24,12 +35,13 @@
     };
   };
 
-  config = lib.mkIf config.dvm.agents.codex.enable {
+  config = lib.mkIf cfg.enable {
     environment.systemPackages = [
-      config.dvm.agents.codex.package
+      codexWrapper
       pkgs.git
       pkgs.ripgrep
       pkgs.fd
     ];
+    dvm.mounts.home = [ cfg.configDir ];
   };
 }

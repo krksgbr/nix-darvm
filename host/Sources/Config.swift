@@ -14,6 +14,8 @@ import TOML
 struct DVMConfig: Codable {
     var mounts: Mounts?
     var host: Host?
+    /// Path to the user's dvm flake (fallback when no --flake flag or CWD flake).
+    var flake: String?
 
     struct Mounts: Codable {
         /// Directories mounted at their exact host path in the guest.
@@ -35,7 +37,7 @@ struct DVMConfig: Codable {
     var homeDirs: [String] { mounts?.home ?? [] }
     var hostCommands: [String] { host?.commands ?? [] }
 
-    static let empty = DVMConfig(mounts: nil, host: nil)
+    static let empty = DVMConfig(mounts: nil, host: nil, flake: nil)
 
     /// Load config from the default path. Returns empty config if file doesn't exist.
     /// Throws on parse errors so the user knows their config is broken.

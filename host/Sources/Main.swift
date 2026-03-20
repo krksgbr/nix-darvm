@@ -67,7 +67,7 @@ struct DVM: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dvm-core",
         abstract: "DVM core — VM lifecycle management",
-        subcommands: [Start.self, Switch.self, Stop.self, Exec.self, SSH.self, Status.self]
+        subcommands: [Start.self, Stop.self, Exec.self, SSH.self, Status.self, ConfigGet.self]
     )
 
     static func main() async {
@@ -322,7 +322,11 @@ struct Start: AsyncParsableCommand {
 
         // Create state directory for host↔guest activation state exchange.
         // Shared via VirtioFS as "dvm-state", mounted at /var/run/dvm-state in guest.
-        let stateDir = URL(fileURLWithPath: "/tmp/dvm-state-\(ProcessInfo.processInfo.processIdentifier)")
+        let stateDir = URL(fileURLWithPath:
+            FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".local/state/dvm").path)
+        // Clean up stale state from previous runs
+        try? FileManager.default.removeItem(at: stateDir)
         try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
         DVMLog.log(phase: .configuring, "state dir: \(stateDir.path)")
 
@@ -669,90 +673,30 @@ struct Start: AsyncParsableCommand {
         agentProxy.cleanup()
         // Keep hostCmdBridge alive until VM stops (vsock listener needs the object)
         withExtendedLifetime(hostCmdBridge) {}
-        // Clean up state directory
-        try? FileManager.default.removeItem(at: stateDir)
         tprint("VM stopped.")
     }
 }
 
-// MARK: - Switch
+// MARK: - ConfigGet
 
-struct Switch: AsyncParsableCommand {
+struct ConfigGet: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Build nix-darwin closure on host and activate in guest"
+        commandName: "config-get",
+        abstract: "Read a value from config.toml"
     )
 
-    @Option(name: .long, help: "Flake reference to build (e.g. .#darwinConfigurations.myvm.system)")
-    var flake: String
+    @Argument(help: "Config key to read (e.g. flake)")
+    var key: String
 
-    func run() async throws {
-        print("Building nix-darwin closure...")
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["nix", "build", flake, "--no-link", "--print-out-paths"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.standardError
-        try process.run()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            throw DVMError.buildFailed
+    func run() throws {
+        let config = try DVMConfig.load()
+        switch key {
+        case "flake":
+            guard let flake = config.flake else { throw ExitCode(1) }
+            print(flake)
+        default:
+            throw ExitCode(1)
         }
-
-        guard let output = String(
-            data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
-        ) else {
-            throw DVMError.buildFailed
-        }
-        let closure = try NixStorePath(output)
-        print("Closure: \(closure.rawValue)")
-
-        let agentClient = AgentClient()
-        let runId = "switch-\(ProcessInfo.processInfo.processIdentifier)"
-
-        // Write closure path + run-id and touch trigger to fire the activator.
-        // The activator daemon (WatchPaths) handles profile symlink, link-nix-apps,
-        // and darwin-rebuild activate autonomously.
-        print("Triggering activation in guest...")
-        let triggerCode = try await agentClient.exec(
-            command: ["sudo", "sh", "-c",
-                      "printf '%s' '\(closure.rawValue)' > /var/run/dvm-state/closure-path; " +
-                      "printf '%s' '\(runId)' > /var/run/dvm-state/run-id; " +
-                      "touch /var/run/dvm-state/trigger"]
-        )
-        guard triggerCode == 0 else {
-            throw DVMError.activationFailed("failed to write trigger files (exit \(triggerCode))")
-        }
-
-        // Poll status file for completion. The agent may restart during activation
-        // (nix-darwin manages it), so exec calls may transiently fail.
-        print("Waiting for activation...")
-        let deadline = Date().addingTimeInterval(300) // 5 min
-        while Date() < deadline {
-            let statusOutput = try? await agentClient.execCaptureOutput(
-                command: ["cat", "/var/run/dvm-state/\(runId)/status"]
-            )
-            if let status = statusOutput?.trimmingCharacters(in: .whitespacesAndNewlines) {
-                if status == "done" {
-                    print("Switch complete.")
-                    return
-                }
-                if status == "failed" || status == "invalid-closure" {
-                    // Try to get the activation log tail
-                    let logTail = try? await agentClient.execCaptureOutput(
-                        command: ["tail", "-20", "/var/run/dvm-state/\(runId)/activation.log"]
-                    )
-                    if let log = logTail {
-                        print("Activation log:\n\(log)")
-                    }
-                    throw DVMError.activationFailed(status)
-                }
-            }
-            // Agent might be restarting — sleep and retry
-            try await Task.sleep(nanoseconds: 1_000_000_000)
-        }
-        throw DVMError.activationFailed("timed out after 5 minutes")
     }
 }
 

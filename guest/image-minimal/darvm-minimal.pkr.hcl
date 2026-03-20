@@ -114,7 +114,7 @@ mkdir -p "$RUN_DIR"
 # Validate closure
 if [ -z "$CLOSURE" ] || [ ! -d "$CLOSURE" ]; then
     echo "invalid-closure" > "$RUN_DIR/status"
-    echo "Closure not found or empty: ${CLOSURE:-<empty>}" > "$RUN_DIR/activation.log"
+    echo "Closure not found or empty: $CLOSURE" > "$RUN_DIR/activation.log"
     exit 1
 fi
 

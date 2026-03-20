@@ -15,10 +15,11 @@
     let
       system = "aarch64-darwin";
       pkgs = nixpkgs.legacyPackages.${system};
-      lib = pkgs.lib;
       llmPkgs = llm-agents.packages.${system};
 
       mkDarvm = import ./nix/mk-darvm.nix { inherit nixpkgs nix-darwin hjem system; };
+      mkDvmWrapper = import ./nix/mk-dvm-wrapper.nix { inherit nixpkgs system; };
+      mkCreateBaseVm = import ./nix/create-base-vm.nix { inherit nixpkgs system; };
 
       # Wraps a locally-built dvm-core binary (requires --impure).
       # Build first with: just build [release]
@@ -60,19 +61,37 @@
         chmod +x $out/bin/dvm-host-cmd
       '';
 
-      dvm = mkDarvm {
-        inherit dvm-core darvm-agent dvm-host-cmd;
-        modules = [{
-          dvm.agents.claude.enable = true;
-          dvm.agents.claude.package = llmPkgs.claude-code;
-          dvm.agents.codex.enable = true;
-          dvm.agents.codex.package = llmPkgs.codex;
-          dvm.integrations.direnv.enable = true;
-        }];
+      createBaseVm = mkCreateBaseVm {};
+
+      wrapper = mkDvmWrapper {
+        inherit dvm-core;
+        dvm-create-vm = createBaseVm;
+        dvmFlakeRef = self.outPath;
       };
     in
     {
       lib = { inherit mkDarvm; };
+
+      # Guest VM configurations. Users put their own in dvmConfigurations.default.
+      # The wrapper builds dvmConfigurations.default from the user's flake at runtime,
+      # falling back to dvmConfigurations.minimal from dvm's own flake.
+      dvmConfigurations = {
+        minimal = mkDarvm {
+          inherit darvm-agent dvm-host-cmd;
+          modules = [];
+        };
+
+        default = mkDarvm {
+          inherit darvm-agent dvm-host-cmd;
+          modules = [{
+            dvm.agents.claude.enable = true;
+            dvm.agents.claude.package = llmPkgs.claude-code;
+            dvm.agents.codex.enable = true;
+            dvm.agents.codex.package = llmPkgs.codex;
+            dvm.integrations.direnv.enable = true;
+          }];
+        };
+      };
 
       modules = {
         guest-plumbing = ./guest/modules/guest-plumbing.nix;
@@ -84,8 +103,9 @@
       };
 
       packages.${system} = {
-        default = dvm;
-        inherit dvm dvm-core;
+        default = wrapper;
+        dvm = wrapper;
+        inherit dvm-core darvm-agent dvm-host-cmd;
       };
 
       devShells.${system}.default = pkgs.mkShellNoCC {

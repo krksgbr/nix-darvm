@@ -1,5 +1,16 @@
 { lib, config, pkgs, ... }:
 
+let
+  cfg = config.dvm.agents.claude;
+  direnvEnabled = config.dvm.integrations.direnv.enable;
+  direnvPrefix = lib.optionalString direnvEnabled "direnv exec . ";
+  flags = (lib.optional cfg.fullAccess "--dangerously-skip-permissions") ++ cfg.extraArgs;
+  flagsStr = lib.concatStringsSep " " flags;
+
+  claudeWrapper = pkgs.writeShellScriptBin "claude" ''
+    exec ${direnvPrefix}${cfg.package}/bin/claude ${flagsStr} "$@"
+  '';
+in
 {
   options.dvm.agents.claude = {
     enable = lib.mkEnableOption "Claude Code agent";
@@ -24,12 +35,13 @@
     };
   };
 
-  config = lib.mkIf config.dvm.agents.claude.enable {
+  config = lib.mkIf cfg.enable {
     environment.systemPackages = [
-      config.dvm.agents.claude.package
+      claudeWrapper
       pkgs.git
       pkgs.ripgrep
       pkgs.fd
     ];
+    dvm.mounts.home = [ cfg.configDir ];
   };
 }
