@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/containers/gvisor-tap-vsock/pkg/services/dhcp"
 	gvdns "github.com/containers/gvisor-tap-vsock/pkg/services/dns"
@@ -30,10 +29,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
-)
-
-const (
-	udpDropLogInterval = 60 * time.Second
 )
 
 // Config configures the network stack.
@@ -64,9 +59,6 @@ type Stack struct {
 
 	mu     sync.Mutex
 	closed bool
-
-	udpDropMu   sync.Mutex
-	udpDropSeen map[string]time.Time
 }
 
 // New creates and starts a network stack using gvisor-tap-vsock for the
@@ -214,7 +206,6 @@ func New(cfg *Config) (*Stack, error) {
 		secrets:      cfg.Secrets,
 		frameConn:    frameConn,
 		cancelSwitch: cancelSwitch,
-		udpDropSeen:  make(map[string]time.Time),
 	}
 
 	// TCP forwarder: intercept credentialed hosts, passthrough everything else
@@ -345,21 +336,4 @@ func dupFD(f *os.File) (*os.File, error) {
 	return os.NewFile(uintptr(fd), f.Name()+"-dup"), nil
 }
 
-func (ns *Stack) handleUDPPacket(r *udp.ForwarderRequest) bool {
-	id := r.ID()
-	// DNS and DHCP are handled by their own bound endpoints.
-	// Everything else is dropped with rate-limited logging.
-	dst := fmt.Sprintf("%s:%d", id.LocalAddress, id.LocalPort)
-	ns.udpDropMu.Lock()
-	last, seen := ns.udpDropSeen[dst]
-	now := time.Now()
-	if !seen || now.Sub(last) >= udpDropLogInterval {
-		ns.udpDropSeen[dst] = now
-		ns.udpDropMu.Unlock()
-		log.Printf("udp: traffic to %s dropped (only DNS and DHCP forwarded in v1)", dst)
-	} else {
-		ns.udpDropMu.Unlock()
-	}
-	return true
-}
 

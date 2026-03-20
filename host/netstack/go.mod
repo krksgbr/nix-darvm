@@ -4,6 +4,7 @@ go 1.25.5
 
 require (
 	github.com/containers/gvisor-tap-vsock v0.8.8
+	golang.org/x/net v0.49.0
 	gvisor.dev/gvisor v0.0.0-20260202191832-0bd9aedd142c
 )
 
@@ -18,9 +19,9 @@ require (
 	github.com/u-root/uio v0.0.0-20240224005618-d2acac8f3701 // indirect
 	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
 	golang.org/x/mod v0.32.0 // indirect
-	golang.org/x/net v0.49.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/time v0.12.0 // indirect
 	golang.org/x/tools v0.41.0 // indirect
 )

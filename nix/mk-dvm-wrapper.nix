@@ -102,8 +102,12 @@ pkgs.writeShellApplication {
     }
 
     cmd_start() {
-      # Ensure base VM exists
-      "$CREATE_VM"
+      # Ensure base VM exists. Skip if any darvm-* VM is already available —
+      # a stale hash just means guest/image-minimal changed; the existing VM
+      # still works and dvm switch delivers the new config via nix-darwin.
+      if ! tart list --format json 2>/dev/null | python3 -c 'import json,sys; vms=json.load(sys.stdin); sys.exit(0 if any(v["Name"].startswith("darvm-") for v in vms) else 1)'; then
+        "$CREATE_VM"
+      fi
 
       # Find the actual darvm-* VM name
       ACTUAL_VM=$(tart list --format json | python3 -c 'import json,sys;vms=json.load(sys.stdin);ms=[v["Name"]for v in vms if v["Name"].startswith("darvm-")];print(ms[0])if ms else None' 2>/dev/null)

@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -16,25 +18,31 @@ import (
 // CAPool holds a CA certificate and key for issuing leaf certs.
 type CAPool struct {
 	caCert    *x509.Certificate
-	caKey     *rsa.PrivateKey
-	certCache sync.Map // hostname -> *tls.Certificate
+	caKey     crypto.Signer
+	cacheMu   sync.RWMutex
+	certCache map[string]cachedCert
 }
 
-// GenerateCA creates a new self-signed CA cert+key and returns a CAPool
-// along with the PEM-encoded cert (for installing in the guest trust store).
+type cachedCert struct {
+	cert     *tls.Certificate
+	notAfter time.Time
+}
+
+// GenerateCA creates a new self-signed ECDSA-P256 CA cert+key and returns a
+// CAPool along with the PEM-encoded cert (for installing in the guest trust store).
 func GenerateCA() (*CAPool, string, error) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, "", fmt.Errorf("generate CA key: %w", err)
 	}
 
 	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
 	template := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "DVM Sandbox CA"},
-		NotBefore:    time.Now().Add(-5 * time.Minute),
-		NotAfter:     time.Now().AddDate(1, 0, 0),
-		KeyUsage:     x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "DVM Sandbox CA"},
+		NotBefore:             time.Now().Add(-1 * time.Hour),
+		NotAfter:              time.Now().AddDate(1, 0, 0),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
 		IsCA:                  true,
 		MaxPathLen:            0,
@@ -52,11 +60,16 @@ func GenerateCA() (*CAPool, string, error) {
 
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
-	return &CAPool{caCert: caCert, caKey: key}, string(certPEM), nil
+	return &CAPool{
+		caCert:    caCert,
+		caKey:     key,
+		certCache: make(map[string]cachedCert),
+	}, string(certPEM), nil
 }
 
 // NewCAPool creates a CAPool from PEM-encoded cert and key.
 // Returns nil (no error) if both are empty — HTTPS MITM will be disabled.
+// The key must be in PKCS#8 format (PEM type "PRIVATE KEY").
 func NewCAPool(certPEM, keyPEM string) (*CAPool, error) {
 	if certPEM == "" || keyPEM == "" {
 		return nil, nil
@@ -75,60 +88,101 @@ func NewCAPool(certPEM, keyPEM string) (*CAPool, error) {
 	if keyBlock == nil {
 		return nil, fmt.Errorf("failed to decode CA key PEM")
 	}
-	caKey, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	signer, err := parsePrivateKey(keyBlock)
 	if err != nil {
-		return nil, fmt.Errorf("parse CA key: %w", err)
+		return nil, err
 	}
 
 	return &CAPool{
-		caCert: caCert,
-		caKey:  caKey,
+		caCert:    caCert,
+		caKey:     signer,
+		certCache: make(map[string]cachedCert),
 	}, nil
 }
 
 // GetCertificate returns a leaf cert for the given hostname, generating and
-// caching it on first use.
+// caching it on first use. Expired certs are regenerated automatically.
 func (p *CAPool) GetCertificate(serverName string) (*tls.Certificate, error) {
-	if cached, ok := p.certCache.Load(serverName); ok {
-		return cached.(*tls.Certificate), nil
-	}
+	now := time.Now()
 
-	cert, err := p.generateLeafCert(serverName)
+	p.cacheMu.RLock()
+	if cached, ok := p.certCache[serverName]; ok && now.Before(cached.notAfter) {
+		p.cacheMu.RUnlock()
+		return cached.cert, nil
+	}
+	p.cacheMu.RUnlock()
+
+	cert, notAfter, err := p.generateLeafCert(serverName)
 	if err != nil {
 		return nil, err
 	}
 
-	p.certCache.Store(serverName, cert)
+	p.cacheMu.Lock()
+	p.certCache[serverName] = cachedCert{cert: cert, notAfter: notAfter}
+	p.cacheMu.Unlock()
+
 	return cert, nil
 }
 
-func (p *CAPool) generateLeafCert(serverName string) (*tls.Certificate, error) {
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+func (p *CAPool) generateLeafCert(serverName string) (*tls.Certificate, time.Time, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 
 	serialNumber, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
 
+	notAfter := time.Now().Add(24 * time.Hour)
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			CommonName: serverName,
 		},
 		DNSNames:    []string{serverName},
-		NotBefore:   time.Now().Add(-5 * time.Minute), // clock skew
-		NotAfter:    time.Now().AddDate(1, 0, 0),
-		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		NotBefore:   time.Now().Add(-1 * time.Hour),
+		NotAfter:    notAfter,
+		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, p.caCert, &key.PublicKey, p.caKey)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 
 	return &tls.Certificate{
 		Certificate: [][]byte{certDER, p.caCert.Raw},
 		PrivateKey:  key,
-	}, nil
+	}, notAfter, nil
+}
+
+// parsePrivateKey parses a PEM block into a crypto.Signer, supporting the
+// three standard private key encodings: PKCS#8, PKCS#1 (RSA), and SEC1 (EC).
+func parsePrivateKey(block *pem.Block) (crypto.Signer, error) {
+	switch block.Type {
+	case "PRIVATE KEY": // PKCS#8 — any key type
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse CA key (PKCS#8): %w", err)
+		}
+		signer, ok := key.(crypto.Signer)
+		if !ok {
+			return nil, fmt.Errorf("CA key type %T does not implement crypto.Signer", key)
+		}
+		return signer, nil
+	case "RSA PRIVATE KEY": // PKCS#1
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse CA key (PKCS#1): %w", err)
+		}
+		return key, nil
+	case "EC PRIVATE KEY": // SEC1
+		key, err := x509.ParseECPrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse CA key (SEC1): %w", err)
+		}
+		return key, nil
+	default:
+		return nil, fmt.Errorf("unsupported CA key PEM type: %s", block.Type)
+	}
 }
