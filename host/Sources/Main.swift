@@ -682,8 +682,8 @@ struct Switch: AsyncParsableCommand {
         abstract: "Build nix-darwin closure on host and activate in guest"
     )
 
-    @Option(name: .long, help: "Flake reference to build")
-    var flake: String = ".#darwinConfigurations.sandbox.system"
+    @Option(name: .long, help: "Flake reference to build (e.g. .#darwinConfigurations.myvm.system)")
+    var flake: String
 
     func run() async throws {
         print("Building nix-darwin closure...")
