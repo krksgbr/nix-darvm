@@ -25,58 +25,67 @@ flake = "/path/to/your-dvm-flake"   # or omit to use PWD/flake.nix
 
 ```toml
 version = 1
+project = "my-project"
 
-[[secrets]]
-name = "OPENAI_KEY"
+[secrets.OPENAI_KEY]
 hosts = ["api.openai.com"]
-inject = "bearer"
-provider = { type = "env", name = "OPENAI_API_KEY" }
 
-[[secrets]]
-name = "CUSTOM_HEADER"
-hosts = ["internal.api.com"]
-inject = { type = "header", name = "X-Api-Key" }
-provider = { type = "command", argv = ["op", "read", "op://vault/item/key"] }
+[secrets.GITHUB_TOKEN]
+hosts = ["api.github.com", "uploads.github.com"]
 ```
 
-Each mirror dir is scanned for `.dvm/credentials.toml`. No host overlap between projects.
-
-Provider types: `env`, `command`, `keychain` (macOS Keychain).
+The manifest declares which env vars to use and which hosts they apply to.
+Real values are read from the host environment at exec time — never stored
+in the manifest.
 
 ## 3. Launch
 
 ```bash
-just dvm start      # builds closure -> activates -> proxy starts if creds exist -> VM running
+just dvm start      # builds closure -> activates -> sidecar + CA always start -> VM running
 ```
 
-Proxy auto-starts when any project has `.dvm/credentials.toml`. CA cert is
-injected into the guest trust store via nix-darwin activation.
+The credential proxy (netstack sidecar) is always-on. CA cert is installed
+in the guest trust store on every boot. No credentials are loaded at startup —
+they're pushed per-exec.
 
-## 4. Parallel projects
-
-All mirror dirs are mounted via VirtioFS. Work in any from guest:
+## 4. Exec with credentials
 
 ```bash
-just dvm exec -- ls /path/to/project-a
-just dvm exec -- ls /path/to/project-b
+# Credentials discovered from .dvm/credentials.toml in cwd:
+OPENAI_KEY=sk-real-key just dvm exec -- curl -v https://api.openai.com/v1/models
+# Guest sees OPENAI_KEY=SANDBOX_CRED_my-project_openai-key_<hmac>
+# Proxy replaces the placeholder with sk-real-key in the HTTPS request
+
+# Explicit manifest path:
+just dvm exec --credentials /path/to/credentials.toml -- env
+
+# Via env var:
+DVM_CREDENTIALS=/path/to/credentials.toml just dvm exec -- env
 ```
 
-## 5. Switch config on live VM
+Discovery priority: `--credentials` flag > `DVM_CREDENTIALS` env > `.dvm/credentials.toml` in cwd.
+No directory walking. Explicit sources fail loudly on missing files.
+
+## 5. Verify proxy
+
+```bash
+just dvm exec -- curl -v https://api.openai.com/v1/models
+# Authorization: Bearer <real-key> injected via placeholder replacement
+# Guest never sees the real secret — only the SANDBOX_CRED_... placeholder
+
+just logs           # stream netstack + agent logs
+just dvm status     # phase, mounts, services
+```
+
+HTTP requests pass placeholders through unmodified (replacement is HTTPS-only).
+
+## 6. Switch config on live VM
 
 ```bash
 just dvm switch     # rebuilds closure, activates in-place, no reboot
 ```
 
 Works even mid-boot (waits for running phase, up to 120s).
-
-## 6. Verify proxy
-
-```bash
-just dvm exec -- curl -v https://api.openai.com/v1/models
-# Authorization: Bearer <real-key> injected; guest never sees the secret
-just logs           # stream netstack + agent logs
-just dvm status     # phase, mounts, services
-```
 
 ## 7. Teardown
 
@@ -89,4 +98,5 @@ just dvm stop
 
 - **Fail closed** — if netstack crashes, networking is down (no silent fallback to NAT)
 - **Image stability** — hash only changes when `guest/image-minimal/` changes; code/module changes go through `dvm switch`
-- **Snapshots** — `just snapshot` / `just restore` for quick save/restore cycles
+- **HTTPS only** — placeholder replacement only happens on HTTPS requests; HTTP passes through as-is
+- **Exec-time resolution** — credentials are read from host env and pushed to sidecar on each `dvm exec`/`dvm ssh`, not at VM startup

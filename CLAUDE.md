@@ -141,8 +141,9 @@ just dvm init
 - `just dvm` builds everything (Swift + Go + netstack) then runs via
   `nix run --impure .#dvm`. The `DVM_CORE` and `DVM_NETSTACK` env vars
   are set automatically.
-- The credential proxy starts automatically if `.dvm/credentials.toml`
-  exists in any mirror directory.
+- The credential proxy (netstack sidecar) is always-on. Credentials are
+  pushed at exec time from `.dvm/credentials.toml` in the working directory,
+  the `--credentials` flag, or `DVM_CREDENTIALS` env var.
 - `dvm switch` works even if run while the VM is still booting — it waits.
 - State files are at `~/.local/state/dvm/` (readable from host during activation).
 
