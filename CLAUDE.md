@@ -16,9 +16,10 @@ dvm (bash wrapper)                    darvm-agent (Go)
      ├─ VsockDaemonBridge ◄──vsock──    │   ├─ Status, ResolveIP
      │   (:6174, nix daemon)            │   └─ runs as root, execs as UID 501
      ├─ HostCommandBridge               ├─ nix daemon bridge
-     │   (:6176, guest→host cmds)       │   (unix socket → vsock :6174)
-     ├─ ControlSocket                   └─ dvm-host-cmd (Go, busybox)
-     │   (/tmp/dvm-control.sock)            (argv[0] → vsock :6176 → host)
+     │   (:6176, host actions)          │   (unix socket → vsock :6174)
+     │   (immutable nix manifest)       └─ dvm-host-cmd (Go, busybox)
+     ├─ ControlSocket                       (argv[0] → vsock :6176 → host)
+     │   (/tmp/dvm-control.sock)
      └─ VirtioFS mounts                dvm-mount-store (sh, baked in image)
         (nix-store, dvm-state,            (mounts nix-store + dvm-state at boot)
          project dirs)                dvm-activator (sh, baked in image)
@@ -26,7 +27,7 @@ dvm (bash wrapper)                    darvm-agent (Go)
                                       nix-darwin modules configure guest
 ```
 
-**Vsock ports:** 6174 (nix daemon bridge), 6175 (gRPC agent), 6176 (host command bridge)
+**Vsock ports:** 6174 (nix daemon bridge), 6175 (gRPC agent), 6176 (host action bridge)
 
 **Boot sequence:** configure → boot → activate (state-file watch) → waitForAgent → mount VirtioFS → running
 
@@ -38,7 +39,7 @@ host/Sources/          Swift host binary (dvm-core)
   AgentClient.swift      gRPC client wrapper (connects via AgentProxy socket)
   AgentProxy.swift       NIO: unix socket ↔ vsock :6175 proxy
   VsockDaemonBridge.swift  vsock :6174 → host nix daemon socket
-  HostCommandBridge.swift  vsock :6176 → execute allowed commands on host
+  HostCommandBridge.swift  vsock :6176 → host actions (immutable nix manifest)
   ControlSocket.swift    Unix socket for inter-process coordination (status/stop)
   VMConfigurator.swift   VZ framework config (CPU, RAM, mounts, vsock)
   VMRunner.swift         Tart VM start/stop
@@ -51,7 +52,7 @@ guest/agent/           Go guest agent (darvm-agent)
   internal/vsock/        AF_VSOCK listener/conn for Go
   internal/bridge/       nix daemon socket → vsock bridge
 
-guest/host-cmd/        Go binary forwarding commands to host (busybox pattern)
+guest/host-cmd/        Go binary forwarding host actions to host (busybox pattern)
 guest/image-minimal/   Packer template for minimal base image (Nix + mount + activator)
 guest/modules/         nix-darwin modules for guest configuration
   guest-plumbing.nix     Core: launchd daemons, nix socket wiring, user setup
@@ -86,17 +87,24 @@ just logs               # Stream guest agent logs
 
 **DVM_CORE** env var overrides the dvm-core binary path (set automatically by devShell).
 
+**Validating nix module changes:** Use `nix eval` to spot-check module outputs before a full build cycle. For example: `nix eval --impure --json .#dvmConfigurations.default.config.dvm.capabilities` to verify capability definitions, or `nix eval --impure .#dvmConfigurations.default.config.system.build.toplevel` to check the closure builds.
+
 **Base image** is content-addressed: `darvm-<hash>` where hash covers `guest/image-minimal`. Changes to agent, host-cmd, or modules never trigger an image rebuild — they're delivered by nix-darwin activation.
 
 ## End-to-end testing
 
 After changes to host code, guest modules, or the Packer template, run through
-these checks using the same commands a user would. All commands go through the
-`dvm` wrapper via `just dvm`.
+these checks using the same commands a user would.
+
+**0. Build and install:**
+```sh
+just build && just install
+# Installs dvm to the nix profile. Use `dvm` directly for all commands below.
+```
 
 **1. First-time setup (image build):**
 ```sh
-just dvm init
+dvm init
 # Expect: "Base VM 'darvm-<hash>' is up to date." if image exists,
 # or a Packer build if the template changed.
 # Tip: set BASE_IMAGE=tahoe-base to skip the 25GB OCI download.
@@ -104,7 +112,7 @@ just dvm init
 
 **2. Start the VM:**
 ```sh
-just dvm start
+dvm start
 # Expect: "Building system closure" → "Activation succeeded" →
 # "Guest agent connected" → mounts → "VM running"
 # Ctrl-C to stop when done verifying.
@@ -113,34 +121,31 @@ just dvm start
 **3. Switch on running VM:**
 ```sh
 # In another terminal, with the VM running:
-just dvm switch
+dvm switch
 # Expect: "Building system closure" → "Switch complete."
 ```
 
 **4. Exec and catch-all forwarding:**
 ```sh
-just dvm exec -- echo hello     # Expect: "hello"
-just dvm echo hello             # Same — unrecognized commands forward to guest
+dvm exec -- echo hello     # Expect: "hello"
+dvm echo hello             # Same — unrecognized commands forward to guest
 ```
 
 **5. Subsequent boot (no activation):**
 ```sh
 # Stop the VM (Ctrl-C), then start again:
-just dvm start
+dvm start
 # Expect: no "Activation" phase. Agent connects within ~30s.
 ```
 
 **6. Image stability after code changes:**
 ```sh
 # After changing agent/module/host code (not guest/image-minimal/):
-just dvm init
+dvm init
 # Expect: "Base VM 'darvm-<hash>' is up to date." (no rebuild)
 ```
 
 **Notes:**
-- `just dvm` builds everything (Swift + Go + netstack) then runs via
-  `nix run --impure .#dvm`. The `DVM_CORE` and `DVM_NETSTACK` env vars
-  are set automatically.
 - The credential proxy (netstack sidecar) is always-on. Credentials are
   pushed at exec time from `.dvm/credentials.toml` in the working directory,
   the `--credentials` flag, or `DVM_CREDENTIALS` env var.
@@ -155,15 +160,15 @@ just dvm init
 - **Agent runs as root, execs as UID 501.** The admin user may be renamed; resolved dynamically via `user.LookupId("501")`.
 - **VZVirtioSocketConnection must be retained** for the full session. Dealloc tears down the vsock channel immediately.
 - **gRPC client lifecycle:** Don't use `withGRPCClient` — HTTP/2 graceful shutdown hangs through the NIO byte proxy. Use manual `client.beginGracefulShutdown()` + `cancelAll()`.
+- **`dvm switch` must be sufficient.** All config changes from the nix closure must take effect via `dvm switch` alone, without restarting the VM. If a host component caches closure state at startup, it must support reloading via the control socket.
 
 ## Security notes
 
-- **Host command allowlist** (`~/.config/dvm/config.toml` `[host].commands`) is the security boundary for guest→host command execution. Do NOT mount `~/.config/dvm` writable in the guest.
+- **Host actions use an immutable nix manifest.** `dvm.capabilities` in guest-plumbing.nix maps action names to handler scripts in `/nix/store/`. The manifest is generated at nix eval time and passed to dvm-core via `--capabilities`. The manifest path and all handler paths must be in `/nix/store/` — validated at load time. No mutable config, no PATH resolution, no runtime modification.
+- **Handler execution is sandboxed.** Handlers run with a scrubbed environment (`PATH=/usr/bin:/bin` only), `cwd=/`, 10s timeout, 64KB payload cap.
 - **Vsock has no caller authentication.** Any process in the guest can connect to any vsock port.
-- Config-based allowlist is a known weakness — migration to nix config is tracked in beans (`nix-darvm-xuus`).
 
 ## Tracked work
 
 See `.beans/` for open items. Key ones:
-- `nix-darvm-xuus`: Migrate config.toml to nix (eliminate mutable config attack surface)
-- `nix-darvm-0ws0`: Built-in notification support (blocked by xuus)
+- `nix-darvm-0ws0`: Built-in notification support

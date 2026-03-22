@@ -37,34 +37,36 @@
         chmod +x $out/bin/dvm-core
       '';
 
-      # Guest agent and host-cmd: cross-compiled Go binaries (requires --impure).
-      # Build first with: just build-agent && just build-host-cmd
-      darvm-agent = let
-        bin = builtins.path {
-          path = /. + (builtins.getEnv "PWD") + "/build/darvm-agent";
-          name = "darvm-agent-bin";
-        };
-      in pkgs.runCommand "darvm-agent" {} ''
-        mkdir -p $out/bin
-        cp ${bin} $out/bin/darvm-agent
-        chmod +x $out/bin/darvm-agent
-      '';
+      darvm-agent = pkgs.buildGoModule {
+        pname = "darvm-agent";
+        version = "0.1.0";
+        src = ./guest/agent;
+        vendorHash = "sha256-5K9Qu7avGGqh6vVTEEoAV483vAzopWMm7koKxdeQnk8=";
+        subPackages = [ "cmd" ];
+        postInstall = "mv $out/bin/cmd $out/bin/darvm-agent";
+      };
 
-      dvm-host-cmd = let
-        bin = builtins.path {
-          path = /. + (builtins.getEnv "PWD") + "/build/dvm-host-cmd";
-          name = "dvm-host-cmd-bin";
-        };
-      in pkgs.runCommand "dvm-host-cmd" {} ''
-        mkdir -p $out/bin
-        cp ${bin} $out/bin/dvm-host-cmd
-        chmod +x $out/bin/dvm-host-cmd
-      '';
+      dvm-host-cmd = pkgs.buildGoModule {
+        pname = "dvm-host-cmd";
+        version = "0.1.0";
+        src = ./guest/host-cmd;
+        vendorHash = "sha256-9dbQ9/11ssqzsMuGbha46H4gvsXlA77V3Fd9Fm4bqrY=";
+        postInstall = "mv $out/bin/host-cmd $out/bin/dvm-host-cmd";
+      };
+
+      dvm-netstack = pkgs.buildGoModule {
+        pname = "dvm-netstack";
+        version = "0.1.0";
+        src = ./host/netstack;
+        vendorHash = "sha256-WxFN5vTWLxABSchmWs77eTH7qm/FztygNzrGPtJmyys=";
+        subPackages = [ "cmd" ];
+        postInstall = "mv $out/bin/cmd $out/bin/dvm-netstack";
+      };
 
       createBaseVm = mkCreateBaseVm {};
 
       wrapper = mkDvmWrapper {
-        inherit dvm-core;
+        inherit dvm-core dvm-netstack;
         dvm-create-vm = createBaseVm;
         dvmFlakeRef = self.outPath;
       };
@@ -105,7 +107,7 @@
       packages.${system} = {
         default = wrapper;
         dvm = wrapper;
-        inherit dvm-core darvm-agent dvm-host-cmd;
+        inherit dvm-core darvm-agent dvm-host-cmd dvm-netstack;
       };
 
       devShells.${system}.default = pkgs.mkShellNoCC {

@@ -3,3 +3,4 @@
 .task
 /.build/
 host/.build/
+guest/host-cmd/host-cmd

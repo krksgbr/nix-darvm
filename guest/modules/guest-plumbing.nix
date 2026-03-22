@@ -12,6 +12,16 @@ in
     description = "Home-relative directories to VirtioFS-mount from the host";
   };
 
+  # Host actions: name → handler script in the nix store.
+  # Each capability gets a symlink in the guest (bin/<name> → dvm-host-cmd)
+  # and an entry in the capabilities manifest read by the host bridge.
+  # Handlers receive payload on stdin and run with a scrubbed environment.
+  options.dvm.capabilities = lib.mkOption {
+    type = lib.types.attrsOf lib.types.path;
+    default = {};
+    description = "Host actions: name → handler script. Handlers receive payload on stdin.";
+  };
+
   config = {
     nix.enable = false;
     networking.hostName = "dvm";
@@ -80,10 +90,25 @@ in
       rm -f /Library/LaunchAgents/org.nix.link-nix-apps.plist
     '';
 
+    # Materialize capabilities manifest for the host bridge
+    environment.etc."dvm/capabilities.json".text =
+      builtins.toJSON config.dvm.capabilities;
+
     environment.systemPackages = with pkgs; [
       nix
       dvm-host-cmd
-    ];
+    ] ++ lib.optional (config.dvm.capabilities != {}) (
+      # Create bin/<name> → dvm-host-cmd symlinks for each capability
+      pkgs.runCommand "dvm-capability-symlinks" {} (
+        let names = builtins.attrNames config.dvm.capabilities; in
+        ''
+          mkdir -p $out/bin
+          ${lib.concatMapStringsSep "\n" (name:
+            "ln -s ${dvm-host-cmd}/bin/dvm-host-cmd $out/bin/${name}"
+          ) names}
+        ''
+      )
+    );
 
     environment.variables = {
       AGENT_VM = "1";

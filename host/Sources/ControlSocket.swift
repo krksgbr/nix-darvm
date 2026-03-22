@@ -45,12 +45,17 @@ final class ControlSocket: @unchecked Sendable {
     /// Called from the control socket's dispatch queue (synchronous).
     var loadCredentialsHandler: (@Sendable (String, [[String: Any]]) -> String?)?
 
+    /// Closure to reload the host action bridge's capabilities manifest.
+    /// Takes a manifest path (must be in /nix/store/). Returns nil on success, error message on failure.
+    var reloadCapabilitiesHandler: (@Sendable (String) -> String?)?
+
     // MARK: - Wire protocol
 
     enum Command: String, Codable {
         case status
         case guestHealth
         case loadCredentials
+        case reloadCapabilities
     }
 
     struct StatusPayload: Codable {
@@ -270,6 +275,20 @@ final class ControlSocket: @unchecked Sendable {
                 running: true, ip: nil, phase: nil, runId: nil,
                 phaseEnteredAt: nil, phaseError: nil
             ))
+        case .reloadCapabilities:
+            guard let handler = reloadCapabilitiesHandler else {
+                return .error(message: "host action bridge not available")
+            }
+            guard let path = decoded["path"] as? String, !path.isEmpty else {
+                return .error(message: "reloadCapabilities: missing path")
+            }
+            if let errMsg = handler(path) {
+                return .error(message: errMsg)
+            }
+            return .status(StatusPayload(
+                running: true, ip: nil, phase: nil, runId: nil,
+                phaseEnteredAt: nil, phaseError: nil
+            ))
         }
     }
 
@@ -438,6 +457,68 @@ final class ControlSocket: @unchecked Sendable {
             return "Control socket returned unexpected response: \(json)"
         }
         return nil  // success
+    }
+
+    /// Tell the running VM to reload its capabilities manifest.
+    /// Returns nil on success, or an error message on failure.
+    static func sendReloadCapabilities(path: String) -> String? {
+        guard FileManager.default.fileExists(atPath: Self.path) else {
+            return "VM not running (control socket not found)"
+        }
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            return "Failed to create socket: \(String(cString: strerror(errno)))"
+        }
+        defer { close(fd) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Self.path.utf8CString
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
+                for (i, byte) in pathBytes.enumerated() {
+                    dest[i] = byte
+                }
+            }
+        }
+
+        let connectResult = withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+                connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard connectResult == 0 else {
+            return "Failed to connect to control socket: \(String(cString: strerror(errno)))"
+        }
+
+        let payload: [String: Any] = ["cmd": "reloadCapabilities", "path": path]
+        guard let requestData = try? JSONSerialization.data(
+            withJSONObject: payload, options: [.sortedKeys]) else {
+            return "Failed to encode reloadCapabilities request"
+        }
+
+        var data = requestData
+        data.append(0x0A)
+        _ = data.withUnsafeBytes { ptr in
+            write(fd, ptr.baseAddress!, data.count)
+        }
+
+        var tv = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        var buf = [UInt8](repeating: 0, count: 4096)
+        let n = read(fd, &buf, buf.count)
+        guard n > 0 else { return "Control socket read timed out" }
+
+        let responseData = Data(buf[..<n])
+        guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
+            return "Control socket returned invalid JSON"
+        }
+        if let error = json["error"] as? String {
+            return error
+        }
+        return nil
     }
 
     /// Quick check: is the VM running?

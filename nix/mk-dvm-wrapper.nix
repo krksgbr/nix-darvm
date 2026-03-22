@@ -8,6 +8,7 @@
 
 {
   dvm-core,
+  dvm-netstack,
   dvm-create-vm,
   dvmFlakeRef,  # self.outPath — used for minimal config fallback
 }:
@@ -29,6 +30,7 @@ pkgs.writeShellApplication {
     set -euo pipefail
 
     DVM_CORE="''${DVM_CORE:-${escapeShellArg "${dvm-core}/bin/dvm-core"}}"
+    export DVM_NETSTACK="''${DVM_NETSTACK:-${escapeShellArg "${dvm-netstack}/bin/dvm-netstack"}}"
     CREATE_VM=${escapeShellArg "${dvm-create-vm}/bin/dvm-create-vm"}
     DVM_FLAKE_REF=${escapeShellArg dvmFlakeRef}
     FLAKE_ARG=""
@@ -126,9 +128,15 @@ pkgs.writeShellApplication {
         done
       fi
 
+      # Extract capabilities manifest from the closure
+      CAPABILITIES_FLAG=""
+      if [ -f "$CLOSURE/etc/dvm/capabilities.json" ]; then
+        CAPABILITIES_FLAG="--capabilities $CLOSURE/etc/dvm/capabilities.json"
+      fi
+
       # Start dvm-core with the runtime-built closure
       # shellcheck disable=SC2086
-      exec "$DVM_CORE" start --vm-name "$ACTUAL_VM" --system-closure "$CLOSURE" $HOME_MOUNT_FLAGS "$@"
+      exec "$DVM_CORE" start --vm-name "$ACTUAL_VM" --system-closure "$CLOSURE" $HOME_MOUNT_FLAGS $CAPABILITIES_FLAG "$@"
     }
 
     cmd_switch() {
@@ -166,7 +174,12 @@ pkgs.writeShellApplication {
       for _i in $(seq 1 300); do
         STATUS=$(cat "$STATE_DIR/$RUN_ID/status" 2>/dev/null || true)
         case "$STATUS" in
-          done) echo "Switch complete."; return 0 ;;
+          done)
+            # Reload host action bridge with new capabilities manifest
+            if [ -f "$CLOSURE/etc/dvm/capabilities.json" ]; then
+              "$DVM_CORE" reload-capabilities --path "$CLOSURE/etc/dvm/capabilities.json" 2>/dev/null || true
+            fi
+            echo "Switch complete."; return 0 ;;
           failed|invalid-closure)
             echo "Activation failed:" >&2
             cat "$STATE_DIR/$RUN_ID/activation.log" >&2 || true

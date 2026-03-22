@@ -1,10 +1,12 @@
-// dvm-host-cmd forwards commands from the guest VM to the host over vsock.
+// dvm-host-cmd forwards host actions from the guest VM to the host over vsock.
 //
-// Busybox pattern: when invoked via a symlink (e.g. /usr/local/bin/notify),
-// argv[0] determines the command name. When invoked directly, argv[1] is the
-// command: dvm-host-cmd notify "message".
+// Busybox pattern: when invoked via a symlink (e.g. /run/current-system/sw/bin/notify),
+// argv[0] determines the action name. When invoked directly, argv[1] is the
+// action: dvm-host-cmd notify "message".
 //
-// Protocol: NUL-separated argv + newline over vsock to host port 6176.
+// Protocol: action_name\npayload over vsock to host port 6176.
+//   Action name on first line, remaining args as NUL-separated payload.
+//   Guest shuts down write end to signal EOF.
 // Response: "<exit_code>\n" or "<exit_code>\x00<error>\n".
 package main
 
@@ -60,10 +62,12 @@ func execOnHost(cmd string, args []string) (int, error) {
 	}
 	defer unix.Close(fd)
 
-	// Build request: NUL-separated argv + newline
-	parts := append([]string{cmd}, args...)
-	line := strings.Join(parts, "\x00") + "\n"
-	if _, err := unix.Write(fd, []byte(line)); err != nil {
+	// Build request: action name on first line, args as NUL-separated payload
+	request := cmd + "\n"
+	if len(args) > 0 {
+		request += strings.Join(args, "\x00")
+	}
+	if _, err := unix.Write(fd, []byte(request)); err != nil {
 		return 1, fmt.Errorf("send command: %w", err)
 	}
 	// Signal we're done writing

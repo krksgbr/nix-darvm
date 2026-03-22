@@ -67,7 +67,7 @@ struct DVM: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "dvm-core",
         abstract: "DVM core — VM lifecycle management",
-        subcommands: [Start.self, Stop.self, Exec.self, SSH.self, Status.self, ConfigGet.self]
+        subcommands: [Start.self, Stop.self, Exec.self, SSH.self, Status.self, ConfigGet.self, ReloadCapabilities.self]
     )
 
     static func main() async {
@@ -115,8 +115,8 @@ let guestHome = "/Users/admin"
 /// - mirror dirs: mounted at the same absolute path in the guest (project dirs)
 /// - home dirs: mounted relative to the guest user's home (config/data dirs)
 ///
-/// WARNING: Do NOT mount ~/.config/dvm — it contains the host command allowlist.
-/// A writable mount would let a rogue guest escalate to arbitrary host execution.
+/// WARNING: Do NOT mount ~/.config/dvm — it contains user configuration.
+/// A writable mount would let a rogue guest modify host settings.
 func buildMounts(hostHome: String, mirrorDirs: [String], homeDirs: [String]) throws -> [MountConfig] {
     var mounts: [MountConfig] = [
         .exact(tag: try MountTag("nix-store"),
@@ -231,6 +231,9 @@ struct Start: AsyncParsableCommand {
 
     @Option(name: .long, help: "Tart VM name")
     var vmName: String?
+
+    @Option(name: .long, help: "Path to capabilities.json manifest (must be in /nix/store/)")
+    var capabilities: String?
 
     @MainActor
     func run() async throws {
@@ -355,16 +358,44 @@ struct Start: AsyncParsableCommand {
         let agentProxy = try AgentProxy(vm: runner.vm)
         agentProxy.start()
 
-        // Host command bridge: forward allowed commands from guest → host
-        let hostCmdBridge: HostCommandBridge?
-        if !config.hostCommands.isEmpty {
-            hostCmdBridge = try HostCommandBridge(
-                vm: runner.vm,
-                allowedCommands: Set(config.hostCommands)
-            )
-            hostCmdBridge!.start()
-        } else {
-            hostCmdBridge = nil
+        // Host action bridge: forward capability actions from guest → host
+        var hostCmdBridge: HostCommandBridge?
+        if let capPath = capabilities {
+            let manifest = try CapabilitiesManifest.load(from: capPath)
+            if !manifest.handlers.isEmpty {
+                hostCmdBridge = try HostCommandBridge(
+                    vm: runner.vm,
+                    manifest: manifest
+                )
+                hostCmdBridge!.start()
+            }
+        }
+
+        // Register reload handler so `dvm switch` can hot-reload capabilities
+        controlSocket.reloadCapabilitiesHandler = { [weak runner] path in
+            // Must dispatch to main actor for VZ framework access
+            final class Box: @unchecked Sendable { var result: String? }
+            let box = Box()
+            let semaphore = DispatchSemaphore(value: 0)
+            Task { @MainActor in
+                do {
+                    let newManifest = try CapabilitiesManifest.load(from: path)
+                    if let bridge = hostCmdBridge {
+                        try bridge.reload(from: path)
+                    } else if !newManifest.handlers.isEmpty, let vm = runner?.vm {
+                        let bridge = try HostCommandBridge(vm: vm, manifest: newManifest)
+                        bridge.start()
+                        hostCmdBridge = bridge
+                    }
+                    // If manifest is empty and no bridge exists, nothing to do
+                } catch {
+                    box.result = "\(error)"
+                }
+                semaphore.signal()
+            }
+            let waitResult = semaphore.wait(timeout: .now() + 5)
+            if waitResult != .success { return "reload timed out" }
+            return box.result
         }
 
         let agentClient = AgentClient()
@@ -551,23 +582,6 @@ struct Start: AsyncParsableCommand {
                       "/Library/LaunchDaemons/com.darvm.agent-bridge.plist"]
         )
 
-        // Create host command symlinks in guest
-        if !config.hostCommands.isEmpty {
-            tprint("Setting up host command forwarding...")
-            let symlinkScript = config.hostCommands.map { cmd in
-                "ln -sf /run/current-system/sw/bin/dvm-host-cmd /usr/local/bin/\(shellQuote(cmd))"
-            }.joined(separator: "\n")
-            let symlinkCode = try await agentClient.exec(
-                command: ["sudo", "sh", "-c", symlinkScript]
-            )
-            if symlinkCode != 0 {
-                DVMLog.log(phase: .mounting, level: "warn", "failed to create host command symlinks")
-                tprint("Warning: failed to create host command symlinks.")
-            } else {
-                DVMLog.log(phase: .mounting, "host command symlinks: \(config.hostCommands.joined(separator: ", "))")
-            }
-        }
-
         // Activation is handled by the in-image activator daemon (WatchPaths).
         // It already ran (or is running) before the agent came up.
         // Placeholder env vars are delivered per-process via the gRPC Exec protocol's
@@ -690,6 +704,25 @@ struct ConfigGet: ParsableCommand {
     }
 }
 
+// MARK: - ReloadCapabilities
+
+struct ReloadCapabilities: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "reload-capabilities",
+        abstract: "Hot-reload the host action bridge's capabilities manifest"
+    )
+
+    @Option(name: .long, help: "Path to capabilities.json manifest (must be in /nix/store/)")
+    var path: String
+
+    func run() throws {
+        if let error = ControlSocket.sendReloadCapabilities(path: path) {
+            fputs("Error: \(error)\n", stderr)
+            throw ExitCode(1)
+        }
+    }
+}
+
 // MARK: - Stop
 
 struct Stop: AsyncParsableCommand {
@@ -759,27 +792,40 @@ private func resolveAndPushCredentials(
     credentialsFlag: String?,
     cwd: String
 ) throws -> [String: String] {
+    // Explicit sources (--credentials flag, DVM_CREDENTIALS env var) fail hard —
+    // the user asked for credentials and they must resolve.
+    // CWD auto-discovery (.dvm/credentials.toml) warns and continues —
+    // the user didn't ask for credentials, so don't block their command.
+    let explicit = credentialsFlag != nil
+        || ProcessInfo.processInfo.environment["DVM_CREDENTIALS"] != nil
+
     guard let path = try discoverManifestPath(
         credentialsFlag: credentialsFlag, cwd: cwd) else {
         return [:]  // no manifest, no credentials — session runs without injection
     }
 
-    let manifest = try CredentialManifest.load(from: path)
-    let hostKey = try HostKey.loadOrCreate()
-    let secrets = try manifest.resolve(hostKey: hostKey)
+    do {
+        let manifest = try CredentialManifest.load(from: path)
+        let hostKey = try HostKey.loadOrCreate()
+        let secrets = try manifest.resolve(hostKey: hostKey)
 
-    // Always push — even empty secrets list clears previous mappings for this project.
-    if let error = ControlSocket.sendLoadCredentials(
-        projectName: manifest.project, secrets: secrets) {
-        throw CredentialPushError(detail: error)
-    }
+        // Always push — even empty secrets list clears previous mappings for this project.
+        if let error = ControlSocket.sendLoadCredentials(
+            projectName: manifest.project, secrets: secrets) {
+            throw CredentialPushError(detail: error)
+        }
 
-    // Build env vars: ENV_VAR_NAME=placeholder for guest injection
-    var env: [String: String] = [:]
-    for secret in secrets {
-        env[secret.name] = secret.placeholder
+        // Build env vars: ENV_VAR_NAME=placeholder for guest injection
+        var env: [String: String] = [:]
+        for secret in secrets {
+            env[secret.name] = secret.placeholder
+        }
+        return env
+    } catch {
+        if explicit { throw error }
+        fputs("Warning: credential resolution failed, running without injection: \(error)\n", stderr)
+        return [:]
     }
-    return env
 }
 
 /// Error pushing credentials to the sidecar via the control socket.

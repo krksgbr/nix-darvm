@@ -3,8 +3,8 @@ entitlements := "host/Resources/dvm.entitlements"
 # Detect nono sandbox: nested sandbox-exec is forbidden, so SPM needs --disable-sandbox.
 swift_sandbox_flag := `sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null && echo '' || echo '--disable-sandbox'`
 
-# Build dvm-core + guest binaries (default: debug)
-build config="debug": build-netstack build-agent build-host-cmd
+# Build dvm-core (default: debug). Go binaries are built by nix.
+build config="debug":
     cd host && swift build -c {{config}} --scratch-path ../build/swift {{swift_sandbox_flag}}
     codesign --force --sign - --entitlements {{entitlements}} build/swift/{{config}}/dvm-core
 
@@ -57,8 +57,22 @@ restore:
 
 # Build and run dvm (e.g. just dvm start, just dvm exec -- ls /)
 dvm *args: (build)
-    DVM_CORE="$PWD/build/swift/debug/dvm-core" DVM_NETSTACK="$PWD/build/dvm-netstack" nix run --impure .#dvm -- {{args}}
+    DVM_CORE="$PWD/build/swift/debug/dvm-core" nix run --impure .#dvm -- {{args}}
 
 # Install dvm to nix profile (default: debug, just install release for release)
 install config="debug": (build config)
-    nix profile upgrade --impure dvm 2>/dev/null || CONFIG={{config}} nix profile add --impure .#dvm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Find any existing profile entry that ships bin/dvm (handles renamed packages)
+    entry=$(nix profile list --json | python3 -c '
+    import json, sys, os
+    for name, e in json.load(sys.stdin).get("elements", {}).items():
+        for p in e.get("storePaths", []):
+            if os.path.isfile(p + "/bin/dvm"):
+                print(name); sys.exit(0)
+    sys.exit(1)
+    ' 2>/dev/null) && {
+      echo "Replacing profile entry: $entry"
+      nix profile remove "$entry"
+    }
+    nix profile add --impure .#dvm
