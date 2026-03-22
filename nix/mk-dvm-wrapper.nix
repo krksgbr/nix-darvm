@@ -48,7 +48,7 @@ pkgs.writeShellApplication {
       # --flake flag (highest priority)
       if [ -n "$FLAKE_ARG" ]; then echo "$FLAKE_ARG"; return; fi
       # CWD flake.nix — only use if it actually provides dvmConfigurations
-      if [ -f "$PWD/flake.nix" ] && nix eval "$PWD#dvmConfigurations" --apply 'x: true' 2>/dev/null; then
+      if [ -f "$PWD/flake.nix" ] && nix eval "$PWD#dvmConfigurations" --apply 'x: true' >/dev/null 2>/dev/null; then
         echo "$PWD"; return
       fi
       # config.toml flake field
