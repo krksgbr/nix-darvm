@@ -152,6 +152,17 @@ dvm init
 - `dvm switch` works even if run while the VM is still booting — it waits.
 - State files are at `~/.local/state/dvm/` (readable from host during activation).
 
+## Agent workflow notes
+
+**`dvm start` is a blocking foreground process.** It runs the VM until Ctrl-C.
+When running from an agent context, use `run_in_background: true` and check
+`dvm status --json` once after 30-60s. **Never poll in a tight loop** — if the
+VM failed to start, the status will never change and the loop blocks forever.
+
+**`dvm init --confirm` for non-interactive use.** Without a TTY, `dvm init`
+aborts at prompts. Pass `--confirm` (or `-y`) to skip prompts. Packer
+plugins persist in `~/.packer.d/` across reboots.
+
 ## Conventions
 
 - **Swift 6 strict concurrency.** `@MainActor` for VZ framework types, `@unchecked Sendable` only where unavoidable (delegates).

@@ -87,7 +87,7 @@ pkgs.writeShellApplication {
     Usage: dvm [--flake <path>] <command> [args...]
 
     Commands:
-      init              Create the base VM image (first-time setup)
+      init [--confirm]  Create the base VM image (first-time setup)
       start             Start the VM (runs init if needed)
       stop              Stop the VM
       reboot            Stop and restart the VM
@@ -102,7 +102,7 @@ pkgs.writeShellApplication {
     }
 
     cmd_init() {
-      "$CREATE_VM"
+      "$CREATE_VM" "$@"
     }
 
     cmd_start() {
@@ -203,7 +203,7 @@ pkgs.writeShellApplication {
 
     case "$command" in
       init)
-        cmd_init
+        cmd_init "$@"
         ;;
       start)
         cmd_start "$@"
