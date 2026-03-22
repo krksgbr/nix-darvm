@@ -56,11 +56,14 @@ struct TartConfig {
 
 enum ConfigError: Error, CustomStringConvertible {
     case invalidField(String)
+    case unknownKey(key: String, section: String, known: [String])
 
     var description: String {
         switch self {
         case .invalidField(let name):
             return "Invalid or missing field in config.json: \(name)"
+        case .unknownKey(let key, let section, let known):
+            return "Unknown key '\(key)' in \(section) of ~/.config/dvm/config.toml (valid keys: \(known.joined(separator: ", ")))"
         }
     }
 }
