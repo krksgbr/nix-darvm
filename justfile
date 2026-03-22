@@ -14,10 +14,9 @@ build-netstack:
 
 # Regenerate Go code from proto definitions
 proto:
-    nix shell nixpkgs#protobuf nixpkgs#protoc-gen-go nixpkgs#protoc-gen-go-grpc -c \
-      protoc --go_out=guest/agent/gen --go_opt=paths=source_relative \
-             --go-grpc_out=guest/agent/gen --go-grpc_opt=paths=source_relative \
-             -I proto proto/agent.proto
+    protoc --go_out=guest/agent/gen --go_opt=paths=source_relative \
+           --go-grpc_out=guest/agent/gen --go-grpc_opt=paths=source_relative \
+           -I proto proto/agent.proto
 
 # Cross-compile guest agent for macOS arm64
 build-agent: proto
@@ -63,15 +62,10 @@ dvm *args: (build)
 install config="debug": (build config)
     #!/usr/bin/env bash
     set -euo pipefail
-    # Find any existing profile entry that ships bin/dvm (handles renamed packages)
-    entry=$(nix profile list --json | python3 -c '
-    import json, sys, os
-    for name, e in json.load(sys.stdin).get("elements", {}).items():
-        for p in e.get("storePaths", []):
-            if os.path.isfile(p + "/bin/dvm"):
-                print(name); sys.exit(0)
-    sys.exit(1)
-    ' 2>/dev/null) && {
+    # Find any existing profile entry for the dvm package
+    entry=$(nix profile list --json | jq -r '
+      .elements | to_entries[] | select(.value.storePaths[] | endswith("-dvm")) | .key
+    ' 2>/dev/null) && [ -n "$entry" ] && {
       echo "Replacing profile entry: $entry"
       nix profile remove "$entry"
     }

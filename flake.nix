@@ -112,7 +112,13 @@
 
       devShells.${system}.default = pkgs.mkShellNoCC {
         packages = with pkgs; [
-          go-task
+          just
+          go
+          jq
+          python3
+          protobuf
+          protoc-gen-go
+          protoc-gen-go-grpc
         ];
         shellHook = ''
           # Make DVM_CORE overridable from local build
