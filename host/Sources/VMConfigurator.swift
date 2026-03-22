@@ -41,11 +41,16 @@ enum VMConfigurator {
     ///     shared with the dvm-netstack sidecar for transparent credential injection.
     ///   - stateDir: When non-nil, expose this host directory as VirtioFS device
     ///     `dvm-state` for activation state exchange between host and guest.
+    ///   - homeDataDir: Host directory backing the guest user's home (`/Users/admin`).
+    ///     Exposed as VirtioFS device `dvm-home`, mounted by the guest's boot script
+    ///     before any launchd services touch `~/`. This is infrastructure — always
+    ///     presented, never skipped. The guest halts if this mount fails.
     static func create(
         vmDir: URL,
         mounts: [MountConfig],
         netstackFD: Int32? = nil,
-        stateDir: URL? = nil
+        stateDir: URL? = nil,
+        homeDataDir: URL
     ) throws -> ConfiguredVM {
         let paths = VMPaths(vmDir: vmDir)
         let config = try TartConfig(fromURL: paths.config)
@@ -110,6 +115,20 @@ enum VMConfigurator {
             let device = VZVirtioFileSystemDeviceConfiguration(tag: "dvm-state")
             device.share = VZSingleDirectoryShare(
                 directory: VZSharedDirectory(url: stateDir, readOnly: false))
+            fsDevices.append(device)
+        }
+
+        // dvm-home VirtioFS: host-backed guest home directory.
+        // Mounted at /Users/admin by the guest's boot script (dvm-mount-store)
+        // before any launchd services run. This is infrastructure — the guest
+        // disk is too small for user data (~1GB free after macOS), so all user
+        // state lives on the host at ~/.local/state/dvm/home/.
+        // Unlike optional user mounts, this is never skipped — the host must
+        // ensure the directory exists before calling create().
+        do {
+            let device = VZVirtioFileSystemDeviceConfiguration(tag: "dvm-home")
+            device.share = VZSingleDirectoryShare(
+                directory: VZSharedDirectory(url: homeDataDir, readOnly: false))
             fsDevices.append(device)
         }
 

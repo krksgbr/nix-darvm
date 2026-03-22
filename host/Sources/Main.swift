@@ -294,13 +294,30 @@ struct Start: AsyncParsableCommand {
 
         // Create state directory for host↔guest activation state exchange.
         // Shared via VirtioFS as "dvm-state", mounted at /var/run/dvm-state in guest.
-        let stateDir = URL(fileURLWithPath:
-            FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".local/state/dvm").path)
+        let dvmLocalDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/state/dvm")
+        let stateDir = URL(fileURLWithPath: dvmLocalDir.path)
         // Clean up stale state from previous runs
         try? FileManager.default.removeItem(at: stateDir)
         try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
         DVMLog.log(phase: .configuring, "state dir: \(stateDir.path)")
+
+        // Host-backed guest home directory.
+        // The guest VM disk has ~1GB free after macOS /System (~45GB on a 46GB
+        // disk). User data (tool caches, configs, node_modules temp, etc.) must
+        // live on the host to avoid NoSpaceLeft errors. This directory backs
+        // /Users/admin in the guest via VirtioFS, mounted by the boot script
+        // before any launchd services touch ~/. Created once, persists across
+        // VM rebuilds — tool caches, shell history, etc. survive dvm init.
+        let homeDataDir = dvmLocalDir
+            .deletingLastPathComponent() // ~/.local/state
+            .deletingLastPathComponent() // ~/.local
+            .appendingPathComponent("state/dvm/home")
+        if !FileManager.default.fileExists(atPath: homeDataDir.path) {
+            try FileManager.default.createDirectory(at: homeDataDir, withIntermediateDirectories: true)
+            DVMLog.log(phase: .configuring, "created home data dir: \(homeDataDir.path)")
+        }
+        DVMLog.log(phase: .configuring, "home data dir: \(homeDataDir.path)")
 
         // Write activation files if closure provided. The guest's mount script
         // touches the trigger after mounting, which fires the activator daemon.
@@ -318,7 +335,8 @@ struct Start: AsyncParsableCommand {
             vmDir: vmDirectory,
             mounts: mounts,
             netstackFD: netstackSupervisor.vmFD,
-            stateDir: stateDir
+            stateDir: stateDir,
+            homeDataDir: homeDataDir
         )
         let effectiveMounts = configured.effectiveMounts
 
@@ -400,6 +418,18 @@ struct Start: AsyncParsableCommand {
 
         let agentClient = AgentClient()
 
+        // Check for guest boot errors. The boot mount script (dvm-mount-store)
+        // writes an error marker to dvm-state if an infrastructure mount fails,
+        // then halts the VM. We check for this marker during activation and
+        // agent wait phases to surface the failure quickly.
+        let bootErrorFile = stateDir.appendingPathComponent("boot-error")
+        func checkBootError() -> String? {
+            guard let error = try? String(contentsOf: bootErrorFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !error.isEmpty else { return nil }
+            return error
+        }
+
         // Phase: activating (if closure was provided)
         // Watch state files on host filesystem — the state dir is shared via
         // VirtioFS, so guest writes are instantly visible to the host.
@@ -416,6 +446,13 @@ struct Start: AsyncParsableCommand {
 
             var activationSucceeded = false
             while Date() < deadline && !stopRequested {
+                // Check for boot-level failures (infrastructure mount failure → VM halt)
+                if let bootError = checkBootError() {
+                    DVMLog.log(phase: .activating, level: "error", "guest boot failed: \(bootError)")
+                    tprint("FATAL: Guest boot failed: \(bootError)")
+                    try? await runner.stop()
+                    throw DVMError.activationFailed("guest boot failed: \(bootError)")
+                }
                 if let statusText = try? String(contentsOf: statusFile, encoding: .utf8)
                     .trimmingCharacters(in: .whitespacesAndNewlines) {
                     if statusText == "done" {
@@ -462,6 +499,12 @@ struct Start: AsyncParsableCommand {
         let agentConnected: Bool = await {
             let deadline = Date().addingTimeInterval(120) // 2 min
             while Date() < deadline && !stopRequested {
+                // Check for boot-level failures before the agent is even available
+                if let bootError = checkBootError() {
+                    DVMLog.log(phase: .waitingForAgent, level: "error", "guest boot failed: \(bootError)")
+                    tprint("FATAL: Guest boot failed: \(bootError)")
+                    return false
+                }
                 if let _ = try? await agentClient.status() {
                     return true
                 }
@@ -508,11 +551,16 @@ struct Start: AsyncParsableCommand {
         }
 
         // Phase: mounting
-        // nix-store is already mounted by the image's mount script at boot.
-        // Mount remaining shares (nix-cache, mirror dirs, home dirs) via gRPC.
+        // Infrastructure mounts (nix-store, dvm-home) are already mounted by
+        // the image's boot script (dvm-mount-store). Mount remaining shares
+        // (nix-cache, mirror dirs, home dirs) via gRPC exec.
+        // Note: dvm-home (guest home at /Users/admin) is an early-boot mount
+        // because it must land before any launchd service touches ~/. This is
+        // critical for GUI login where WindowServer/Finder/Dock race on ~.
+        let bootMountedTags: Set<String> = ["nix-store", "dvm-home"]
         let remainingMounts = effectiveMounts.filter { mount in
             guard case .exact(let tag, _, _, _) = mount else { return false }
-            return tag.rawValue != "nix-store"
+            return !bootMountedTags.contains(tag.rawValue)
         }
         controlSocket.update(.mounting, ip: ip)
         DVMLog.log(phase: .mounting, "mounting \(remainingMounts.count) VirtioFS shares (nix-store handled by image)")
