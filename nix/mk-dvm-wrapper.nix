@@ -130,6 +130,14 @@ pkgs.writeShellApplication {
         done
       fi
 
+      # Extract read-only system mounts from the closure
+      SYSTEM_MOUNT_FLAGS=""
+      if [ -f "$CLOSURE/etc/dvm/system-mounts.json" ]; then
+        for dir in $(python3 -c 'import json,sys;print(" ".join(json.load(open(sys.argv[1]))))' "$CLOSURE/etc/dvm/system-mounts.json" 2>/dev/null); do
+          SYSTEM_MOUNT_FLAGS="$SYSTEM_MOUNT_FLAGS --system-dir $dir"
+        done
+      fi
+
       # Extract capabilities manifest from the closure
       CAPABILITIES_FLAG=""
       if [ -f "$CLOSURE/etc/dvm/capabilities.json" ]; then
@@ -138,7 +146,7 @@ pkgs.writeShellApplication {
 
       # Start dvm-core with the runtime-built closure
       # shellcheck disable=SC2086
-      exec "$DVM_CORE" start --vm-name "$ACTUAL_VM" --system-closure "$CLOSURE" $HOME_MOUNT_FLAGS $CAPABILITIES_FLAG "$@"
+      exec "$DVM_CORE" start --vm-name "$ACTUAL_VM" --system-closure "$CLOSURE" $HOME_MOUNT_FLAGS $SYSTEM_MOUNT_FLAGS $CAPABILITIES_FLAG "$@"
     }
 
     cmd_switch() {

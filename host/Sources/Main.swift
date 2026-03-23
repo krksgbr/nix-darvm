@@ -110,14 +110,15 @@ func shellQuote(_ s: String) -> String {
 /// Guest user home. The base image has user "admin" with UID 501.
 let guestHome = "/Users/admin"
 
-/// Build mount configs from mirror and home directory lists.
+/// Build mount configs from mirror, home, and system directory lists.
 ///
-/// - mirror dirs: mounted at the same absolute path in the guest (project dirs)
-/// - home dirs: mounted relative to the guest user's home (config/data dirs)
+/// - mirror dirs: mounted at the same absolute path in the guest (project dirs, read-write)
+/// - home dirs: mounted relative to the guest user's home (config/data dirs, read-write)
+/// - system dirs: mounted at the same absolute path in the guest (toolchains, read-only)
 ///
 /// WARNING: Do NOT mount ~/.config/dvm — it contains user configuration.
 /// A writable mount would let a rogue guest modify host settings.
-func buildMounts(hostHome: String, mirrorDirs: [String], homeDirs: [String]) throws -> [MountConfig] {
+func buildMounts(hostHome: String, mirrorDirs: [String], homeDirs: [String], systemDirs: [String] = []) throws -> [MountConfig] {
     var mounts: [MountConfig] = [
         .exact(tag: try MountTag("nix-store"),
                hostPath: try AbsolutePath("/nix/store"),
@@ -161,6 +162,19 @@ func buildMounts(hostHome: String, mirrorDirs: [String], homeDirs: [String]) thr
             hostPath: try AbsolutePath(hostPath),
             guestPath: try AbsolutePath(guestPath),
             access: .readWrite
+        ))
+    }
+
+    // System dirs: same absolute path in guest, read-only.
+    // Used for host toolchains (Xcode, developer tools) that should be
+    // shared immutably — enforced at the VirtioFS device level (EROFS).
+    for (i, d) in systemDirs.enumerated() {
+        let resolved = URL(fileURLWithPath: d).standardizedFileURL.path
+        mounts.append(.exact(
+            tag: try MountTag("system-\(i)"),
+            hostPath: try AbsolutePath(resolved),
+            guestPath: try AbsolutePath(resolved),
+            access: .readOnly
         ))
     }
 
@@ -220,6 +234,10 @@ struct Start: AsyncParsableCommand {
             help: "Home-mount directories (relative to guest user's home)")
     var homeDir: [String] = []
 
+    @Option(name: .long, parsing: .upToNextOption,
+            help: "System directories to mount read-only (same path in guest)")
+    var systemDir: [String] = []
+
     @Option(name: .long, help: "Nix store path to the desired nix-darwin system closure")
     var systemClosure: String?
 
@@ -246,7 +264,8 @@ struct Start: AsyncParsableCommand {
         let mounts = try buildMounts(
             hostHome: home,
             mirrorDirs: config.mirrorDirs + dir,
-            homeDirs: config.homeDirs + homeDir
+            homeDirs: config.homeDirs + homeDir,
+            systemDirs: systemDir
         )
 
         // Control socket for CLI coordination (status, stop, etc.)

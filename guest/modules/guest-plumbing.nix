@@ -12,6 +12,15 @@ in
     description = "Home-relative directories to VirtioFS-mount from the host";
   };
 
+  # Absolute paths to mount read-only from the host (same path in guest).
+  # Used for system-level toolchains like Xcode that should be shared
+  # immutably — the guest gets the host's installation without modification.
+  options.dvm.mounts.system = lib.mkOption {
+    type = lib.types.listOf lib.types.str;
+    default = [];
+    description = "Absolute paths to VirtioFS-mount read-only from the host (same path in guest)";
+  };
+
   # Host actions: name → handler script in the nix store.
   # Each capability gets a symlink in the guest (bin/<name> → dvm-host-cmd)
   # and an entry in the capabilities manifest read by the host bridge.
@@ -89,6 +98,10 @@ in
       launchctl bootout gui/501/org.nix.link-nix-apps 2>/dev/null || true
       rm -f /Library/LaunchAgents/org.nix.link-nix-apps.plist
     '';
+
+    # Materialize system mounts list for the wrapper to read from the closure
+    environment.etc."dvm/system-mounts.json".text =
+      builtins.toJSON config.dvm.mounts.system;
 
     # Materialize capabilities manifest for the host bridge
     environment.etc."dvm/capabilities.json".text =

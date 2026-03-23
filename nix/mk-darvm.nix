@@ -16,6 +16,7 @@ nix-darwin.lib.darwinSystem {
     ../guest/modules/prelude.nix
     ../guest/modules/direnv.nix
     ../guest/modules/agents.nix
+    ../guest/modules/xcode.nix
   ] ++ modules;
   specialArgs = { inherit username darvm-agent dvm-host-cmd; };
 }

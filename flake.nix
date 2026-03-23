@@ -92,6 +92,7 @@
             dvm.agents.codex.enable = true;
             dvm.agents.codex.package = llmPkgs.codex;
             dvm.integrations.direnv.enable = true;
+            dvm.xcode.enable = true;
           }];
         };
       };
@@ -103,6 +104,7 @@
         claude = ./guest/modules/claude.nix;
         codex = ./guest/modules/codex.nix;
         direnv = ./guest/modules/direnv.nix;
+        xcode = ./guest/modules/xcode.nix;
       };
 
       packages.${system} = {
