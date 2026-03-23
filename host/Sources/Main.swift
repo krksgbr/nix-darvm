@@ -566,8 +566,31 @@ struct Start: AsyncParsableCommand {
         DVMLog.log(phase: .mounting, "mounting \(remainingMounts.count) VirtioFS shares (nix-store handled by image)")
         tprint("Mounting VirtioFS shares...")
 
-        // Build mount script and execute via gRPC Exec
-        var setupLines: [String] = []
+        // Build mount script and execute via gRPC Exec.
+        //
+        // Home mounts (guest paths under /Users/admin) use symlinks instead of
+        // direct VirtioFS mounts. macOS VirtioFS has a kernel-level bug where
+        // nested mounts (VirtioFS inside VirtioFS) silently fail: mount_virtiofs
+        // succeeds and appears in `mount` output, but reads/writes fall through
+        // to the parent mount due to vnode identity instability in AppleVirtIOFS.
+        // See: docs/research/macos-virtiofs-nested-mount-failure.md
+        //
+        // Instead, we mount at /var/dvm-mounts/<tag> (not nested inside dvm-home)
+        // and create a symlink from the guest path. The symlink persists in the
+        // dvm-home backing store across reboots. On subsequent boots, the symlink
+        // already exists and becomes valid once the VirtioFS device is mounted.
+        //
+        // The pwd-resolution trade-off (symlinks resolve in pwd) only matters for
+        // project directories (mirror mounts), not config dirs like .claude/.codex.
+        // Mirror mounts are NOT under /Users/admin, so they're unaffected.
+        //
+        // NOTE: home mounts currently come from config.toml (opaque to nix).
+        // hjem (nix home manager) also manages paths under ~/. If both manage
+        // the same path, the symlink will conflict with hjem's managed content.
+        // There's no nix-level assertion for this yet — requires migrating home
+        // mounts to nix config (bean nix-darvm-xuus).
+        let dvmMountsDir = "/var/dvm-mounts"
+        var setupLines: [String] = ["mkdir -p \(shellQuote(dvmMountsDir))"]
         var mountFunctions: [String] = []
         var mountCalls: [String] = []
         for mount in remainingMounts {
@@ -575,21 +598,45 @@ struct Start: AsyncParsableCommand {
             case .exact(let tag, _, let guestPath, _): (tag, guestPath)
             }
             let t = shellQuote(tag.rawValue)
-            let p = shellQuote(path.rawValue)
-            setupLines.append("[ -L \(p) ] && rm -f \(p); mkdir -p \(p)")
+            let isNestedInHome = path.rawValue.hasPrefix(guestHome + "/")
+
+            // For paths inside /Users/admin (dvm-home VirtioFS), mount at a
+            // non-nested path and symlink. For all other paths, mount directly.
+            let mountPath: String
+            if isNestedInHome {
+                let indirectPath = "\(dvmMountsDir)/\(tag.rawValue)"
+                mountPath = shellQuote(indirectPath)
+                setupLines.append("mkdir -p \(mountPath)")
+                // Replace any existing directory with a symlink. If the path is
+                // already a symlink, ln -sfn updates it. If it's a directory (stale
+                // content from a previous session), warn and skip — user must clean
+                // it up manually.
+                let p = shellQuote(path.rawValue)
+                setupLines.append("""
+                if [ -L \(p) ]; then ln -sfn \(mountPath) \(p); \
+                elif [ -d \(p) ]; then \
+                  if [ -z \"$(ls -A \(p) 2>/dev/null)\" ]; then rmdir \(p) && ln -sfn \(mountPath) \(p); \
+                  else echo \"WARNING: \(p) is a non-empty directory, expected symlink. Remove it manually: rm -rf \(p)\" >&2; fi; \
+                else ln -sfn \(mountPath) \(p); fi
+                """)
+            } else {
+                let p = shellQuote(path.rawValue)
+                mountPath = p
+                setupLines.append("[ -L \(p) ] && rm -f \(p); mkdir -p \(p)")
+            }
 
             let funcName = "mount_\(tag.rawValue.replacingOccurrences(of: "-", with: "_"))"
             mountFunctions.append("""
             \(funcName)() {
-              if /sbin/mount | grep -q " on \(p) "; then
-                echo "  \(t) -> \(p) (already mounted)"; return 0
+              if /sbin/mount | grep -q " on \(mountPath) "; then
+                echo "  \(t) -> \(mountPath) (already mounted)"; return 0
               fi
               for i in 1 2 3 4 5; do
-                ERR=$(/sbin/mount_virtiofs \(t) \(p) 2>&1) && { echo "  \(t) -> \(p)"; return 0; }
-                case "$ERR" in *"Resource busy"*) echo "  \(t) -> \(p)"; return 0;; esac
+                ERR=$(/sbin/mount_virtiofs \(t) \(mountPath) 2>&1) && { echo "  \(t) -> \(mountPath)"; return 0; }
+                case "$ERR" in *"Resource busy"*) echo "  \(t) -> \(mountPath)"; return 0;; esac
                 sleep 1
               done
-              echo "  \(t) -> \(p) (FAILED: $ERR)" >&2; return 1
+              echo "  \(t) -> \(mountPath) (FAILED: $ERR)" >&2; return 1
             }
             """)
             mountCalls.append("\(funcName) & PIDS=\"$PIDS $!\"")

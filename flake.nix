@@ -25,6 +25,7 @@
       # Build first with: just build [release]
       # TODO: nixpkgs ships Swift 5.10.1 but we need 6.0+, so we can't build
       # Swift inside a pure Nix derivation yet. Revisit when nixpkgs catches up.
+      # Tracking: https://github.com/NixOS/nixpkgs/issues/343210
       dvm-core = let
         config = if builtins.getEnv "CONFIG" != "" then builtins.getEnv "CONFIG" else "debug";
         bin = builtins.path {
