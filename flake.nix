@@ -6,18 +6,19 @@
     nix-darwin.url = "github:LnL7/nix-darwin";
     nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
     llm-agents.url = "github:numtide/llm-agents.nix";
+    determinate.url = "https://flakehub.com/f/DeterminateSystems/determinate/3";
     hjem.url = "github:feel-co/hjem";
     hjem.inputs.nixpkgs.follows = "nixpkgs";
     hjem.inputs.nix-darwin.follows = "nix-darwin";
   };
 
-  outputs = { self, nixpkgs, nix-darwin, llm-agents, hjem }:
+  outputs = { self, nixpkgs, nix-darwin, llm-agents, determinate, hjem }:
     let
       system = "aarch64-darwin";
       pkgs = nixpkgs.legacyPackages.${system};
       llmPkgs = llm-agents.packages.${system};
 
-      mkDarvm = import ./nix/mk-darvm.nix { inherit nixpkgs nix-darwin hjem system; };
+      mkDarvm = import ./nix/mk-darvm.nix { inherit nixpkgs nix-darwin determinate hjem system; };
       mkDvmWrapper = import ./nix/mk-dvm-wrapper.nix { inherit nixpkgs system; };
       mkCreateBaseVm = import ./nix/create-base-vm.nix { inherit nixpkgs system; };
 

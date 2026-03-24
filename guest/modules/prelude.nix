@@ -28,7 +28,7 @@
   '';
 
   # -- Starship --
-  environment.systemPackages = [ pkgs.starship ];
+  environment.systemPackages = with pkgs; [ starship coreutils ];
 
   # -- User-level config (via hjem) --
   users.users.${username}.home = "/Users/${username}";

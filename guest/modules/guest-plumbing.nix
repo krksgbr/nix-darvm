@@ -1,4 +1,4 @@
-{ pkgs, lib, config, username ? "admin", darvm-agent, dvm-host-cmd, ... }:
+{ pkgs, lib, config, username ? "admin", darvm-agent, dvm-host-cmd, determinate-nix, ... }:
 
 let
   daemonSock = "/tmp/nix-daemon.sock";
@@ -32,7 +32,10 @@ in
   };
 
   config = {
-    nix.enable = false;
+    determinateNix.enable = true;
+    determinateNix.customSettings = {
+      accept-flake-config = true;
+    };
     networking.hostName = "dvm";
     system.primaryUser = username;
 
@@ -85,6 +88,14 @@ in
     # Determinate Nix creates /nix/var/nix/daemon-socket/socket -> /var/run/nix-daemon.socket.
     # We replace /var/run/nix-daemon.socket with a symlink to our bridge socket so
     # nix clients connect through the vsock bridge without any env var overrides.
+    # Rename files from the base image's Determinate Nix installer so
+    # nix-darwin's determinateNix module can manage them.
+    system.activationScripts.preActivation.text = ''
+      if [ -e /etc/nix/nix.custom.conf ] && [ ! -e /etc/nix/nix.custom.conf.before-nix-darwin ]; then
+        mv /etc/nix/nix.custom.conf /etc/nix/nix.custom.conf.before-nix-darwin
+      fi
+    '';
+
     system.activationScripts.postActivation.text = ''
       rm -f /var/run/nix-daemon.socket
       ln -s ${daemonSock} /var/run/nix-daemon.socket
@@ -97,6 +108,15 @@ in
       # hangs indefinitely in a headless VM with no GUI login session.
       launchctl bootout gui/501/org.nix.link-nix-apps 2>/dev/null || true
       rm -f /Library/LaunchAgents/org.nix.link-nix-apps.plist
+
+      # hjem manages user-level config (starship, dotfiles) via a LaunchAgent
+      # that only triggers at GUI login. In a headless VM there is no GUI
+      # session, so run it explicitly. hjem-activate is idempotent (manifest
+      # diffing), safe to run on every activation.
+      sudo -u ${username} HOME=/Users/${username} \
+        ${config.launchd.user.agents.hjem-activate.serviceConfig.Program} || {
+        echo "WARNING: hjem activation failed for ${username}" >&2
+      }
     '';
 
     # Materialize system mounts list for the wrapper to read from the closure
@@ -107,9 +127,45 @@ in
     environment.etc."dvm/capabilities.json".text =
       builtins.toJSON config.dvm.capabilities;
 
-    environment.systemPackages = with pkgs; [
-      nix
+    environment.systemPackages = [
+      determinate-nix
       dvm-host-cmd
+      (pkgs.writeShellScriptBin "dvctl" ''
+        SERVICES="com.darvm.agent-rpc com.darvm.agent-bridge"
+
+        usage() {
+          echo "Usage: dvctl <command> [args]"
+          echo ""
+          echo "Commands:"
+          echo "  status                 Show status of all DVM services"
+          echo "  restart agent-bridge   Restart the nix daemon bridge"
+          echo "  restart agent-rpc      Restart the gRPC agent"
+        }
+
+        cmd_status() {
+          for svc in $SERVICES; do
+            if sudo launchctl print "system/$svc" >/dev/null 2>&1; then
+              pid=$(sudo launchctl print "system/$svc" 2>/dev/null | grep '^\s*pid' | awk '{print $3}')
+              echo "  $svc: running (pid ''${pid:-?})"
+            else
+              echo "  $svc: stopped"
+            fi
+          done
+        }
+
+        case "''${1:-}" in
+          status) cmd_status ;;
+          restart)
+            case "''${2:-}" in
+              agent-bridge) sudo launchctl kickstart -k system/com.darvm.agent-bridge ;;
+              agent-rpc)    sudo launchctl kickstart -k system/com.darvm.agent-rpc ;;
+              *) echo "Unknown service: ''${2:-}" >&2; usage >&2; exit 1 ;;
+            esac
+            ;;
+          -h|--help|help) usage ;;
+          *) echo "Unknown command: ''${1:-}" >&2; usage >&2; exit 1 ;;
+        esac
+      '')
     ] ++ lib.optional (config.dvm.capabilities != {}) (
       # Create bin/<name> → dvm-host-cmd symlinks for each capability
       pkgs.runCommand "dvm-capability-symlinks" {} (
@@ -124,7 +180,7 @@ in
     );
 
     environment.variables = {
-      AGENT_VM = "1";
+      DVM_GUEST = "1";
     };
 
     environment.systemPath = [

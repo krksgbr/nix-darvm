@@ -199,6 +199,7 @@ enum DVMError: Error, CustomStringConvertible {
     case buildFailed
     case invalidStorePath(String)
     case activationFailed(String)
+    case alreadyRunning
 
     var description: String {
         switch self {
@@ -206,6 +207,7 @@ enum DVMError: Error, CustomStringConvertible {
         case .buildFailed: return "nix build failed"
         case .invalidStorePath(let s): return "Invalid nix store path from build output: \(s)"
         case .activationFailed(let msg): return "Activation failed: \(msg)"
+        case .alreadyRunning: return "A VM is already running. Stop it first or use `dvm switch` to apply changes."
         }
     }
 }
@@ -269,6 +271,13 @@ struct Start: AsyncParsableCommand {
         )
 
         // Control socket for CLI coordination (status, stop, etc.)
+        // Check for an already-running instance BEFORE creating our socket.
+        // ControlSocket.listen() unlinks the existing socket file, which would
+        // orphan the running instance (it becomes unreachable via the control
+        // socket even though the VM is still running).
+        if ControlSocket.isRunning() {
+            throw DVMError.alreadyRunning
+        }
         let controlSocket = ControlSocket()
         try controlSocket.listen()
 
