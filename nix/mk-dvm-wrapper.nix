@@ -34,6 +34,50 @@ pkgs.writeShellApplication {
     CREATE_VM=${escapeShellArg "${dvm-create-vm}/bin/dvm-create-vm"}
     DVM_FLAKE_REF=${escapeShellArg dvmFlakeRef}
     FLAKE_ARG=""
+    CONTROL_SOCKET="/tmp/dvm-control.sock"
+
+    # Query VM phase from the control socket. Returns empty if unreachable.
+    vm_phase() {
+      "$DVM_CORE" status --json 2>/dev/null \
+        | python3 -c 'import json,sys;print(json.load(sys.stdin).get("phase",""))' 2>/dev/null \
+        || true
+    }
+
+    # Fail fast if there's no VM process at all (control socket absent).
+    # Used by switch, which has its own wait loop for boot phases.
+    require_vm_process() {
+      if [ ! -S "$CONTROL_SOCKET" ]; then
+        echo "Error: VM not running. Start it with: dvm start" >&2
+        exit 1
+      fi
+    }
+
+    # Require the VM to be in the running phase. Gives informative errors
+    # for every other state so the user knows exactly what's happening.
+    require_vm() {
+      require_vm_process
+      local phase
+      phase=$(vm_phase)
+      case "$phase" in
+        running) return 0 ;;
+        stopped)
+          echo "Error: VM is stopped. Start it with: dvm start" >&2
+          exit 1 ;;
+        failed)
+          local error
+          error=$("$DVM_CORE" status --json 2>/dev/null \
+            | python3 -c 'import json,sys;print(json.load(sys.stdin).get("phaseError","unknown"))' 2>/dev/null \
+            || echo "unknown")
+          echo "Error: VM failed: $error" >&2
+          exit 1 ;;
+        "")
+          echo "Error: VM not running. Start it with: dvm start" >&2
+          exit 1 ;;
+        *)
+          echo "Error: VM is not ready (phase: $phase). Check: dvm status" >&2
+          exit 1 ;;
+      esac
+    }
 
     # Parse global flags before subcommand
     while [ $# -gt 0 ]; do
@@ -150,8 +194,8 @@ pkgs.writeShellApplication {
     }
 
     cmd_switch() {
+      require_vm_process
       # Wait for VM to be fully running (handles switch during boot).
-      # Empty phase means the control socket doesn't exist yet (still starting).
       local phase=""
       for _w in $(seq 1 120); do
         phase=$("$DVM_CORE" status --json 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin).get("phase",""))' 2>/dev/null || true)
@@ -231,9 +275,11 @@ pkgs.writeShellApplication {
         cmd_switch "$@"
         ;;
       shell)
+        require_vm
         exec "$DVM_CORE" ssh "$@"
         ;;
       exec)
+        require_vm
         exec "$DVM_CORE" exec "$@"
         ;;
       -h|--help|help)
@@ -241,6 +287,7 @@ pkgs.writeShellApplication {
         ;;
       *)
         # Catch-all: forward to guest as a command
+        require_vm
         exec "$DVM_CORE" exec -t -- "$command" "$@"
         ;;
     esac
