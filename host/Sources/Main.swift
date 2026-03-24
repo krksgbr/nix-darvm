@@ -631,6 +631,8 @@ struct Start: AsyncParsableCommand {
                 // content from a previous session), warn and skip — user must clean
                 // it up manually.
                 let p = shellQuote(path.rawValue)
+                let parentDir = shellQuote((path.rawValue as NSString).deletingLastPathComponent)
+                setupLines.append("mkdir -p \(parentDir)")
                 setupLines.append("""
                 if [ -L \(p) ]; then ln -sfn \(mountPath) \(p); \
                 elif [ -d \(p) ]; then \
