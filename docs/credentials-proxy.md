@@ -5,9 +5,54 @@ the intentionally narrower product boundary agreed for the first version.
 
 ## Goal
 
-Allow workloads inside the guest VM to use host-held credentials without ever receiving the raw secret value.
+Allow workloads inside the guest VM to use host-held credentials without ever
+receiving the raw secret value — where the protocol allows it.
 
-In this model, the guest gets a capability to perform a bounded action, not a capability to read a secret.
+For secrets that must exist in guest process memory (signing keys, database
+passwords), deliver them explicitly with weaker but acknowledged security
+properties.
+
+## Constraints
+
+These constraints were derived from first principles when applying the credential
+proxy to real projects. They define the design space.
+
+- **C1. Guest is untrusted.** AI agents run there. Anything visible in the guest
+  is visible to potentially untrusted code.
+- **C2. Guest has no host credential stores.** macOS Keychain, cloud secret
+  managers, etc. are host-only. The guest cannot resolve secrets the way the host
+  does.
+- **C3. Host-side secret managers are the source of truth.** Static config files
+  (`.envrc`) can go stale. The authoritative values come from whatever secret
+  manager the project uses (fnox, sops, vault, etc.).
+- **C4. Process startup may be coupled to a secret manager.** `fnox exec`,
+  `sops exec-env`, etc. wrap process start. These break in the guest because they
+  depend on host credential stores (C2).
+- **C5. The proxy only covers HTTP headers.** DB passwords (wire protocol),
+  signing keys (local crypto), OAuth secrets (POST body) cannot be proxied.
+- **C6. Some secrets must exist in guest process memory.** JWT signing, VAPID
+  signing, DB authentication — the app literally needs the bytes. No architecture
+  avoids this.
+- **C7. Env vars are per-session.** Injected into specific exec/ssh sessions, not
+  VM-wide. No persistence in shell profiles or daemon environments.
+- **C8. DVM targets startup-time secrets.** Env vars are a startup snapshot.
+  Credential rotation during a long-running process is out of scope.
+
+## Interface Boundary
+
+DVM's secret delivery interface is deliberately generic — it does not couple to
+any specific secret manager.
+
+- **Host side**: DVM reads secret values from **host environment variables**. How
+  they got there (fnox, sops, manual export, dotenv, whatever) is not DVM's
+  concern.
+- **Guest side**: DVM delivers secrets as **guest environment variables** — either
+  as placeholders (proxy mode) or real values (passthrough mode).
+- **Env vars in, env vars out.** That is the boundary.
+
+File-based secret delivery (TLS client certs, credential JSON files, kubeconfigs)
+is a known gap but out of scope. Most file-expecting tools can be configured to
+read from env vars instead.
 
 ## Problem Statement
 
@@ -23,12 +68,15 @@ The current guest to host escape hatch is [`HostCommandBridge`](../host/Sources/
 - Commands can return secret material over stdout/stderr.
 - Auditability is at the process level, not the credential use level.
 
-For the same reason, these must remain out of scope:
+For the same reason, these must remain out of scope for proxy-mode secrets:
 
 - Mounting secret files into the guest
-- Passing secrets via env vars
 - A `GetSecret(name) -> value` RPC
 - Using `dvm-host-cmd` as a secret lookup workaround
+
+Passthrough-mode secrets (see [Secret Delivery Modes](#secret-delivery-modes))
+are an acknowledged exception: they are injected as real env vars because the
+protocol or use case requires the guest to possess the raw value (C6).
 
 ## Threat Model
 
@@ -40,19 +88,25 @@ We assume:
 
 We want:
 
-- No raw secret bytes sent to the guest
+- No raw secret bytes sent to the guest **for proxy-mode secrets**
+- For passthrough-mode secrets, real values are injected as env vars into the exec
+  session — an acknowledged trade-off for secrets that must exist in guest process
+  memory (C6)
 - Deny-by-default access to credentials
 - Narrow policies per credential and per target
-- Clear audit logs for every credentialed action
 - Fail-closed behavior when policy, provider lookup, or transport setup fails
 
 We do not fully solve:
 
 - A malicious guest using an allowed capability for an allowed target
 - Screen scraping or token theft from an already-authenticated remote service response
-- Exfiltration through a protocol that fundamentally requires the client to possess the raw secret
+- A guest process reading passthrough env vars via `env`, crash dumps, debug logs,
+  or child process inheritance
+- Credential rotation during long-running processes (C8)
 
-That last point matters: some integrations can be proxied safely, others cannot. The design should support only protocols where the host can apply credentials without revealing them.
+That last point on proxied secrets still matters: some integrations can be proxied
+safely, others cannot. Secrets that travel as HTTP headers use proxy mode. Secrets
+that the process must possess directly use passthrough mode.
 
 ## Design Summary
 
@@ -71,6 +125,62 @@ High-level flow:
 
 For the current V1 direction, the proxy transport should be built around an
 existing forward-proxy core rather than a fully custom transport stack.
+
+## Secret Delivery Modes
+
+The manifest declares each secret in one of two top-level tables. The table
+determines the delivery mode — invalid combinations are structurally impossible.
+
+### Proxy mode (`[proxy.*]`)
+
+- Guest receives an HMAC-derived placeholder as an env var
+- The netstack sidecar MITM-intercepts HTTPS to listed hosts and substitutes the
+  placeholder with the real value in request headers
+- Real secret never reaches guest memory
+- Requires: secret travels as an HTTP header (`Authorization`, `X-Api-Key`, etc.)
+
+### Passthrough mode (`[passthrough.*]`)
+
+- Guest receives the real secret value as an env var in the exec/ssh session
+- No proxy involvement — the secret is used directly by the guest process
+- Required for: DB passwords, signing keys, OAuth client secrets in POST bodies
+- Security property: weaker than proxy (guest has the real value), but necessary
+  per C6
+
+### Manifest format
+
+```toml
+version = 1
+project = "my-project"
+
+[proxy.OPENROUTER_API_KEY]
+hosts = ["openrouter.ai"]
+
+[proxy.LANGFUSE_SECRET_KEY]
+hosts = ["langfuse.unbody.io"]
+
+[passthrough.DB_PASSWORD]
+[passthrough.BETTER_AUTH_SECRET]
+[passthrough.VAPID_PRIVATE_KEY]
+```
+
+Why this shape:
+
+- **Invalid states are unrepresentable** — passthrough can't have `hosts`, proxy
+  can't omit them
+- **Less verbose** — no `mode = "..."` field on every entry
+- **TOML prevents duplicates** — a secret can't appear in both tables
+- **Scannable** — immediately see which secrets are exposed to the guest
+
+### Validation rules
+
+- `proxy.*` entries require non-empty `hosts`
+- `passthrough.*` entries must be empty tables (no fields)
+- A secret name must not appear in both `proxy` and `passthrough`
+- All declared secrets must be present in the host environment before any are
+  resolved (fail-closed, not best-effort)
+- Never silently fall back from proxy to passthrough
+- Log secret names and delivery modes at resolution time; never log values
 
 ## Architecture
 
@@ -328,9 +438,12 @@ the request fails with an explicit error. There is no fallback to direct egress,
 - A generic "fetch secret" API
 - Making every protocol proxyable
 - Transparent interception of all guest egress
-- Backward compatibility for workflows that currently depend on reading env vars or files
+- Automatic fallback from proxy to passthrough — if a secret is declared as proxy
+  mode, it must work as proxy mode or fail
+- File-based secret delivery (TLS client certs, credential JSON, kubeconfigs)
+- Credential rotation or refresh during long-running processes (C8)
 
-If a workflow fundamentally requires the raw secret in guest memory, it is not compatible with this design and should be rejected explicitly.
+Passthrough is supported but explicit. There is no "pass everything through" mode.
 
 ## Integration Points In This Repo
 
@@ -393,4 +506,24 @@ Build only this first:
 - host allowlists for HTTPS
 - structured audit logs
 
-That is the smallest useful system that enforces the core rule: agents can use credentials, but they cannot read them.
+That is the smallest useful system that enforces the core rule: agents can use
+credentials, but they cannot read them.
+
+## Implementation Status
+
+The actual implementation is simpler than the architecture described above. The
+capability model, per-project broker registry, nono-proxy integration, and
+control-plane commands were design exploration that was not built.
+
+What was built:
+
+- Simple `[secrets.X]` TOML format with `hosts` only (being updated to the
+  `[proxy.*]` / `[passthrough.*]` schema described above)
+- Environment variable provider only (not keychain or command providers — the
+  host environment is the interface boundary)
+- Placeholder-based MITM substitution in a gVisor userspace TCP/IP stack
+  (`dvm-netstack` sidecar)
+- Per-exec-session credential resolution and injection
+- HMAC-derived placeholders keyed by a host-only secret
+
+The V1 scope and V1 implementation docs remain as historical design exploration.

@@ -135,10 +135,10 @@ final class ManifestLoadTests: XCTestCase {
             version = 1
             project = "test-project"
 
-            [secrets.API_KEY]
+            [proxy.API_KEY]
             hosts = ["api.example.com"]
 
-            [secrets.OTHER_KEY]
+            [proxy.OTHER_KEY]
             hosts = ["other.example.com", "api.example.com"]
             """
         let path = writeTempTOML(toml)
@@ -150,7 +150,9 @@ final class ManifestLoadTests: XCTestCase {
         XCTAssertEqual(manifest.secrets.count, 2)
         // Sorted by envVar
         XCTAssertEqual(manifest.secrets[0].envVar, "API_KEY")
+        XCTAssertEqual(manifest.secrets[0].mode, .proxy)
         XCTAssertEqual(manifest.secrets[1].envVar, "OTHER_KEY")
+        XCTAssertEqual(manifest.secrets[1].mode, .proxy)
     }
 
     func testMissingFile() {
@@ -224,7 +226,7 @@ final class ManifestLoadTests: XCTestCase {
             version = 1
             project = "test"
 
-            [secrets.KEY]
+            [proxy.KEY]
             hosts = []
             """
         let path = writeTempTOML(toml)
@@ -240,7 +242,7 @@ final class ManifestLoadTests: XCTestCase {
             version = 1
             project = "test"
 
-            [secrets.KEY]
+            [proxy.KEY]
             hosts = ["*.example.com"]
             """
         let path = writeTempTOML(toml)
@@ -256,7 +258,7 @@ final class ManifestLoadTests: XCTestCase {
             version = 1
             project = "test"
 
-            [secrets.KEY]
+            [proxy.KEY]
             hosts = ["API.Example.COM."]
             """
         let path = writeTempTOML(toml)
@@ -295,20 +297,84 @@ final class ManifestLoadTests: XCTestCase {
             version = 1
             project = "test"
 
-            [secrets.ZEBRA]
+            [proxy.ZEBRA]
             hosts = ["z.com"]
 
-            [secrets.ALPHA]
+            [proxy.ALPHA]
             hosts = ["a.com"]
 
-            [secrets.MIDDLE]
-            hosts = ["m.com"]
+            [passthrough.MIDDLE]
             """
         let path = writeTempTOML(toml)
         defer { try? FileManager.default.removeItem(atPath: path) }
 
         let manifest = try CredentialManifest.load(from: path)
         XCTAssertEqual(manifest.secrets.map(\.envVar), ["ALPHA", "MIDDLE", "ZEBRA"])
+        XCTAssertEqual(manifest.secrets[0].mode, .proxy)
+        XCTAssertEqual(manifest.secrets[1].mode, .passthrough)
+        XCTAssertEqual(manifest.secrets[2].mode, .proxy)
+    }
+
+    func testPassthroughEntries() throws {
+        let toml = """
+            version = 1
+            project = "test"
+
+            [passthrough.DB_PASSWORD]
+            [passthrough.AUTH_SECRET]
+            """
+        let path = writeTempTOML(toml)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let manifest = try CredentialManifest.load(from: path)
+        XCTAssertEqual(manifest.secrets.count, 2)
+        XCTAssertEqual(manifest.secrets[0].mode, .passthrough)
+        XCTAssertEqual(manifest.secrets[0].hosts, [])
+        XCTAssertEqual(manifest.secrets[1].mode, .passthrough)
+        XCTAssertEqual(manifest.secrets[1].hosts, [])
+    }
+
+    func testDuplicateSecretAcrossTables() {
+        let toml = """
+            version = 1
+            project = "test"
+
+            [proxy.MY_KEY]
+            hosts = ["example.com"]
+
+            [passthrough.MY_KEY]
+            """
+        let path = writeTempTOML(toml)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
+            let desc = String(describing: error)
+            XCTAssertTrue(desc.contains("MY_KEY"), "Error should name the duplicate: \(desc)")
+            XCTAssertTrue(desc.contains("both"), "Error should mention both tables: \(desc)")
+        }
+    }
+
+    func testMixedProxyAndPassthrough() throws {
+        let toml = """
+            version = 1
+            project = "test"
+
+            [proxy.API_KEY]
+            hosts = ["api.example.com"]
+
+            [passthrough.DB_PASSWORD]
+            """
+        let path = writeTempTOML(toml)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let manifest = try CredentialManifest.load(from: path)
+        XCTAssertEqual(manifest.secrets.count, 2)
+        let proxySecret = manifest.secrets.first { $0.envVar == "API_KEY" }!
+        let passthroughSecret = manifest.secrets.first { $0.envVar == "DB_PASSWORD" }!
+        XCTAssertEqual(proxySecret.mode, .proxy)
+        XCTAssertEqual(proxySecret.hosts, ["api.example.com"])
+        XCTAssertEqual(passthroughSecret.mode, .passthrough)
+        XCTAssertEqual(passthroughSecret.hosts, [])
     }
 
     private func writeTempTOML(_ content: String) -> String {
@@ -324,7 +390,7 @@ final class ManifestResolveTests: XCTestCase {
 
     let testKey = HostKey(bytes: Array(repeating: 0x42, count: 32))
 
-    func testResolveSuccess() throws {
+    func testResolveProxySuccess() throws {
         let envVar = "DVM_TEST_\(UUID().uuidString.prefix(8).uppercased())"
         setenv(envVar, "secret-value", 1)
         defer { unsetenv(envVar) }
@@ -332,15 +398,38 @@ final class ManifestResolveTests: XCTestCase {
         let manifest = CredentialManifest(
             version: 1,
             project: "test",
-            secrets: [SecretDecl(envVar: envVar, hosts: ["example.com"])]
+            secrets: [SecretDecl(envVar: envVar, mode: .proxy, hosts: ["example.com"])]
         )
 
         let resolved = try manifest.resolve(hostKey: testKey)
         XCTAssertEqual(resolved.count, 1)
         XCTAssertEqual(resolved[0].name, envVar)
+        XCTAssertEqual(resolved[0].mode, .proxy)
         XCTAssertEqual(resolved[0].value, "secret-value")
         XCTAssertTrue(resolved[0].placeholder.hasPrefix("SANDBOX_CRED_"))
+        XCTAssertNotEqual(resolved[0].placeholder, resolved[0].value)
         XCTAssertEqual(resolved[0].hosts, ["example.com"])
+    }
+
+    func testResolvePassthroughSuccess() throws {
+        let envVar = "DVM_TEST_PT_\(UUID().uuidString.prefix(8).uppercased())"
+        setenv(envVar, "db-password-value", 1)
+        defer { unsetenv(envVar) }
+
+        let manifest = CredentialManifest(
+            version: 1,
+            project: "test",
+            secrets: [SecretDecl(envVar: envVar, mode: .passthrough, hosts: [])]
+        )
+
+        let resolved = try manifest.resolve(hostKey: testKey)
+        XCTAssertEqual(resolved.count, 1)
+        XCTAssertEqual(resolved[0].name, envVar)
+        XCTAssertEqual(resolved[0].mode, .passthrough)
+        XCTAssertEqual(resolved[0].value, "db-password-value")
+        // Passthrough: placeholder IS the real value
+        XCTAssertEqual(resolved[0].placeholder, "db-password-value")
+        XCTAssertEqual(resolved[0].hosts, [])
     }
 
     func testResolveMissingEnvVar() {
@@ -350,7 +439,24 @@ final class ManifestResolveTests: XCTestCase {
         let manifest = CredentialManifest(
             version: 1,
             project: "test",
-            secrets: [SecretDecl(envVar: envVar, hosts: ["example.com"])]
+            secrets: [SecretDecl(envVar: envVar, mode: .proxy, hosts: ["example.com"])]
+        )
+
+        XCTAssertThrowsError(try manifest.resolve(hostKey: testKey)) { error in
+            let desc = String(describing: error)
+            XCTAssertTrue(desc.contains(envVar), "Error should name the variable: \(desc)")
+            XCTAssertTrue(desc.contains("not set"), "Error should say 'not set': \(desc)")
+        }
+    }
+
+    func testResolveMissingEnvVarPassthrough() {
+        let envVar = "DVM_TEST_MISSING_PT_\(UUID().uuidString.prefix(8).uppercased())"
+        unsetenv(envVar)
+
+        let manifest = CredentialManifest(
+            version: 1,
+            project: "test",
+            secrets: [SecretDecl(envVar: envVar, mode: .passthrough, hosts: [])]
         )
 
         XCTAssertThrowsError(try manifest.resolve(hostKey: testKey)) { error in
@@ -368,7 +474,7 @@ final class ManifestResolveTests: XCTestCase {
         let manifest = CredentialManifest(
             version: 1,
             project: "test",
-            secrets: [SecretDecl(envVar: envVar, hosts: ["example.com"])]
+            secrets: [SecretDecl(envVar: envVar, mode: .proxy, hosts: ["example.com"])]
         )
 
         XCTAssertThrowsError(try manifest.resolve(hostKey: testKey)) { error in
@@ -386,7 +492,7 @@ final class ManifestResolveTests: XCTestCase {
         let manifest = CredentialManifest(
             version: 1,
             project: "test",
-            secrets: [SecretDecl(envVar: envVar, hosts: ["example.com"])]
+            secrets: [SecretDecl(envVar: envVar, mode: .proxy, hosts: ["example.com"])]
         )
 
         let resolved = try manifest.resolve(hostKey: testKey)
@@ -401,7 +507,7 @@ final class ManifestResolveTests: XCTestCase {
         let manifest = CredentialManifest(
             version: 1,
             project: "my-project",
-            secrets: [SecretDecl(envVar: envVar, hosts: ["example.com"])]
+            secrets: [SecretDecl(envVar: envVar, mode: .proxy, hosts: ["example.com"])]
         )
 
         let resolved = try manifest.resolve(hostKey: testKey)
@@ -420,14 +526,43 @@ final class ManifestResolveTests: XCTestCase {
             version: 1,
             project: "test",
             secrets: [
-                SecretDecl(envVar: var1, hosts: ["a.com"]),
-                SecretDecl(envVar: var2, hosts: ["b.com"]),
+                SecretDecl(envVar: var1, mode: .proxy, hosts: ["a.com"]),
+                SecretDecl(envVar: var2, mode: .proxy, hosts: ["b.com"]),
             ]
         )
 
         let resolved = try manifest.resolve(hostKey: testKey)
         XCTAssertEqual(resolved.count, 2)
         XCTAssertNotEqual(resolved[0].placeholder, resolved[1].placeholder)
+    }
+
+    func testResolveMixedModes() throws {
+        let proxyVar = "DVM_TEST_PROXY_\(UUID().uuidString.prefix(8).uppercased())"
+        let ptVar = "DVM_TEST_PT_\(UUID().uuidString.prefix(8).uppercased())"
+        setenv(proxyVar, "proxy-val", 1)
+        setenv(ptVar, "passthrough-val", 1)
+        defer { unsetenv(proxyVar); unsetenv(ptVar) }
+
+        let manifest = CredentialManifest(
+            version: 1,
+            project: "test",
+            secrets: [
+                SecretDecl(envVar: proxyVar, mode: .proxy, hosts: ["a.com"]),
+                SecretDecl(envVar: ptVar, mode: .passthrough, hosts: []),
+            ]
+        )
+
+        let resolved = try manifest.resolve(hostKey: testKey)
+        XCTAssertEqual(resolved.count, 2)
+
+        let proxy = resolved.first { $0.mode == .proxy }!
+        let passthrough = resolved.first { $0.mode == .passthrough }!
+
+        XCTAssertTrue(proxy.placeholder.hasPrefix("SANDBOX_CRED_"))
+        XCTAssertNotEqual(proxy.placeholder, proxy.value)
+
+        XCTAssertEqual(passthrough.placeholder, "passthrough-val")
+        XCTAssertEqual(passthrough.value, "passthrough-val")
     }
 }
 

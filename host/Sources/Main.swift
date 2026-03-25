@@ -405,7 +405,10 @@ struct Start: AsyncParsableCommand {
         agentProxy.start()
 
         // Host action bridge: forward capability actions from guest → host
-        var hostCmdBridge: HostCommandBridge?
+        // All access is on the main actor (initial setup + Task { @MainActor in } in
+        // the reload handler). nonisolated(unsafe) lets the @Sendable closure capture
+        // it without the compiler flagging a cross-isolation send.
+        nonisolated(unsafe) var hostCmdBridge: HostCommandBridge?
         if let capPath = capabilities {
             let manifest = try CapabilitiesManifest.load(from: capPath)
             if !manifest.handlers.isEmpty {
@@ -756,7 +759,7 @@ struct Start: AsyncParsableCommand {
                         return "loadCredentials: secret at index \(i) has missing or invalid fields"
                     }
                     secrets.append(ResolvedSecret(
-                        name: name, placeholder: placeholder,
+                        name: name, mode: .proxy, placeholder: placeholder,
                         value: value, hosts: hosts))
                 }
                 try netstackSupervisor.loadCredentials(
@@ -934,13 +937,18 @@ private func resolveAndPushCredentials(
         let hostKey = try HostKey.loadOrCreate()
         let secrets = try manifest.resolve(hostKey: hostKey)
 
+        // Only proxy secrets need MITM interception via the sidecar.
+        let proxySecrets = secrets.filter { $0.mode == .proxy }
+
         // Always push — even empty secrets list clears previous mappings for this project.
         if let error = ControlSocket.sendLoadCredentials(
-            projectName: manifest.project, secrets: secrets) {
+            projectName: manifest.project, secrets: proxySecrets) {
             throw CredentialPushError(detail: error)
         }
 
-        // Build env vars: ENV_VAR_NAME=placeholder for guest injection
+        // Build env vars for guest injection:
+        // - proxy secrets: ENV_VAR=placeholder (sidecar substitutes real value)
+        // - passthrough secrets: ENV_VAR=realValue (injected directly)
         var env: [String: String] = [:]
         for secret in secrets {
             env[secret.name] = secret.placeholder

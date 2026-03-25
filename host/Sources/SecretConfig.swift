@@ -5,18 +5,29 @@ import TOML
 
 // MARK: - Secret Configuration Types
 
+/// How a secret is delivered to the guest.
+/// - `proxy`: placeholder injected as env var, real value substituted by MITM proxy on matching hosts.
+/// - `passthrough`: real value injected directly as env var, no proxy interception.
+enum SecretMode: String, Sendable {
+    case proxy
+    case passthrough
+}
+
 /// A single secret declaration from `.dvm/credentials.toml`.
-/// The TOML key is the env var name (e.g. `[secrets.ANTHROPIC_API_KEY]`).
+/// The TOML table determines the mode (`[proxy.*]` or `[passthrough.*]`).
 struct SecretDecl: Sendable {
     let envVar: String
-    let hosts: [String]
+    let mode: SecretMode
+    let hosts: [String]  // non-empty for proxy, empty for passthrough
 }
 
 /// A secret after host-side resolution. The `value` is the real credential —
-/// lives in host memory only, never in guest. The `placeholder` is the
-/// HMAC-derived token injected into the guest environment.
+/// lives in host memory only, never in guest (for proxy mode). For passthrough
+/// mode the real value is injected directly into the guest environment.
+/// The `placeholder` is the HMAC-derived token (proxy) or the real value (passthrough).
 struct ResolvedSecret: Sendable {
     let name: String
+    let mode: SecretMode
     let placeholder: String
     let value: String
     let hosts: [String]
@@ -157,18 +168,24 @@ func normalizeHost(_ host: String) -> String {
 /// version = 1
 /// project = "my-project"
 ///
-/// [secrets.ANTHROPIC_API_KEY]
+/// [proxy.ANTHROPIC_API_KEY]
 /// hosts = ["api.anthropic.com"]
+///
+/// [passthrough.DB_PASSWORD]
 /// ```
 private struct RawManifest: Codable {
     let version: Int
     let project: String
-    let secrets: [String: RawSecretEntry]?
+    let proxy: [String: RawProxyEntry]?
+    let passthrough: [String: RawPassthroughEntry]?
 }
 
-private struct RawSecretEntry: Codable {
+private struct RawProxyEntry: Codable {
     let hosts: [String]
 }
+
+/// Empty struct for passthrough entries (TOML empty tables decode to this).
+private struct RawPassthroughEntry: Codable {}
 
 // MARK: - Errors
 
@@ -177,6 +194,7 @@ enum SecretConfigError: Error, CustomStringConvertible {
     case missingProjectName
     case emptyHosts(secret: String)
     case wildcardHost(secret: String, host: String)
+    case duplicateSecret(secret: String)
     case envVarNotSet(secret: String, envVar: String)
     case envVarEmpty(secret: String, envVar: String)
     case manifestNotFound(String)
@@ -190,6 +208,8 @@ enum SecretConfigError: Error, CustomStringConvertible {
             return "Unsupported credentials.toml version: \(v) (expected 1)"
         case .missingProjectName:
             return "credentials.toml missing required 'project' field"
+        case .duplicateSecret(let s):
+            return "Secret '\(s)' appears in both [proxy] and [passthrough] tables"
         case .emptyHosts(let s):
             return "Secret '\(s)' has empty hosts list"
         case .wildcardHost(let s, let h):
@@ -236,7 +256,16 @@ extension CredentialManifest {
             throw SecretConfigError.missingProjectName
         }
 
-        let decls: [SecretDecl] = try (raw.secrets ?? [:]).map { envVar, entry in
+        // Check for duplicate secret names across both tables
+        let proxyKeys = Set((raw.proxy ?? [:]).keys)
+        let passthroughKeys = Set((raw.passthrough ?? [:]).keys)
+        let duplicates = proxyKeys.intersection(passthroughKeys)
+        if let first = duplicates.sorted().first {
+            throw SecretConfigError.duplicateSecret(secret: first)
+        }
+
+        // Parse proxy entries
+        var decls: [SecretDecl] = try (raw.proxy ?? [:]).map { envVar, entry in
             guard !entry.hosts.isEmpty else {
                 throw SecretConfigError.emptyHosts(secret: envVar)
             }
@@ -247,9 +276,17 @@ extension CredentialManifest {
             }
             return SecretDecl(
                 envVar: envVar,
+                mode: .proxy,
                 hosts: entry.hosts.map { normalizeHost($0) }
             )
-        }.sorted(by: { $0.envVar < $1.envVar })  // deterministic order
+        }
+
+        // Parse passthrough entries
+        decls += (raw.passthrough ?? [:]).map { envVar, _ in
+            SecretDecl(envVar: envVar, mode: .passthrough, hosts: [])
+        }
+
+        decls.sort(by: { $0.envVar < $1.envVar })  // deterministic order
 
         return CredentialManifest(
             version: raw.version,
@@ -275,14 +312,28 @@ extension CredentialManifest {
                 throw SecretConfigError.envVarEmpty(
                     secret: decl.envVar, envVar: decl.envVar)
             }
-            let placeholder = derivePlaceholder(
-                project: project, envVar: decl.envVar, hostKey: hostKey)
-            return ResolvedSecret(
-                name: decl.envVar,
-                placeholder: placeholder,
-                value: trimmed,
-                hosts: decl.hosts
-            )
+
+            switch decl.mode {
+            case .proxy:
+                let placeholder = derivePlaceholder(
+                    project: project, envVar: decl.envVar, hostKey: hostKey)
+                return ResolvedSecret(
+                    name: decl.envVar,
+                    mode: .proxy,
+                    placeholder: placeholder,
+                    value: trimmed,
+                    hosts: decl.hosts
+                )
+            case .passthrough:
+                // Passthrough: real value injected directly, no proxy interception
+                return ResolvedSecret(
+                    name: decl.envVar,
+                    mode: .passthrough,
+                    placeholder: trimmed,
+                    value: trimmed,
+                    hosts: []
+                )
+            }
         }
     }
 }
