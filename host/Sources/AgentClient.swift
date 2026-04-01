@@ -108,7 +108,7 @@ struct AgentClient: Sendable {
         let workDir = cwd
         let useTTY = tty
 
-        return try await withAgentClient { agent in
+        return try await withAgentClient(allowRetry: false) { agent in
             // Use a task group so we can cancel the request producer
             // when the response handler receives the exit code.
             try await withThrowingTaskGroup(of: Int32.self) { outerGroup in
@@ -177,6 +177,37 @@ struct AgentClient: Sendable {
     // MARK: - Private
 
     private func withAgentClient<T: Sendable>(
+        allowRetry: Bool = true,
+        _ body: @Sendable (Darvm_Agent.Client<HTTP2ClientTransport.Posix>) async throws -> T
+    ) async throws -> T {
+        // Retry on transient connection-level failures (.unavailable). The agent
+        // can briefly restart during or just after activation, causing the first
+        // call to fail with .unavailable even though the agent is about to come
+        // back up.
+        //
+        // ASSUMPTION: the caller's operation is idempotent. If the connection
+        // drops mid-call we cannot know whether the agent executed the operation
+        // before disconnecting. Non-idempotent callers (e.g. interactive exec)
+        // must pass allowRetry: false.
+        let maxAttempts = allowRetry ? 4 : 1
+        var lastError: Error?
+
+        for attempt in 1 ... maxAttempts {
+            do {
+                return try await withAgentClientOnce(body)
+            } catch let error as RPCError where error.code == .unavailable {
+                lastError = error
+                guard attempt < maxAttempts else { break }
+                DVMLog.log(level: "debug",
+                           "agent unavailable (attempt \(attempt)/\(maxAttempts)), retrying in 1s: \(error)")
+                try await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
+
+        throw lastError!
+    }
+
+    private func withAgentClientOnce<T: Sendable>(
         _ body: @Sendable (Darvm_Agent.Client<HTTP2ClientTransport.Posix>) async throws -> T
     ) async throws -> T {
         // We manage the client lifecycle manually instead of using withGRPCClient
