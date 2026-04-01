@@ -1,8 +1,28 @@
-# macOS VirtioFS cache coherency: host-side atomic rename
+# macOS VirtioFS cache coherency bugs
 
 Date: 2026-04-01
 
-## Summary
+Two distinct bugs have been observed in Apple's VirtioFS implementation
+(AppleVirtIOFS.kext). Both stem from the same root: the server does not push
+cache invalidation notifications to the guest.
+
+**Bug 1 — Stale dentry after host atomic rename** (see sections below through
+"Implications for DVM"). When a file is atomically replaced on the host, the
+guest's dentry cache retains the old deleted inode. Symptom: `ls` shows link
+count 0, `open()` returns ENOENT. Fixed by guest-side remount (`dvctl remount`).
+
+**Bug 2 — Server-side readdir cache for directories empty at VM startup** (see
+"Bug 2" section at the end). When a VirtioFS-shared directory is empty at VM
+startup, the server caches that empty state. Files added to the host directory
+later are invisible in the guest even after remount. `stat` returns correct
+mtime (server tracks inode metadata) but `readdir` returns no entries and file
+creation returns ENOENT. Fixed only by VM restart.
+
+---
+
+## Bug 1: stale dentry after host atomic rename
+
+### Summary
 
 When a file in a VirtioFS-shared directory is atomically replaced on the host
 (write-to-temp + rename — the standard safe-write pattern used by editors, git,
@@ -246,3 +266,84 @@ Neither is currently feasible.
 NFS is the most viable architectural fix for correct long-term coherency, but
 introduces setup and lifecycle complexity (exports configuration, nfsd
 management, dynamic guest IP across reboots). Not yet implemented.
+
+---
+
+## Bug 2: server-side readdir cache for directories empty at VM startup
+
+### Summary
+
+When a VirtioFS-shared directory is **empty at VM startup**, the Apple VirtioFS
+server caches that empty state. Files subsequently written to the host directory
+are invisible in the guest: `readdir` returns no entries and file creation
+returns ENOENT. Guest-side remount does not help because the VZ hypervisor
+process (and its VirtioFS server) keeps running — only a VM restart reinitialises
+the server.
+
+### Observed behavior in DVM
+
+DVM mounts `~/.cache/nix` as a VirtioFS share (`nix-cache` tag). The guest
+symlinks `~/.cache/nix` → `/var/dvm-mounts/nix-cache`.
+
+When the VM starts before the host's `~/.cache/nix` has been populated by nix:
+
+```
+# Guest — ls returns nothing
+[dvm] $ ls /var/dvm-mounts/nix-cache
+[dvm] $
+
+# Host — has files (populated after VM started)
+$ ls ~/.cache/nix
+eval-cache-v6    fetcher-cache-v4.sqlite
+
+# Guest — nix fails to open OR create the database
+[dvm] $ nix develop
+error: cannot open SQLite database '"~/.cache/nix/fetcher-cache-v4.sqlite"':
+       unable to open database file
+```
+
+The `stat` of the mount root in the guest reveals the inconsistency:
+
+```
+Inode: 1  Links: 2  Size: 64
+Modify: 2026-04-01 19:33:14 +0000   ← matches host mtime exactly
+```
+
+The mtime is correct (the server tracks inode metadata via fresh `stat()` calls)
+but `readdir` returns zero entries and `create` returns ENOENT. The server is
+serving two different code paths inconsistently: `getattr` reads live from the
+host, `readdir`/`create` use a stale cached state from VM startup.
+
+### Root cause
+
+The Apple VirtioFS server appears to open the host directory at VM creation time
+and cache the resulting directory handle or its initial (empty) listing. It does
+not reopen or rewind the directory when the guest issues a fresh FUSE `OPENDIR`.
+Subsequent `READDIR` calls return the stale empty result; `CREATE` calls fail
+because the server's internal directory state is inconsistent.
+
+This is distinct from Bug 1:
+- Bug 1 is a **guest-side** dentry cache issue (server is correct, guest is
+  stale) → guest remount clears it.
+- Bug 2 is a **server-side** readdir cache issue (server is stale) → only VM
+  restart clears it.
+
+### Fix: VM restart
+
+Restarting the VM reinitialises the VirtioFS server. If the host directory has
+content at that point, the server opens it correctly and serves the full listing.
+
+```sh
+dvm stop && dvm start
+```
+
+### When it triggers
+
+Only when the VirtioFS-shared directory is **empty at VM startup**. If the
+directory already contains files when `dvm start` runs, the server initialises
+with correct state and Bug 2 does not manifest (though Bug 1 may still apply
+if files are atomically replaced later).
+
+For DVM, this means the `nix-cache` mount is vulnerable on first use of a new
+host machine or after clearing `~/.cache/nix`. Subsequent VM restarts are safe
+once the cache has been populated.
