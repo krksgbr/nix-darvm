@@ -90,15 +90,22 @@ pkgs.writeShellApplication {
 
     resolve_flake() {
       # --flake flag (highest priority)
-      if [ -n "$FLAKE_ARG" ]; then echo "$FLAKE_ARG"; return; fi
+      if [ -n "$FLAKE_ARG" ]; then
+        echo "Flake: $FLAKE_ARG (--flake flag)" >&2
+        echo "$FLAKE_ARG"; return
+      fi
       # CWD flake.nix — only use if it actually provides dvmConfigurations
       if [ -f "$PWD/flake.nix" ] && nix eval "$PWD#dvmConfigurations" --apply 'x: true' >/dev/null 2>/dev/null; then
+        echo "Flake: $PWD (current directory)" >&2
         echo "$PWD"; return
       fi
       # config.toml flake field
       local cfg_flake
       cfg_flake=$("$DVM_CORE" config-get flake 2>/dev/null || true)
-      if [ -n "$cfg_flake" ]; then echo "$cfg_flake"; return; fi
+      if [ -n "$cfg_flake" ]; then
+        echo "Flake: $cfg_flake (config.toml)" >&2
+        echo "$cfg_flake"; return
+      fi
       # Fallback: minimal config from dvm's own flake
       printf '\033[33mWarning: No user flake found. Using minimal default config.\033[0m\n' >&2
       printf '\033[33mTo configure: create a flake with dvmConfigurations.default, or set flake in ~/.config/dvm/config.toml\033[0m\n' >&2
@@ -121,6 +128,7 @@ pkgs.writeShellApplication {
       flake=$(resolve_flake)
       local attr
       attr=$(resolve_config_attr "$flake")
+      echo "Building system closure..." >&2
       nix build --impure "$flake#$attr" --no-link --print-out-paths
     }
 
@@ -162,7 +170,6 @@ pkgs.writeShellApplication {
       ACTUAL_VM="''${ACTUAL_VM:-${escapeShellArg vmName}}"
 
       # Build closure from user's flake
-      echo "Building system closure..."
       CLOSURE=$(build_closure)
       echo "Closure: $CLOSURE"
 
@@ -213,30 +220,61 @@ pkgs.writeShellApplication {
       fi
 
       # Build closure from user's flake
-      echo "Building system closure..."
       CLOSURE=$(build_closure)
       echo "Closure: $CLOSURE"
 
       # Trigger activation via the guest's WatchPaths activator
       local RUN_ID="switch-$$"
+      local STATE_DIR="$HOME/.local/state/dvm"
+      local LOG_FILE="$STATE_DIR/run.log"
+
+      # Snapshot log offset before triggering — only stream lines from this switch.
+      local LOG_OFFSET
+      LOG_OFFSET=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+
       echo "Activating..."
       "$DVM_CORE" exec -- sudo sh -c "printf '%s' '$CLOSURE' > /var/run/dvm-state/closure-path; printf '%s' '$RUN_ID' > /var/run/dvm-state/run-id; touch /var/run/dvm-state/trigger"
 
-      # Poll via host filesystem (state dir is VirtioFS-mounted)
-      local STATE_DIR="$HOME/.local/state/dvm"
-      echo "Waiting for activation..."
+      # Poll via host filesystem (state dir is VirtioFS-mounted).
+      # We use wc -c + tail -c rather than `tail -F`: VirtioFS writes from the
+      # guest do not trigger kqueue NOTE_WRITE events on the host, so tail -F
+      # opens the file and blocks waiting for events that never arrive.
+      local ACTIVATOR_STARTED=0
       for _i in $(seq 1 300); do
+        # Drain new log bytes
+        if [ -f "$LOG_FILE" ]; then
+          local SIZE
+          SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+          if [ "''${SIZE:-0}" -gt "$LOG_OFFSET" ]; then
+            tail -c "+$((LOG_OFFSET + 1))" "$LOG_FILE" 2>/dev/null
+            LOG_OFFSET="$SIZE"
+          fi
+        fi
         STATUS=$(cat "$STATE_DIR/$RUN_ID/status" 2>/dev/null || true)
         case "$STATUS" in
+          running)
+            if [ "$ACTIVATOR_STARTED" -eq 0 ]; then
+              ACTIVATOR_STARTED=1
+            fi
+            ;;
           done)
+            # Drain any remaining log bytes
+            if [ -f "$LOG_FILE" ]; then
+              SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+              [ "''${SIZE:-0}" -gt "$LOG_OFFSET" ] && tail -c "+$((LOG_OFFSET + 1))" "$LOG_FILE" 2>/dev/null
+            fi
             # Reload host action bridge with new capabilities manifest
             if [ -f "$CLOSURE/etc/dvm/capabilities.json" ]; then
               "$DVM_CORE" reload-capabilities --path "$CLOSURE/etc/dvm/capabilities.json" 2>/dev/null || true
             fi
             echo "Switch complete."; return 0 ;;
           failed|invalid-closure)
-            echo "Activation failed:" >&2
-            cat "$STATE_DIR/$RUN_ID/activation.log" >&2 || true
+            # Drain any remaining log bytes before reporting failure
+            if [ -f "$LOG_FILE" ]; then
+              SIZE=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)
+              [ "''${SIZE:-0}" -gt "$LOG_OFFSET" ] && tail -c "+$((LOG_OFFSET + 1))" "$LOG_FILE" 2>/dev/null
+            fi
+            echo "Activation failed." >&2
             return 1 ;;
         esac
         sleep 1

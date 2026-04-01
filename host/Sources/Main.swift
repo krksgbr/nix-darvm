@@ -472,8 +472,18 @@ struct Start: AsyncParsableCommand {
 
             let runDir = stateDir.appendingPathComponent(DVMLog.runId)
             let statusFile = runDir.appendingPathComponent("status")
-            let logFile = runDir.appendingPathComponent("activation.log")
+            // Single host-visible log for the full boot session: boot progress
+            // from dvm-mount-store + activation output from dvm-activator.
+            let logFile = stateDir.appendingPathComponent("run.log")
             let deadline = Date().addingTimeInterval(300) // 5 min timeout
+
+            // Stream run.log live by polling for new bytes each iteration.
+            // We cannot use `tail -F` here: VirtioFS writes from the guest do not
+            // trigger kqueue NOTE_WRITE events on the host, so tail opens the file
+            // and blocks waiting for events that never arrive.
+            var logOffset = 0
+            var logLineBuffer = ""
+            var activatorStarted = false
 
             var activationSucceeded = false
             while Date() < deadline && !stopRequested {
@@ -484,29 +494,41 @@ struct Start: AsyncParsableCommand {
                     try? await runner.stop()
                     throw DVMError.activationFailed("guest boot failed: \(bootError)")
                 }
+                // Drain any new log bytes, print complete lines with timestamps
+                if let data = try? Data(contentsOf: logFile), data.count > logOffset {
+                    let newData = data.subdata(in: logOffset ..< data.count)
+                    logOffset = data.count
+                    if let text = String(data: newData, encoding: .utf8) {
+                        logLineBuffer += text
+                        var lines = logLineBuffer.components(separatedBy: "\n")
+                        logLineBuffer = lines.removeLast() // hold back incomplete trailing line
+                        for line in lines where !line.isEmpty {
+                            tprint(line)
+                        }
+                    }
+                }
                 if let statusText = try? String(contentsOf: statusFile, encoding: .utf8)
                     .trimmingCharacters(in: .whitespacesAndNewlines) {
+                    if statusText == "running" && !activatorStarted {
+                        activatorStarted = true
+                        DVMLog.log(phase: .activating, "activator running")
+                    }
                     if statusText == "done" {
+                        if !logLineBuffer.isEmpty { tprint(logLineBuffer) }
                         activationSucceeded = true
                         DVMLog.log(phase: .activating, "activation succeeded")
                         tprint("Activation succeeded.")
                         break
                     }
                     if statusText == "failed" || statusText == "invalid-closure" {
+                        if !logLineBuffer.isEmpty { tprint(logLineBuffer) }
                         let exitCode = (try? String(contentsOf: runDir.appendingPathComponent("exit-code"),
                                                     encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
                         DVMLog.log(phase: .activating, level: "error",
                                    "activation failed (status=\(statusText), exit=\(exitCode))")
-                        if let log = try? String(contentsOf: logFile, encoding: .utf8) {
-                            let tail = String(log.suffix(2000))
-                            tprint("Activation failed (exit code \(exitCode)). Log tail:")
-                            tprint(tail)
-                        } else {
-                            tprint("Activation failed (exit code \(exitCode)). No log available.")
-                        }
+                        tprint("Activation failed (exit code \(exitCode)).")
                         break
                     }
-                    // "running" — still in progress
                 }
                 try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
             }

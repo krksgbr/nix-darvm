@@ -54,6 +54,22 @@ restore:
     tart clone "$SNAP" "$VM"
     echo "Restored $VM from $SNAP"
 
+# Push image scripts to a running VM without a full image rebuild.
+# Edit scripts/dvm-activator or scripts/dvm-mount-store, then run this.
+# Uses the VirtioFS state dir as a staging area (no stdin piping needed).
+# Restart the VM after pushing to test: just dvm stop && just dvm start
+push-image-scripts:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SCRIPTS_DIR="$HOME/.local/state/dvm/scripts"
+    mkdir -p "$SCRIPTS_DIR"
+    cp guest/image-minimal/scripts/dvm-activator "$SCRIPTS_DIR/"
+    cp guest/image-minimal/scripts/dvm-mount-store "$SCRIPTS_DIR/"
+    DVM_CORE="$PWD/build/swift/debug/dvm-core" nix run --impure .#dvm -- exec -- \
+        sudo sh -c 'install -m 755 /var/run/dvm-state/scripts/dvm-activator /usr/local/bin/dvm-activator \
+                 && install -m 755 /var/run/dvm-state/scripts/dvm-mount-store /usr/local/bin/dvm-mount-store'
+    echo "Scripts pushed. Restart to apply: just dvm stop && just dvm start"
+
 # Build and run dvm (e.g. just dvm start, just dvm exec -- ls /)
 dvm *args: (build)
     DVM_CORE="$PWD/build/swift/debug/dvm-core" nix run --impure .#dvm -- {{args}}

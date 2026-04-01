@@ -1,0 +1,49 @@
+#!/bin/sh
+STATE_DIR="/var/run/dvm-state"
+CLOSURE=$(cat "$STATE_DIR/closure-path" 2>/dev/null)
+RUN_ID=$(cat "$STATE_DIR/run-id" 2>/dev/null || date +%s)
+RUN_DIR="$STATE_DIR/$RUN_ID"
+SYSTEM_PROFILE="/nix/var/nix/profiles/system"
+RUN_LOG="$STATE_DIR/run.log"
+mkdir -p "$RUN_DIR"
+
+log() { printf '[activator] %s\n' "$1" >> "$RUN_LOG"; }
+
+# Validate closure
+if [ -z "$CLOSURE" ] || [ ! -d "$CLOSURE" ]; then
+    echo "invalid-closure" > "$RUN_DIR/status"
+    log "invalid closure: ${CLOSURE:-<empty>}"
+    exit 1
+fi
+
+log "starting (run: $RUN_ID, closure: $CLOSURE)"
+echo "running" > "$RUN_DIR/status"
+
+# Disable link-nix-apps (hangs in headless VMs without GUI session)
+launchctl bootout gui/501/org.nix.link-nix-apps 2>/dev/null || true
+rm -f /Library/LaunchAgents/org.nix.link-nix-apps.plist
+
+# Update profile symlink before activation — darwin-rebuild reads it
+# to diff services and resolve primaryUser.
+ln -sfn "$CLOSURE" "$SYSTEM_PROFILE"
+
+# Run activation. Write line-by-line so each printf >> closes the fd and
+# VirtioFS flushes to the host immediately, enabling live log streaming.
+# We capture darwin-rebuild's exit code via a temp file because the pipeline
+# discards the left-hand exit code in POSIX sh.
+{
+    "$CLOSURE/sw/bin/darwin-rebuild" activate 2>&1
+    echo $? > "$RUN_DIR/.rc"
+} | while IFS= read -r line; do
+    printf '[darwin-rebuild] %s\n' "$line" >> "$RUN_LOG"
+done
+CODE=$(cat "$RUN_DIR/.rc" 2>/dev/null || echo 1)
+rm -f "$RUN_DIR/.rc"
+echo "$CODE" > "$RUN_DIR/exit-code"
+if [ "$CODE" -eq 0 ]; then
+    log "done"
+    echo "done" > "$RUN_DIR/status"
+else
+    log "failed (exit $CODE)"
+    echo "failed" > "$RUN_DIR/status"
+fi
