@@ -47,6 +47,14 @@ func NewInterceptor(secrets []control.SecretRule, caPool *CAPool) *Interceptor {
 	i.proxy = &httputil.ReverseProxy{
 		Rewrite:       i.rewriteRequest,
 		FlushInterval: -1, // immediate flush — no buffering surprises for SSE/streaming
+		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
+			host := req.Host
+			if host == "" {
+				host = req.URL.Host
+			}
+			log.Printf("proxy error: %s: %v", host, err)
+			w.WriteHeader(http.StatusBadGateway)
+		},
 	}
 	i.UpdateSecrets(secrets)
 	return i

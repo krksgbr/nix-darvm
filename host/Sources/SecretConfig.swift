@@ -300,40 +300,44 @@ extension CredentialManifest {
 
 extension CredentialManifest {
 
-    /// Resolve all secrets from host environment. Fails loudly on first missing var.
+    /// Resolve secrets from host environment.
+    /// Missing or empty env vars are skipped with a per-secret warning.
+    /// Structural errors (bad format, duplicate secrets) still throw.
     func resolve(hostKey: HostKey) throws -> [ResolvedSecret] {
-        try secrets.map { decl in
+        var resolved: [ResolvedSecret] = []
+        for decl in secrets {
             guard let value = ProcessInfo.processInfo.environment[decl.envVar] else {
-                throw SecretConfigError.envVarNotSet(
-                    secret: decl.envVar, envVar: decl.envVar)
+                fputs("Warning: skipping credential '\(decl.envVar)': environment variable '\(decl.envVar)' is not set\n", stderr)
+                continue
             }
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
-                throw SecretConfigError.envVarEmpty(
-                    secret: decl.envVar, envVar: decl.envVar)
+                fputs("Warning: skipping credential '\(decl.envVar)': environment variable '\(decl.envVar)' is set but empty\n", stderr)
+                continue
             }
 
             switch decl.mode {
             case .proxy:
                 let placeholder = derivePlaceholder(
                     project: project, envVar: decl.envVar, hostKey: hostKey)
-                return ResolvedSecret(
+                resolved.append(ResolvedSecret(
                     name: decl.envVar,
                     mode: .proxy,
                     placeholder: placeholder,
                     value: trimmed,
                     hosts: decl.hosts
-                )
+                ))
             case .passthrough:
                 // Passthrough: real value injected directly, no proxy interception
-                return ResolvedSecret(
+                resolved.append(ResolvedSecret(
                     name: decl.envVar,
                     mode: .passthrough,
                     placeholder: trimmed,
                     value: trimmed,
                     hosts: []
-                )
+                ))
             }
         }
+        return resolved
     }
 }

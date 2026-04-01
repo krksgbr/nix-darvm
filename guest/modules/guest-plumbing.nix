@@ -213,6 +213,11 @@ in
 
     environment.variables = {
       DVM_GUEST = "1";
+      # Trust the DVM credential proxy's MITM CA.
+      # Written to /etc/dvm-ca.pem at VM start by the host's netstack supervisor.
+      # Bun and Node.js use BoringSSL/OpenSSL and don't read the macOS Keychain,
+      # so NODE_EXTRA_CA_CERTS is required for HTTPS interception to work.
+      NODE_EXTRA_CA_CERTS = "/etc/dvm-ca.pem";
     };
 
     environment.systemPath = [

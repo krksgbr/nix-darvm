@@ -131,6 +131,10 @@
           elif [ -x "$PWD/build/swift/release/dvm-core" ]; then
             export DVM_CORE="$PWD/build/swift/release/dvm-core"
           fi
+          # Make DVM_NETSTACK overridable from local build
+          if [ -x "$PWD/build/dvm-netstack" ]; then
+            export DVM_NETSTACK="$PWD/build/dvm-netstack"
+          fi
         '';
       };
     };
