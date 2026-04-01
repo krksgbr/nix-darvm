@@ -643,7 +643,13 @@ struct Start: AsyncParsableCommand {
         // There's no nix-level assertion for this yet — requires migrating home
         // mounts to nix config (bean nix-darvm-xuus).
         let dvmMountsDir = "/var/dvm-mounts"
-        var setupLines: [String] = ["mkdir -p \(shellQuote(dvmMountsDir))"]
+        // manifest maps tag→mountPath so dvctl remount can remount by tag.
+        // macOS mount(8) always shows "virtio-fs" as the device, never the tag.
+        let manifestPath = shellQuote(dvmMountsDir + "/.manifest")
+        var setupLines: [String] = [
+            "mkdir -p \(shellQuote(dvmMountsDir))",
+            "> \(manifestPath)",
+        ]
         var mountFunctions: [String] = []
         var mountCalls: [String] = []
         for mount in remainingMounts {
@@ -680,15 +686,17 @@ struct Start: AsyncParsableCommand {
                 setupLines.append("[ -L \(p) ] && rm -f \(p); mkdir -p \(p)")
             }
 
+            // printf strips shell quoting, so the manifest contains bare unquoted values.
+            let writeManifest = "printf '%s %s\\n' \(t) \(mountPath) >> \(manifestPath)"
             let funcName = "mount_\(tag.rawValue.replacingOccurrences(of: "-", with: "_"))"
             mountFunctions.append("""
             \(funcName)() {
               if /sbin/mount | grep -q " on \(mountPath) "; then
-                echo "  \(t) -> \(mountPath) (already mounted)"; return 0
+                echo "  \(t) -> \(mountPath) (already mounted)"; \(writeManifest); return 0
               fi
               for i in 1 2 3 4 5; do
-                ERR=$(/sbin/mount_virtiofs \(t) \(mountPath) 2>&1) && { echo "  \(t) -> \(mountPath)"; return 0; }
-                case "$ERR" in *"Resource busy"*) echo "  \(t) -> \(mountPath)"; return 0;; esac
+                ERR=$(/sbin/mount_virtiofs \(t) \(mountPath) 2>&1) && { echo "  \(t) -> \(mountPath)"; \(writeManifest); return 0; }
+                case "$ERR" in *"Resource busy"*) echo "  \(t) -> \(mountPath)"; \(writeManifest); return 0;; esac
                 sleep 1
               done
               echo "  \(t) -> \(mountPath) (FAILED: $ERR)" >&2; return 1

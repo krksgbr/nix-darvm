@@ -140,6 +140,7 @@ in
           echo "  status                 Show status of all DVM services"
           echo "  restart agent-bridge   Restart the nix daemon bridge"
           echo "  restart agent-rpc      Restart the gRPC agent"
+          echo "  remount                Remount project VirtioFS shares (fixes stale file cache)"
         }
 
         cmd_status() {
@@ -153,6 +154,36 @@ in
           done
         }
 
+        # Remount all mirror-* VirtioFS shares.
+        # macOS VirtioFS doesn't invalidate guest dentry cache when the host
+        # atomically replaces a file (rename). After a host editor saves a file,
+        # the guest sees the old deleted inode (link count 0) and cat/open fail
+        # with ENOENT. Remounting discards the stale cache.
+        # Note: cd out of any project directory first, or umount will fail.
+        #
+        # macOS mount(8) always shows "virtio-fs" as the device — the tag is
+        # never exposed. We read /var/dvm-mounts/.manifest (written by dvm-core
+        # at startup) to get the tag for each mount point.
+        cmd_remount() {
+          local manifest=/var/dvm-mounts/.manifest
+          if [ ! -f "$manifest" ]; then
+            echo "No mount manifest at $manifest — is the VM fully started?" >&2
+            return 1
+          fi
+          grep '^mirror-' "$manifest" | while read -r tag path; do
+            printf "  %s -> %s ... " "$tag" "$path"
+            if ! sudo /sbin/umount "$path" 2>/dev/null; then
+              printf "FAILED (device busy — cd out of %s first)\n" "$path" >&2
+              continue
+            fi
+            if sudo /sbin/mount_virtiofs "$tag" "$path" 2>/dev/null; then
+              printf "ok\n"
+            else
+              printf "remount FAILED\n" >&2
+            fi
+          done
+        }
+
         case "''${1:-}" in
           status) cmd_status ;;
           restart)
@@ -162,6 +193,7 @@ in
               *) echo "Unknown service: ''${2:-}" >&2; usage >&2; exit 1 ;;
             esac
             ;;
+          remount) cmd_remount ;;
           -h|--help|help) usage ;;
           *) echo "Unknown command: ''${1:-}" >&2; usage >&2; exit 1 ;;
         esac
