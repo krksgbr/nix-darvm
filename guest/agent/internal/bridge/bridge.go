@@ -7,6 +7,7 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -77,44 +78,26 @@ func (b *Bridge) handleConn(local net.Conn) {
 		return
 	}
 
-	remoteFile := os.NewFile(uintptr(remoteFD), "vsock")
-	defer remoteFile.Close()
+	remote := os.NewFile(uintptr(remoteFD), "vsock")
+	defer remote.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// local → remote
+	// local → remote. When this direction closes, close remote to unblock
+	// the remote → local goroutine (which may be blocked on remote.Read).
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, bufSize)
-		for {
-			n, err := local.Read(buf)
-			if n > 0 {
-				if _, werr := remoteFile.Write(buf[:n]); werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
+		io.Copy(remote, local)
+		remote.Close()
 	}()
 
-	// remote → local
+	// remote → local. When this direction closes, close local to unblock
+	// the local → remote goroutine (which may be blocked on local.Read).
 	go func() {
 		defer wg.Done()
-		buf := make([]byte, bufSize)
-		for {
-			n, err := remoteFile.Read(buf)
-			if n > 0 {
-				if _, werr := local.Write(buf[:n]); werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
+		io.Copy(local, remote)
+		local.Close()
 	}()
 
 	wg.Wait()
