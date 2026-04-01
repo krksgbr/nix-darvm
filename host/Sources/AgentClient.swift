@@ -108,7 +108,12 @@ struct AgentClient: Sendable {
         let workDir = cwd
         let useTTY = tty
 
-        return try await withAgentClient(allowRetry: false) { agent in
+        // allowRetry: true — .unavailable here means the agent closed the
+        // connection before the HTTP/2 preface, i.e. before any exec request
+        // was sent. Retrying is safe. If the agent crashes mid-exec we'd also
+        // get .unavailable, but the defer above already restored the terminal,
+        // so starting a new session on retry is the right behaviour.
+        return try await withAgentClient(allowRetry: true) { agent in
             // Use a task group so we can cancel the request producer
             // when the response handler receives the exit code.
             try await withThrowingTaskGroup(of: Int32.self) { outerGroup in
@@ -185,10 +190,10 @@ struct AgentClient: Sendable {
         // call to fail with .unavailable even though the agent is about to come
         // back up.
         //
-        // ASSUMPTION: the caller's operation is idempotent. If the connection
+        // ASSUMPTION: the caller's operation is safe to retry. If the connection
         // drops mid-call we cannot know whether the agent executed the operation
-        // before disconnecting. Non-idempotent callers (e.g. interactive exec)
-        // must pass allowRetry: false.
+        // before disconnecting. Pass allowRetry: false for operations where
+        // executing twice would cause unrecoverable harm.
         let maxAttempts = allowRetry ? 4 : 1
         var lastError: Error?
 
