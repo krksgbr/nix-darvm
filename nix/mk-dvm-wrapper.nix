@@ -123,6 +123,19 @@ pkgs.writeShellApplication {
       fi
     }
 
+    # Exec a dvm-core command, wrapping with DVM_CREDENTIAL_PROVIDER if set.
+    # Used for commands that do credential resolution (shell, exec, catch-all).
+    # Example: DVM_CREDENTIAL_PROVIDER="fnox exec" causes dvm-core to run
+    # inside fnox, which populates the host env with keychain secrets before
+    # passthrough credential resolution reads them.
+    exec_with_creds() {
+      if [ -n "''${DVM_CREDENTIAL_PROVIDER:-}" ]; then
+        exec ''${DVM_CREDENTIAL_PROVIDER} "$@"
+      else
+        exec "$@"
+      fi
+    }
+
     build_closure() {
       local flake
       flake=$(resolve_flake)
@@ -314,11 +327,11 @@ pkgs.writeShellApplication {
         ;;
       shell)
         require_vm
-        exec "$DVM_CORE" ssh "$@"
+        exec_with_creds "$DVM_CORE" ssh "$@"
         ;;
       exec)
         require_vm
-        exec "$DVM_CORE" exec "$@"
+        exec_with_creds "$DVM_CORE" exec "$@"
         ;;
       -h|--help|help)
         usage
@@ -326,7 +339,7 @@ pkgs.writeShellApplication {
       *)
         # Catch-all: forward to guest as a command
         require_vm
-        exec "$DVM_CORE" exec -t -- "$command" "$@"
+        exec_with_creds "$DVM_CORE" exec -t -- "$command" "$@"
         ;;
     esac
   '';
