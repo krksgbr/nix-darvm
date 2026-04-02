@@ -6,6 +6,12 @@ enum AccessMode {
     case readWrite
 }
 
+/// Runtime transport for a guest-visible mount.
+enum MountTransport: String, Codable {
+    case virtiofs
+    case nfs
+}
+
 /// An absolute filesystem path. Rejects empty and relative paths.
 struct AbsolutePath: CustomStringConvertible {
     let rawValue: String
@@ -49,12 +55,55 @@ struct MountTag: CustomStringConvertible {
     var description: String { rawValue }
 }
 
-/// Configuration for a VirtioFS mount between host and guest.
-/// Each mount gets its own VZSingleDirectoryShare device, mounted directly at
-/// guestPath via mount_virtiofs. This ensures `pwd` shows the real host path
-/// (symlink-based approaches break because macOS resolves symlinks).
+/// Configuration for a host↔guest mount.
+/// Mirrors use NFS in the current spike; everything else stays on VirtioFS.
 enum MountConfig {
-    case exact(tag: MountTag, hostPath: AbsolutePath, guestPath: AbsolutePath, access: AccessMode)
+    case exact(
+        tag: MountTag,
+        hostPath: AbsolutePath,
+        guestPath: AbsolutePath,
+        access: AccessMode,
+        transport: MountTransport
+    )
+
+    var tag: MountTag {
+        switch self {
+        case .exact(let tag, _, _, _, _):
+            tag
+        }
+    }
+
+    var hostPath: AbsolutePath {
+        switch self {
+        case .exact(_, let hostPath, _, _, _):
+            hostPath
+        }
+    }
+
+    var guestPath: AbsolutePath {
+        switch self {
+        case .exact(_, _, let guestPath, _, _):
+            guestPath
+        }
+    }
+
+    var access: AccessMode {
+        switch self {
+        case .exact(_, _, _, let access, _):
+            access
+        }
+    }
+
+    var transport: MountTransport {
+        switch self {
+        case .exact(_, _, _, _, let transport):
+            transport
+        }
+    }
+
+    var isMirror: Bool {
+        tag.rawValue.hasPrefix("mirror-")
+    }
 }
 
 enum MountConfigError: Error, CustomStringConvertible {

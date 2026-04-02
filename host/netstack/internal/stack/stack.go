@@ -34,6 +34,7 @@ import (
 // Config configures the network stack.
 type Config struct {
 	FrameConn  net.Conn
+	Subnet     string
 	GatewayIP  string
 	GuestIP    string
 	GuestMAC   string
@@ -70,11 +71,11 @@ func New(cfg *Config) (*Stack, error) {
 	gvConfig := &types.Configuration{
 		Debug:             false,
 		MTU:               int(cfg.MTU),
-		Subnet:            "192.168.64.0/24",
+		Subnet:            cfg.Subnet,
 		GatewayIP:         cfg.GatewayIP,
 		GatewayMacAddress: gatewayMAC,
 		DHCPStaticLeases: map[string]string{
-			cfg.GuestIP: cfg.GuestMAC,
+			cfg.GuestMAC: cfg.GuestIP,
 		},
 		// Empty DNS zones = forward all queries to host's upstream resolver
 		// (gvisor-tap-vsock uses net.Resolver by default for unmatched queries)
@@ -335,5 +336,3 @@ func dupFD(f *os.File) (*os.File, error) {
 	}
 	return os.NewFile(uintptr(fd), f.Name()+"-dup"), nil
 }
-
-

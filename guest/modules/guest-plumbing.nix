@@ -137,6 +137,7 @@ in
           echo "Usage: dvctl <command> [args]"
           echo ""
           echo "Commands:"
+          echo "  mounts                 Show runtime mount manifest and live fs state"
           echo "  status                 Show status of all DVM services"
           echo "  restart agent-bridge   Restart the nix daemon bridge"
           echo "  restart agent-rpc      Restart the gRPC agent"
@@ -154,6 +155,35 @@ in
           done
         }
 
+        cmd_mounts() {
+          local manifest=/var/dvm-mounts/.manifest
+          if [ ! -f "$manifest" ]; then
+            echo "No mount manifest at $manifest — is the VM fully started?" >&2
+            return 1
+          fi
+
+          while read -r kind tag path; do
+            [ -n "$kind" ] || continue
+            private_path="$path"
+            case "$private_path" in
+              /private/*) ;;
+              *) private_path="/private$path" ;;
+            esac
+            line=$(
+              /sbin/mount | awk -v path="$path" -v private="$private_path" '
+                index($0, " on " path " ") || index($0, " on " private " ") { print; exit }
+              '
+            )
+            if [ -n "$line" ]; then
+              printf "  %-8s %-12s %s\n" "$kind" "$tag" "$path"
+              printf "    mount: %s\n" "$line"
+            else
+              printf "  %-8s %-12s %s\n" "$kind" "$tag" "$path"
+              printf "    mount: MISSING\n"
+            fi
+          done < "$manifest"
+        }
+
         # Remount all mirror-* VirtioFS shares.
         # macOS VirtioFS doesn't invalidate guest dentry cache when the host
         # atomically replaces a file (rename). After a host editor saves a file,
@@ -161,16 +191,21 @@ in
         # with ENOENT. Remounting discards the stale cache.
         # Note: cd out of any project directory first, or umount will fail.
         #
-        # macOS mount(8) always shows "virtio-fs" as the device — the tag is
-        # never exposed. We read /var/dvm-mounts/.manifest (written by dvm-core
-        # at startup) to get the tag for each mount point.
+        # We read /var/dvm-mounts/.manifest (written by dvm-core at startup)
+        # to get the transport, tag, and path for each runtime mount.
+        # NFS mirrors intentionally skip this workaround — the coherency bug is
+        # specific to VirtioFS.
         cmd_remount() {
           local manifest=/var/dvm-mounts/.manifest
           if [ ! -f "$manifest" ]; then
             echo "No mount manifest at $manifest — is the VM fully started?" >&2
             return 1
           fi
-          grep '^mirror-' "$manifest" | while read -r tag path; do
+          grep '^[^ ]\+ mirror-' "$manifest" | while read -r kind tag path; do
+            if [ "$kind" = "nfs" ]; then
+              printf "  %s -> %s ... skip (NFS mirror mounts do not need VirtioFS remount)\n" "$tag" "$path"
+              continue
+            fi
             printf "  %s -> %s ... " "$tag" "$path"
             if ! sudo /sbin/umount "$path" 2>/dev/null; then
               printf "FAILED (device busy — cd out of %s first)\n" "$path" >&2
@@ -185,6 +220,7 @@ in
         }
 
         case "''${1:-}" in
+          mounts) cmd_mounts ;;
           status) cmd_status ;;
           restart)
             case "''${2:-}" in

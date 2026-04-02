@@ -28,6 +28,7 @@ final class NetstackSupervisor: @unchecked Sendable {
         let subnet: String
         let gatewayIP: String
         let guestIP: String
+        let guestMAC: String
         let dnsServers: [String]
         let caCertPEM: String
         let caKeyPEM: String
@@ -243,7 +244,7 @@ final class NetstackSupervisor: @unchecked Sendable {
                 "subnet": config.subnet,
                 "gateway_ip": config.gatewayIP,
                 "guest_ip": config.guestIP,
-                "guest_mac": "",
+                "guest_mac": config.guestMAC,
                 "dns_servers": config.dnsServers,
                 "ca_cert_pem": config.caCertPEM,
                 "ca_key_pem": config.caKeyPEM,

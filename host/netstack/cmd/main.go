@@ -63,6 +63,7 @@ func main() {
 	// Initialize the gVisor network stack.
 	ns, err := stack.New(&stack.Config{
 		FrameConn:  frameConn,
+		Subnet:     cfg.Subnet,
 		GatewayIP:  cfg.GatewayIP,
 		GuestIP:    cfg.GuestIP,
 		GuestMAC:   cfg.GuestMAC,

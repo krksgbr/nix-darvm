@@ -9,6 +9,7 @@ import Virtualization
 struct ConfiguredVM {
     let vm: VZVirtualMachine
     let macAddress: VZMACAddress
+    let nfsMACAddress: VZMACAddress?
     let effectiveMounts: [MountConfig]
 }
 
@@ -78,34 +79,56 @@ enum VMConfigurator {
         )
         vzConfig.storageDevices = [VZVirtioBlockDeviceConfiguration(attachment: diskAttachment)]
 
-        // Network: FileHandle (netstack sidecar) or NAT (default)
-        let network = VZVirtioNetworkDeviceConfiguration()
-        network.macAddress = config.macAddress
+        // Network:
+        // - primary NIC: credential netstack sidecar (or NAT fallback)
+        // - optional secondary NIC: dedicated NAT path for NFS mirror mounts
+        let primaryNetwork = VZVirtioNetworkDeviceConfiguration()
+        let primaryMAC = netstackFD != nil
+            ? VZMACAddress.randomLocallyAdministered()
+            : config.macAddress
+        primaryNetwork.macAddress = primaryMAC
         if let fd = netstackFD {
             let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
-            network.attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: handle)
+            primaryNetwork.attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: handle)
         } else {
-            network.attachment = VZNATNetworkDeviceAttachment()
+            primaryNetwork.attachment = VZNATNetworkDeviceAttachment()
         }
-        vzConfig.networkDevices = [network]
 
-        // VirtioFS — each mount gets its own VZSingleDirectoryShare device,
-        // mounted at the same path in the guest so `pwd` matches the host.
+        let hasNFSMirrors = mounts.contains { $0.transport == .nfs && $0.isMirror }
+        var nfsMACAddress: VZMACAddress?
+        if hasNFSMirrors {
+            let nfsNetwork = VZVirtioNetworkDeviceConfiguration()
+            let mac = VZMACAddress.randomLocallyAdministered()
+            nfsNetwork.macAddress = mac
+            nfsNetwork.attachment = VZNATNetworkDeviceAttachment()
+            vzConfig.networkDevices = [primaryNetwork, nfsNetwork]
+            nfsMACAddress = mac
+        } else {
+            vzConfig.networkDevices = [primaryNetwork]
+        }
+
+        // VirtioFS — each virtiofs mount gets its own VZSingleDirectoryShare
+        // device. NFS mirror mounts are tracked in effectiveMounts but are not
+        // attached as VZ directory shares.
         var fsDevices: [VZDirectorySharingDeviceConfiguration] = []
         var effectiveMounts: [MountConfig] = []
 
         for mount in mounts {
-            guard case .exact(let tag, let hostPath, _, let access) = mount else { continue }
+            let tag = mount.tag
+            let hostPath = mount.hostPath
             guard FileManager.default.fileExists(atPath: hostPath.rawValue) else {
                 print("Warning: skipping mount \(tag), host path does not exist: \(hostPath)")
                 continue
             }
-            let device = VZVirtioFileSystemDeviceConfiguration(tag: tag.rawValue)
-            device.share = VZSingleDirectoryShare(
-                directory: VZSharedDirectory(
-                    url: URL(fileURLWithPath: hostPath.rawValue), readOnly: access == .readOnly)
-            )
-            fsDevices.append(device)
+            if mount.transport == .virtiofs {
+                let device = VZVirtioFileSystemDeviceConfiguration(tag: tag.rawValue)
+                device.share = VZSingleDirectoryShare(
+                    directory: VZSharedDirectory(
+                        url: URL(fileURLWithPath: hostPath.rawValue),
+                        readOnly: mount.access == .readOnly)
+                )
+                fsDevices.append(device)
+            }
             effectiveMounts.append(mount)
         }
 
@@ -159,7 +182,8 @@ enum VMConfigurator {
         try vzConfig.validate()
         return ConfiguredVM(
             vm: VZVirtualMachine(configuration: vzConfig),
-            macAddress: config.macAddress,
+            macAddress: primaryMAC,
+            nfsMACAddress: nfsMACAddress,
             effectiveMounts: effectiveMounts
         )
     }

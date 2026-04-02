@@ -12,11 +12,12 @@ just dvm init       # Base image (skip if any darvm-* exists)
 ## 1. Host config — `~/.config/dvm/config.toml`
 
 ```toml
-[mounts]
-mirror = ["/path/to/project-a", "/path/to/project-b"]
+[mounts.mirror]
+dirs = ["/path/to/project-a", "/path/to/project-b"]
+transport = "nfs"
 
-[host]
-commands = ["brew", "git"]
+[mounts.home]
+dirs = ["~/.claude", "~/.unison"]
 
 flake = "/path/to/your-dvm-flake"   # or omit to use PWD/flake.nix
 ```

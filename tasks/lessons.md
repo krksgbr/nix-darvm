@@ -1,0 +1,4 @@
+# Lessons
+
+- 2026-04-02: When a VM-side network stack depends on a static DHCP lease, configure it from the actual VM NIC MAC produced by `VMConfigurator`, not a guessed/default value. Detection signal: the guest gateway/DHCP identity looks wrong or the guest gets the wrong subnet/IP. Prevention rule: create the VM first, then pass the real NIC identity into the sidecar/network config.
+- 2026-04-02: Do not verify mounts by grepping shell-quoted paths or assuming guest-visible `/var/...` paths appear unchanged in `mount` output on macOS. Detection signal: mounts succeed functionally but verification logs `unexpected fs type` or `MISSING`, followed by `Resource busy` on retry. Prevention rule: verify using raw paths, include `/private` aliases for macOS paths, and add a short post-mount settle check before declaring failure.

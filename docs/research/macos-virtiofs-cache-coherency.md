@@ -267,6 +267,160 @@ NFS is the most viable architectural fix for correct long-term coherency, but
 introduces setup and lifecycle complexity (exports configuration, nfsd
 management, dynamic guest IP across reboots). Not yet implemented.
 
+#### Operational cost: NFS requires host privilege
+
+If DVM manages NFS dynamically at runtime, it needs root privileges on the host.
+The privileged operations are not incidental; they are part of how macOS NFS is
+administered:
+
+- updating `/etc/exports`
+- validating exports with `nfsd`
+- starting or reloading `nfsd`
+
+That means a design where `dvm start` automatically configures host exports for
+the current VM run will require elevation (for example `sudo` / Touch ID) unless
+privilege is moved somewhere else.
+
+There are three realistic operational models:
+
+1. **Dynamic host-managed NFS exports**
+   DVM edits `/etc/exports` and updates `nfsd` as part of startup/shutdown.
+   This is the most automatic model, but it requires host root privileges at
+   runtime.
+
+2. **One-time manual root setup**
+   The user preconfigures `/etc/exports` and ensures `nfsd` is already enabled.
+   DVM then only performs guest-side mounts. This can reduce or eliminate
+   repeated runtime prompts, but it gives up dynamic per-run export management
+   and makes setup more manual.
+
+3. **Privileged helper / daemon**
+   A root-owned helper manages exports on behalf of unprivileged `dvm`.
+   This can eliminate repeated interactive prompts during normal runs, but it
+   does not eliminate privilege from the system overall; it centralizes it into
+   a dedicated helper.
+
+The important distinction is:
+
+- **reducing prompt churn** is feasible
+- **eliminating privilege entirely** is not compatible with dynamic host-managed NFS
+
+So if "no repeated Touch ID prompts" is the goal, that is solvable with either
+manual preconfiguration or a privileged helper. If "no host privilege anywhere"
+is the goal, NFS is the wrong transport.
+
+#### Other alternatives considered
+
+**Reverse SSHFS / SFTP mounts**
+
+Tools like Lima support `reverse-sshfs` as an alternative mount type. This
+avoids Apple's VirtioFS bugs because the guest talks to a userspace filesystem
+server over SSH rather than Apple's kernel VirtioFS path. The downside is
+performance and operational complexity: SSHFS is generally slower than NFS for
+metadata-heavy workloads, introduces another long-lived transport/process to
+supervise, and broadens the blast radius if the guest compromises the mount
+session. Worth considering as a fallback or prototype, but not the preferred
+long-term design.
+
+**SMB / macOS network file sharing**
+
+The host can export directories via macOS file sharing and the guest can mount
+them over SMB. This is a valid alternative to VirtioFS and is explicitly
+recommended by some macOS VM tooling as the generic "network share" path.
+However, SMB is a worse fit for a Unix-heavy development environment: metadata
+semantics, permissions, symlink behavior, and shell/tool compatibility are
+generally rougher than NFS. If NFS proves operationally difficult, SMB is worth
+testing, but it is not the first choice.
+
+**Workspace sync instead of a live shared filesystem**
+
+Rather than sharing the host directory live, the guest could keep its own local
+copy of the workspace and synchronize changes in and out with a replication tool
+(Mutagen/Unison/Syncthing-style). This avoids live coherency bugs entirely and
+can preserve good guest-side performance because the guest mostly works against
+its own local disk. The trade-off is semantic complexity: the system stops being
+"a shared directory" and becomes "a replicated workspace" with conflict,
+latency, and tooling implications. This is the most serious alternative if NFS
+is too slow or too operationally awkward, but it is a larger workflow change.
+
+**9p / QEMU-style filesystems**
+
+9p is used by some QEMU-based systems, but it is not a natural fit for DVM's
+current Virtualization.framework backend and comes with its own cache/performance
+trade-offs. Pursuing 9p would imply a much larger architectural shift than
+switching from VirtioFS to NFS, so it is not a practical next step.
+
+**Custom filesystem / OrbStack-style design**
+
+The "best" user experience would come from a custom host↔guest filesystem that
+pushes invalidation events correctly (the way OrbStack appears to do). In
+practice this is not a realistic option for DVM today: it would require a
+substantial custom implementation, likely deep integration with host filesystem
+events, and possibly guest-side kernel support or Apple fixes. This is useful
+as a conceptual benchmark, not as a near-term plan.
+
+#### Recommendation
+
+If DVM moves away from VirtioFS for mutable project directories, the strongest
+next experiment is:
+
+1. Use NFS for project mirror mounts only.
+2. Keep VirtioFS for mounts where coherency is less critical or immutability is
+   the point (for example `/nix/store`).
+3. If NFS is too slow or too operationally awkward, revisit a sync-based
+   workspace model before exploring more exotic filesystem protocols.
+
+#### Early benchmark signal: NFS fixes coherence, but VirtioFS is much faster for Bun installs
+
+A small Bun benchmark was run in four configurations:
+
+- host local APFS
+- DVM with the repo on an NFS mirror
+- DVM with the repo on a VirtioFS mirror
+- DVM with the repo copied to guest-local storage
+
+Measured wall-clock times:
+
+- **Host APFS**
+  - cold: `0.55s`
+  - warm: `0.04s`
+- **DVM on NFS**
+  - cold: `14.34s`
+  - warm: `12.78s`
+- **DVM on VirtioFS**
+  - cold: `5.44s`
+  - warm: `3.68s`
+- **DVM guest-local**
+  - cold: `6.84s`
+  - warm: `4.47s`
+
+Interpretation:
+
+- Moving the repo off NFS cuts the DVM install time substantially, so NFS is a
+  major part of the slowdown for this workload.
+- Switching from NFS to VirtioFS improves the shared-mount case even more:
+  - cold: `14.34s -> 5.44s`
+  - warm: `12.78s -> 3.68s`
+- VirtioFS is still much slower than host, so the VM/shared-filesystem overhead
+  remains real even in the faster shared-mount case.
+
+Practical implication:
+
+- **NFS** still looks like the safer transport when host→guest coherency is the
+  hard requirement.
+- **VirtioFS** is much better for package-manager-heavy workloads like
+  `bun install`, if the known host→guest coherency bugs are acceptable for the
+  repo/workflow.
+
+So the tradeoff is sharper now:
+
+- choose NFS for coherence
+- choose VirtioFS for install/build speed
+- or keep hot dependency/build directories guest-local when the repo needs both
+
+Detailed benchmark notes live in
+[/Users/gaborkerekes/projects/dvm-bun-install-bench/RESULTS.md](/Users/gaborkerekes/projects/dvm-bun-install-bench/RESULTS.md).
+
 ---
 
 ## Bug 2: server-side readdir cache for directories empty at VM startup

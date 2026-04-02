@@ -112,23 +112,41 @@ let guestHome = "/Users/admin"
 
 /// Build mount configs from mirror, home, and system directory lists.
 ///
-/// - mirror dirs: mounted at the same absolute path in the guest (project dirs, read-write)
+/// - mirror dirs: mounted at the same absolute path in the guest via NFS (project dirs, read-write)
 /// - home dirs: mounted relative to the guest user's home (config/data dirs, read-write)
 /// - system dirs: mounted at the same absolute path in the guest (toolchains, read-only)
 ///
 /// WARNING: Do NOT mount ~/.config/dvm — it contains user configuration.
 /// A writable mount would let a rogue guest modify host settings.
-func buildMounts(hostHome: String, mirrorDirs: [String], homeDirs: [String], systemDirs: [String] = []) throws -> [MountConfig] {
+func buildMounts(
+    hostHome: String,
+    mirrorDirs: [String],
+    mirrorTransport: MountTransport?,
+    homeDirs: [String],
+    systemDirs: [String] = []
+) throws -> [MountConfig] {
     var mounts: [MountConfig] = [
         .exact(tag: try MountTag("nix-store"),
                hostPath: try AbsolutePath("/nix/store"),
                guestPath: try AbsolutePath("/nix/store"),
-               access: .readOnly),
+               access: .readOnly,
+               transport: .virtiofs),
         .exact(tag: try MountTag("nix-cache"),
                hostPath: try AbsolutePath("\(hostHome)/.cache/nix"),
                guestPath: try AbsolutePath("\(guestHome)/.cache/nix"),
-               access: .readWrite),
+               access: .readWrite,
+               transport: .virtiofs),
     ]
+
+    let resolvedMirrorTransport: MountTransport
+    if mirrorDirs.isEmpty {
+        resolvedMirrorTransport = .nfs
+    } else {
+        guard let mirrorTransport else {
+            throw ConfigError.missingKey(key: "transport", section: "mounts.mirror")
+        }
+        resolvedMirrorTransport = mirrorTransport
+    }
 
     for (i, d) in mirrorDirs.enumerated() {
         let resolved = URL(
@@ -138,7 +156,8 @@ func buildMounts(hostHome: String, mirrorDirs: [String], homeDirs: [String], sys
             tag: try MountTag("mirror-\(i)"),
             hostPath: try AbsolutePath(resolved),
             guestPath: try AbsolutePath(resolved),
-            access: .readWrite
+            access: .readWrite,
+            transport: resolvedMirrorTransport
         ))
     }
 
@@ -161,7 +180,8 @@ func buildMounts(hostHome: String, mirrorDirs: [String], homeDirs: [String], sys
             tag: try MountTag("home-\(i)"),
             hostPath: try AbsolutePath(hostPath),
             guestPath: try AbsolutePath(guestPath),
-            access: .readWrite
+            access: .readWrite,
+            transport: .virtiofs
         ))
     }
 
@@ -174,7 +194,8 @@ func buildMounts(hostHome: String, mirrorDirs: [String], homeDirs: [String], sys
             tag: try MountTag("system-\(i)"),
             hostPath: try AbsolutePath(resolved),
             guestPath: try AbsolutePath(resolved),
-            access: .readOnly
+            access: .readOnly,
+            transport: .virtiofs
         ))
     }
 
@@ -229,10 +250,6 @@ struct Start: AsyncParsableCommand {
     )
 
     @Option(name: .long, parsing: .upToNextOption,
-            help: "Mirror-mount directories (same absolute path in guest)")
-    var dir: [String] = []
-
-    @Option(name: .long, parsing: .upToNextOption,
             help: "Home-mount directories (relative to guest user's home)")
     var homeDir: [String] = []
 
@@ -265,7 +282,8 @@ struct Start: AsyncParsableCommand {
         let config = try DVMConfig.load()
         let mounts = try buildMounts(
             hostHome: home,
-            mirrorDirs: config.mirrorDirs + dir,
+            mirrorDirs: config.mirrorDirs,
+            mirrorTransport: config.mirrorTransport,
             homeDirs: config.homeDirs + homeDir,
             systemDirs: systemDir
         )
@@ -296,29 +314,32 @@ struct Start: AsyncParsableCommand {
         let netstackBinary = ProcessInfo.processInfo.environment["DVM_NETSTACK"]
             ?? "/usr/local/bin/dvm-netstack"
 
-        let netstackConfig = NetstackSupervisor.Config(
+        let initialNetstackConfig = NetstackSupervisor.Config(
             netstackBinary: netstackBinary,
-            subnet: "192.168.64.0/24",
-            gatewayIP: "192.168.64.1",
-            guestIP: "192.168.64.2",
+            subnet: "172.22.0.0/24",
+            gatewayIP: "172.22.0.1",
+            guestIP: "172.22.0.2",
+            guestMAC: "",
             dnsServers: ["8.8.8.8", "8.8.4.4"],
             caCertPEM: "",
             caKeyPEM: ""
         )
 
         let netstackSupervisor = try NetstackSupervisor.launch(
-            config: netstackConfig,
+            config: initialNetstackConfig,
             onCrash: {
                 DVMLog.log(level: "error", "dvm-netstack crashed — networking is down, failing closed")
                 tprint("FATAL: Credential proxy (dvm-netstack) crashed. VM networking is down.")
             }
         )
-
-        try netstackSupervisor.configure(config: netstackConfig)
-        caCertPEM = netstackSupervisor.caCertPEM
-        DVMLog.log(phase: .configuring, "dvm-netstack sidecar ready (CA: \(caCertPEM.isEmpty ? "none" : "\(caCertPEM.count) bytes"))")
-        netstackSupervisor.startMonitoring()
-        tprint("Credential proxy started.")
+        var nfsExportManager: NFSExportManager?
+        defer {
+            do {
+                try nfsExportManager?.removeManagedExports()
+            } catch {
+                DVMLog.log(level: "error", "failed to remove DVM NFS exports: \(error)")
+            }
+        }
 
         // Create state directory for host↔guest activation state exchange.
         // Shared via VirtioFS as "dvm-state", mounted at /var/run/dvm-state in guest.
@@ -367,6 +388,27 @@ struct Start: AsyncParsableCommand {
             homeDataDir: homeDataDir
         )
         let effectiveMounts = configured.effectiveMounts
+        let nfsMACAddress = configured.nfsMACAddress
+        let netstackConfig = NetstackSupervisor.Config(
+            netstackBinary: netstackBinary,
+            subnet: initialNetstackConfig.subnet,
+            gatewayIP: initialNetstackConfig.gatewayIP,
+            guestIP: initialNetstackConfig.guestIP,
+            guestMAC: configured.macAddress.string,
+            dnsServers: initialNetstackConfig.dnsServers,
+            caCertPEM: initialNetstackConfig.caCertPEM,
+            caKeyPEM: initialNetstackConfig.caKeyPEM
+        )
+        try netstackSupervisor.configure(config: netstackConfig)
+        caCertPEM = netstackSupervisor.caCertPEM
+        DVMLog.log(phase: .configuring, "dvm-netstack sidecar ready (CA: \(caCertPEM.isEmpty ? "none" : "\(caCertPEM.count) bytes"), guest_mac=\(configured.macAddress.string))")
+        netstackSupervisor.startMonitoring()
+        tprint("Credential proxy started.")
+        DVMLog.log(
+            phase: .configuring,
+            "VM NICs: primary(mac=\(configured.macAddress.string), transport=\(netstackSupervisor.vmFD >= 0 ? "netstack" : "nat"))"
+                + (nfsMACAddress.map { ", nfs(mac=\($0.string), transport=nat)" } ?? "")
+        )
 
         let runner = VMRunner(configured)
 
@@ -569,6 +611,13 @@ struct Start: AsyncParsableCommand {
         if agentConnected {
             DVMLog.log(phase: .waitingForAgent, "agent is reachable")
             tprint("Guest agent connected.")
+            if let networkSnapshot = try? await agentClient.execCaptureOutput(
+                command: ["sh", "-c", "ifconfig -a; printf '\\n--- ROUTES ---\\n'; netstat -rn -f inet"]
+            ), !networkSnapshot.isEmpty {
+                DVMLog.log(phase: .waitingForAgent, "guest network snapshot:\n\(networkSnapshot)")
+            } else {
+                DVMLog.log(phase: .waitingForAgent, level: "warn", "failed to capture guest network snapshot")
+            }
         } else if !stopRequested {
             controlSocket.update(.failed, error: "guest agent unreachable")
             tprint("Stopping VM.")
@@ -612,12 +661,42 @@ struct Start: AsyncParsableCommand {
         // critical for GUI login where WindowServer/Finder/Dock race on ~.
         let bootMountedTags: Set<String> = ["nix-store", "dvm-home"]
         let remainingMounts = effectiveMounts.filter { mount in
-            guard case .exact(let tag, _, _, _) = mount else { return false }
-            return !bootMountedTags.contains(tag.rawValue)
+            !bootMountedTags.contains(mount.tag.rawValue)
         }
         controlSocket.update(.mounting, ip: ip)
-        DVMLog.log(phase: .mounting, "mounting \(remainingMounts.count) VirtioFS shares (nix-store handled by image)")
-        tprint("Mounting VirtioFS shares...")
+        let nfsMirrorMounts = remainingMounts.filter { $0.transport == .nfs && $0.isMirror }
+        var nfsHostIP: GuestIP?
+        if !nfsMirrorMounts.isEmpty {
+            guard let nfsMACAddress else {
+                fatalError("NFS mirror mounts exist but no NFS network MAC was configured")
+            }
+
+            DVMLog.log(phase: .mounting, "waiting for NFS NIC DHCP lease (mac=\(nfsMACAddress.string))")
+
+            let nfsGuestIP: GuestIP = try await {
+                let deadline = Date().addingTimeInterval(30)
+                while Date() < deadline {
+                    if let leaseIP = DHCPLeaseParser.getIPAddress(forMAC: nfsMACAddress.string) {
+                        return leaseIP
+                    }
+                    try await Task.sleep(nanoseconds: 500_000_000)
+                }
+                throw DVMError.activationFailed("timed out waiting for NFS NIC DHCP lease for MAC \(nfsMACAddress.string)")
+            }()
+
+            let hostResolution = try HostNetworkResolver.resolve(reachableFrom: nfsGuestIP)
+            let resolvedHostIP = hostResolution.hostIP
+            nfsHostIP = resolvedHostIP
+            DVMLog.log(
+                phase: .mounting,
+                "configuring NFS exports for \(nfsMirrorMounts.count) mirror mounts (guest=\(nfsGuestIP), host=\(resolvedHostIP), mac=\(nfsMACAddress.string), \(hostResolution))"
+            )
+            let manager = NFSExportManager(guestIP: nfsGuestIP)
+            try manager.install(for: nfsMirrorMounts)
+            nfsExportManager = manager
+        }
+        DVMLog.log(phase: .mounting, "mounting \(remainingMounts.count) runtime shares (nix-store handled by image)")
+        tprint("Mounting runtime shares...")
 
         // Build mount script and execute via gRPC Exec.
         //
@@ -643,28 +722,30 @@ struct Start: AsyncParsableCommand {
         // There's no nix-level assertion for this yet — requires migrating home
         // mounts to nix config (bean nix-darvm-xuus).
         let dvmMountsDir = "/var/dvm-mounts"
-        // manifest maps tag→mountPath so dvctl remount can remount by tag.
-        // macOS mount(8) always shows "virtio-fs" as the device, never the tag.
+        // manifest maps type+tag→mountPath so dvctl can distinguish transport.
         let manifestPath = shellQuote(dvmMountsDir + "/.manifest")
+        let mountLogDir = shellQuote("/tmp/dvm-mount-logs")
         var setupLines: [String] = [
             "mkdir -p \(shellQuote(dvmMountsDir))",
             "> \(manifestPath)",
+            "rm -rf \(mountLogDir)",
+            "mkdir -p \(mountLogDir)",
         ]
         var mountFunctions: [String] = []
         var mountCalls: [String] = []
         for mount in remainingMounts {
-            let (tag, path): (MountTag, AbsolutePath) = switch mount {
-            case .exact(let tag, _, let guestPath, _): (tag, guestPath)
-            }
+            let tag = mount.tag
+            let path = mount.guestPath
             let t = shellQuote(tag.rawValue)
             let isNestedInHome = path.rawValue.hasPrefix(guestHome + "/")
 
             // For paths inside /Users/admin (dvm-home VirtioFS), mount at a
             // non-nested path and symlink. For all other paths, mount directly.
-            let mountPath: String
+            let mountPathRaw: String
             if isNestedInHome {
                 let indirectPath = "\(dvmMountsDir)/\(tag.rawValue)"
-                mountPath = shellQuote(indirectPath)
+                mountPathRaw = indirectPath
+                let mountPath = shellQuote(mountPathRaw)
                 setupLines.append("mkdir -p \(mountPath)")
                 // Replace any existing directory with a symlink. If the path is
                 // already a symlink, ln -sfn updates it. If it's a directory (stale
@@ -682,24 +763,78 @@ struct Start: AsyncParsableCommand {
                 """)
             } else {
                 let p = shellQuote(path.rawValue)
-                mountPath = p
+                mountPathRaw = path.rawValue
                 setupLines.append("[ -L \(p) ] && rm -f \(p); mkdir -p \(p)")
             }
+            let mountPath = shellQuote(mountPathRaw)
+            let privateMountPathRaw = mountPathRaw.hasPrefix("/private/")
+                ? mountPathRaw
+                : "/private" + mountPathRaw
 
             // printf strips shell quoting, so the manifest contains bare unquoted values.
-            let writeManifest = "printf '%s %s\\n' \(t) \(mountPath) >> \(manifestPath)"
+            let transport = shellQuote(mount.transport.rawValue)
+            let writeManifest = "printf '%s %s %s\\n' \(transport) \(t) \(mountPath) >> \(manifestPath)"
             let funcName = "mount_\(tag.rawValue.replacingOccurrences(of: "-", with: "_"))"
+            let tagLogPath = shellQuote("/tmp/dvm-mount-logs/\(tag.rawValue).log")
+            let displayPrefix = shellQuote("[\(tag.rawValue)] \(mount.hostPath.rawValue) -> \(path.rawValue) (\(mount.transport.rawValue))")
+            let expectedFS: String
+            let mountCommand: String
+            switch mount.transport {
+            case .virtiofs:
+                expectedFS = "virtiofs"
+                mountCommand = "/sbin/mount_virtiofs \(t) \(mountPath)"
+            case .nfs:
+                expectedFS = "nfs"
+                guard let nfsHostIP else {
+                    fatalError("NFS mount command requested without resolved NFS host IP")
+                }
+                let remote = shellQuote("\(nfsHostIP.rawValue):\(mount.hostPath.rawValue)")
+                mountCommand = "/sbin/mount_nfs -o actimeo=1 \(remote) \(mountPath)"
+            }
             mountFunctions.append("""
             \(funcName)() {
-              if /sbin/mount | grep -q " on \(mountPath) "; then
-                echo "  \(t) -> \(mountPath) (already mounted)"; \(writeManifest); return 0
+              log_mount() { printf '%s\\n' "$1" >> \(tagLogPath); }
+              current_mount_line() {
+                /sbin/mount | grep " on \(mountPathRaw) " | tail -n 1 || \
+                /sbin/mount | grep " on \(privateMountPathRaw) " | tail -n 1
+              }
+              wait_for_mount_line() {
+                line=""
+                for _ in 1 2 3 4 5; do
+                  line=$(current_mount_line)
+                  [ -n "$line" ] && { printf '%s' "$line"; return 0; }
+                  sleep 0.2
+                done
+                return 1
+              }
+              log_mount "[BEGIN] tag=\(tag.rawValue) transport=\(mount.transport.rawValue) guest=\(path.rawValue) host=\(mount.hostPath.rawValue)"
+              log_mount "[CMD] \(mountCommand)"
+              LINE=$(current_mount_line)
+              if [ -n "$LINE" ]; then
+                echo "  \(displayPrefix) (already mounted)"; log_mount "[ALREADY] $LINE"; \(writeManifest); return 0
               fi
               for i in 1 2 3 4 5; do
-                ERR=$(/sbin/mount_virtiofs \(t) \(mountPath) 2>&1) && { echo "  \(t) -> \(mountPath)"; \(writeManifest); return 0; }
-                case "$ERR" in *"Resource busy"*) echo "  \(t) -> \(mountPath)"; \(writeManifest); return 0;; esac
+                ERR=$(\(mountCommand) 2>&1) && {
+                  LINE=$(wait_for_mount_line || true)
+                  case "$LINE" in
+                    *"(\(expectedFS),"*|*"(\(expectedFS))"*|*"("AppleVirtIOFS","*|*"("AppleVirtIOFS")"*|*"(virtio-fs,"*|*"(virtio-fs))"*)
+                      echo "  \(displayPrefix)"
+                      log_mount "[OK] $LINE"
+                      \(writeManifest)
+                      return 0
+                      ;;
+                    *)
+                      log_mount "[VERIFY-FAILED] expected=\(expectedFS) actual=$LINE"
+                      ERR="mounted but unexpected fs type: $LINE"
+                      ;;
+                  esac
+                }
+                log_mount "[RETRY $i] $ERR"
+                case "$ERR" in *"Resource busy"*) echo "  \(displayPrefix)"; \(writeManifest); return 0;; esac
                 sleep 1
               done
-              echo "  \(t) -> \(mountPath) (FAILED: $ERR)" >&2; return 1
+              log_mount "[FAILED] tag=\(tag.rawValue) error=$ERR"
+              echo "  \(displayPrefix) (FAILED: $ERR)" >&2; return 1
             }
             """)
             mountCalls.append("\(funcName) & PIDS=\"$PIDS $!\"")
@@ -720,9 +855,31 @@ struct Start: AsyncParsableCommand {
         let mountExitCode = try await agentClient.exec(
             command: ["sudo", "sh", "-c", scriptBody]
         )
+        if let mountLog = try await agentClient.execCaptureOutput(
+            command: ["sudo", "sh", "-c", "for f in /tmp/dvm-mount-logs/*.log; do [ -f \"$f\" ] || continue; echo \"=== $(basename \"$f\") ===\"; cat \"$f\"; echo; done"]
+        ),
+           !mountLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            DVMLog.log(phase: .mounting, "guest mount transcript:\n\(mountLog)")
+        } else {
+            DVMLog.log(phase: .mounting, level: "warn", "guest mount transcript missing or empty")
+        }
+        if let manifest = try await agentClient.execCaptureOutput(command: ["cat", "/var/dvm-mounts/.manifest"]),
+           !manifest.isEmpty {
+            DVMLog.log(phase: .mounting, "runtime mount manifest:\n\(manifest)")
+        } else {
+            DVMLog.log(phase: .mounting, level: "warn", "runtime mount manifest missing or unreadable")
+        }
+        if !nfsMirrorMounts.isEmpty,
+           let nfsMountState = try await agentClient.execCaptureOutput(
+               command: ["sh", "-c", "nfsstat -m 2>/dev/null || true"]
+           ), !nfsMountState.isEmpty {
+            DVMLog.log(phase: .mounting, "guest nfsstat -m:\n\(nfsMountState)")
+        } else if !nfsMirrorMounts.isEmpty {
+            DVMLog.log(phase: .mounting, level: "warn", "guest nfsstat -m empty or unavailable")
+        }
         if mountExitCode != 0 {
-            DVMLog.log(phase: .mounting, level: "error", "one or more VirtioFS mounts failed")
-            tprint("ERROR: One or more VirtioFS mounts failed.")
+            DVMLog.log(phase: .mounting, level: "error", "one or more runtime mounts failed")
+            tprint("ERROR: One or more runtime mounts failed.")
         } else {
             DVMLog.log(phase: .mounting, "all mounts succeeded")
         }

@@ -90,8 +90,8 @@
           modules = [{
             dvm.agents.claude.enable = true;
             dvm.agents.claude.package = llmPkgs.claude-code;
-            dvm.agents.codex.enable = true;
-            dvm.agents.codex.package = llmPkgs.codex;
+            # dvm.agents.codex.enable = true;
+            # dvm.agents.codex.package = llmPkgs.codex;
             dvm.integrations.direnv.enable = true;
             dvm.xcode.enable = true;
           }];
