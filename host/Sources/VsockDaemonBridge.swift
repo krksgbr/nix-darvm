@@ -46,25 +46,38 @@ final class VsockDaemonBridge {
   /// tears down the vsock channel on dealloc).
   nonisolated func handleConnection(_ connection: VZVirtioSocketConnection) {
     let vsockFD = connection.fileDescriptor
-    let path = daemonSocketPath
 
-    // Connect to the host nix daemon Unix socket
+    guard let daemonFD = connectToDaemonSocket(path: daemonSocketPath) else {
+      return
+    }
+
+    // Proxy data bidirectionally. Block until both directions finish so that
+    // `connection` stays alive for the duration.
+    let group = DispatchGroup()
+    proxyAsync(group: group, readFD: vsockFD, writeFD: daemonFD, direction: "vsock→daemon")
+    proxyAsync(group: group, readFD: daemonFD, writeFD: vsockFD, direction: "daemon→vsock")
+
+    group.wait()
+    close(daemonFD)
+  }
+
+  private nonisolated func connectToDaemonSocket(path: String) -> Int32? {
     let daemonFD = socket(AF_UNIX, SOCK_STREAM, 0)
     guard daemonFD >= 0 else {
       let err = String(cString: strerror(errno))
       fputs("Bridge: failed to create Unix socket: \(err)\n", stderr)
-      return
+      return nil
     }
 
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
     let pathBytes = path.utf8CString
-    guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
+    guard pathBytes.count <= MemoryLayout.size(ofValue: address.sun_path) else {
       fputs("Bridge: daemon socket path too long: \(path)\n", stderr)
       close(daemonFD)
-      return
+      return nil
     }
-    withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+    withUnsafeMutablePointer(to: &address.sun_path) { ptr in
       ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
         for (index, byte) in pathBytes.enumerated() {
           dest[index] = byte
@@ -72,82 +85,73 @@ final class VsockDaemonBridge {
       }
     }
 
-    let connectResult = withUnsafePointer(to: &addr) { ptr in
+    let connectResult = withUnsafePointer(to: &address) { ptr in
       ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
         connect(daemonFD, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
       }
     }
-
     guard connectResult == 0 else {
       let err = String(cString: strerror(errno))
       fputs("Bridge: failed to connect to \(path): \(err)\n", stderr)
       close(daemonFD)
-      return
+      return nil
     }
 
-    // Proxy data bidirectionally. Block until both directions finish so that
-    // `connection` stays alive for the duration.
-    let group = DispatchGroup()
-    let bufSize = 32768
+    return daemonFD
+  }
 
+  private nonisolated func proxyAsync(
+    group: DispatchGroup,
+    readFD: Int32,
+    writeFD: Int32,
+    direction: String
+  ) {
     group.enter()
     DispatchQueue.global(qos: .utility).async {
       defer { group.leave() }
-      let buf = UnsafeMutableRawPointer.allocate(byteCount: bufSize, alignment: 1)
-      defer { buf.deallocate() }
-      while true {
-        let bytesRead = read(vsockFD, buf, bufSize)
-        if bytesRead <= 0 {
-          if bytesRead < 0 {
-            let err = String(cString: strerror(errno))
-            fputs("Bridge: vsock→daemon read error: \(err)\n", stderr)
-          }
-          break
+      self.proxy(readFD: readFD, writeFD: writeFD, direction: direction)
+    }
+  }
+
+  private nonisolated func proxy(readFD: Int32, writeFD: Int32, direction: String) {
+    let bufferSize = 32768
+    let buffer = UnsafeMutableRawPointer.allocate(byteCount: bufferSize, alignment: 1)
+    defer { buffer.deallocate() }
+
+    while true {
+      let bytesRead = read(readFD, buffer, bufferSize)
+      if bytesRead <= 0 {
+        if bytesRead < 0 {
+          let err = String(cString: strerror(errno))
+          fputs("Bridge: \(direction) read error: \(err)\n", stderr)
         }
-        var written = 0
-        while written < bytesRead {
-          let bytesWritten = write(daemonFD, buf + written, bytesRead - written)
-          if bytesWritten <= 0 {
-            let err = String(cString: strerror(errno))
-            fputs("Bridge: vsock→daemon write error: \(err)\n", stderr)
-            return
-          }
-          written += bytesWritten
-        }
+        break
       }
-      shutdown(daemonFD, SHUT_WR)
+      guard writeAll(from: buffer, byteCount: bytesRead, to: writeFD, direction: direction) else {
+        return
+      }
     }
 
-    group.enter()
-    DispatchQueue.global(qos: .utility).async {
-      defer { group.leave() }
-      let buf = UnsafeMutableRawPointer.allocate(byteCount: bufSize, alignment: 1)
-      defer { buf.deallocate() }
-      while true {
-        let bytesRead = read(daemonFD, buf, bufSize)
-        if bytesRead <= 0 {
-          if bytesRead < 0 {
-            let err = String(cString: strerror(errno))
-            fputs("Bridge: daemon→vsock read error: \(err)\n", stderr)
-          }
-          break
-        }
-        var written = 0
-        while written < bytesRead {
-          let bytesWritten = write(vsockFD, buf + written, bytesRead - written)
-          if bytesWritten <= 0 {
-            let err = String(cString: strerror(errno))
-            fputs("Bridge: daemon→vsock write error: \(err)\n", stderr)
-            return
-          }
-          written += bytesWritten
-        }
-      }
-      shutdown(vsockFD, SHUT_WR)
-    }
+    shutdown(writeFD, SHUT_WR)
+  }
 
-    group.wait()
-    close(daemonFD)
+  private nonisolated func writeAll(
+    from buffer: UnsafeMutableRawPointer,
+    byteCount: Int,
+    to fileDescriptor: Int32,
+    direction: String
+  ) -> Bool {
+    var written = 0
+    while written < byteCount {
+      let bytesWritten = write(fileDescriptor, buffer + written, byteCount - written)
+      if bytesWritten <= 0 {
+        let err = String(cString: strerror(errno))
+        fputs("Bridge: \(direction) write error: \(err)\n", stderr)
+        return false
+      }
+      written += bytesWritten
+    }
+    return true
   }
 }
 
