@@ -8,6 +8,14 @@ build config="debug":
     cd host && swift build -c {{config}} --scratch-path ../build/swift {{swift_sandbox_flag}}
     codesign --force --sign - --entitlements {{entitlements}} build/swift/{{config}}/dvm-core
 
+# Run language linters for Swift, Go, and Nix.
+lint:
+    nix build \
+        .#checks.aarch64-darwin.swift-lint \
+        .#checks.aarch64-darwin.go-lint-agent \
+        .#checks.aarch64-darwin.go-lint-netstack \
+        .#checks.aarch64-darwin.nix-lint
+
 # Build dvm-netstack sidecar (Go, host-native)
 build-netstack:
     cd host/netstack && go build -o ../../build/dvm-netstack ./cmd/

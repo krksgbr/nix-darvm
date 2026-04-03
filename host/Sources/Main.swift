@@ -600,7 +600,7 @@ struct Start: AsyncParsableCommand {
                     tprint("FATAL: Guest boot failed: \(bootError)")
                     return false
                 }
-                if let _ = try? await agentClient.status() {
+                if (try? await agentClient.status()) != nil {
                     return true
                 }
                 try? await Task.sleep(nanoseconds: 1_000_000_000)

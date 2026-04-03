@@ -2,8 +2,8 @@
 //
 // Two components, selected via flags:
 //
-//   --run-rpc:    gRPC server on vsock port 6175 (Exec, Activate, Status, ResolveIP)
-//   --run-bridge: nix daemon proxy (/tmp/nix-daemon.sock → vsock host:6174)
+//	--run-rpc:    gRPC server on vsock port 6175 (Exec, Activate, Status, ResolveIP)
+//	--run-bridge: nix daemon proxy (/tmp/nix-daemon.sock → vsock host:6174)
 //
 // Run both for full functionality. Each component runs as a separate launchd daemon
 // in the guest for independent restarts and health monitoring.
@@ -25,8 +25,8 @@ import (
 )
 
 const (
-	rpcPort              = 6175
-	componentRetryDelay  = time.Second
+	rpcPort             = 6175
+	componentRetryDelay = time.Second
 )
 
 func main() {
@@ -87,7 +87,11 @@ func runRPCOnce(ctx context.Context) error {
 		log.Printf("RPC server failed to listen on AF_VSOCK port %d: %v", rpcPort, err)
 		return nil // return nil to retry
 	}
-	defer listener.Close()
+	defer func() {
+		if closeErr := listener.Close(); closeErr != nil {
+			log.Printf("RPC listener close: %v", closeErr)
+		}
+	}()
 
 	rpcServer, err := rpc.New(listener)
 	if err != nil {

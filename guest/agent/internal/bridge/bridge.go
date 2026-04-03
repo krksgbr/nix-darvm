@@ -36,22 +36,26 @@ func New() *Bridge {
 }
 
 func (b *Bridge) Run(ctx context.Context) error {
-	os.Remove(b.ListenPath)
+	if err := os.Remove(b.ListenPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove stale bridge socket: %w", err)
+	}
 
 	ln, err := net.Listen("unix", b.ListenPath)
 	if err != nil {
 		return fmt.Errorf("bridge listen: %w", err)
 	}
-	defer ln.Close()
+	defer closeListener(ln)
 
-	os.Chmod(b.ListenPath, 0666)
+	if err := os.Chmod(b.ListenPath, 0666); err != nil {
+		return fmt.Errorf("chmod bridge socket: %w", err)
+	}
 
 	log.Printf("nix daemon bridge listening on %s, forwarding to vsock host:%d", b.ListenPath, b.VsockPort)
 
 	// Close listener when context is cancelled
 	go func() {
 		<-ctx.Done()
-		ln.Close()
+		closeListener(ln)
 	}()
 
 	for {
@@ -70,7 +74,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 }
 
 func (b *Bridge) handleConn(local net.Conn) {
-	defer local.Close()
+	defer closeConn(local)
 
 	remoteFD, err := dialVsockHost(b.VsockPort)
 	if err != nil {
@@ -79,7 +83,7 @@ func (b *Bridge) handleConn(local net.Conn) {
 	}
 
 	remote := os.NewFile(uintptr(remoteFD), "vsock")
-	defer remote.Close()
+	defer closeFile(remote)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -88,16 +92,20 @@ func (b *Bridge) handleConn(local net.Conn) {
 	// the remote → local goroutine (which may be blocked on remote.Read).
 	go func() {
 		defer wg.Done()
-		io.Copy(remote, local)
-		remote.Close()
+		if _, err := io.Copy(remote, local); err != nil {
+			log.Printf("bridge copy local->remote: %v", err)
+		}
+		closeFile(remote)
 	}()
 
 	// remote → local. When this direction closes, close local to unblock
 	// the local → remote goroutine (which may be blocked on local.Read).
 	go func() {
 		defer wg.Done()
-		io.Copy(local, remote)
-		local.Close()
+		if _, err := io.Copy(local, remote); err != nil {
+			log.Printf("bridge copy remote->local: %v", err)
+		}
+		closeConn(local)
 	}()
 
 	wg.Wait()
@@ -114,9 +122,29 @@ func dialVsockHost(port uint32) (int, error) {
 		Port: port,
 	})
 	if err != nil {
-		unix.Close(fd)
+		if closeErr := unix.Close(fd); closeErr != nil {
+			log.Printf("bridge close failed socket fd=%d: %v", fd, closeErr)
+		}
 		return -1, fmt.Errorf("connect: %w", err)
 	}
 
 	return fd, nil
+}
+
+func closeListener(listener net.Listener) {
+	if err := listener.Close(); err != nil {
+		log.Printf("bridge listener close: %v", err)
+	}
+}
+
+func closeConn(conn net.Conn) {
+	if err := conn.Close(); err != nil {
+		log.Printf("bridge conn close: %v", err)
+	}
+}
+
+func closeFile(file *os.File) {
+	if err := file.Close(); err != nil {
+		log.Printf("bridge file close: %v", err)
+	}
 }

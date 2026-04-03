@@ -13,7 +13,7 @@
 }:
 
 let
-  lib = nixpkgs.lib;
+  inherit (nixpkgs) lib;
   pkgs = nixpkgs.legacyPackages.${system};
   pkgsWithPacker = import nixpkgs {
     inherit system;

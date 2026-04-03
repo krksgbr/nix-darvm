@@ -29,8 +29,11 @@ final class VMRunner {
     func stop() async throws {
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
             vm.stop { error in
-                if let error { cont.resume(throwing: error) }
-                else { cont.resume() }
+                if let error {
+                    cont.resume(throwing: error)
+                } else {
+                    cont.resume()
+                }
             }
         }
     }

@@ -7,9 +7,11 @@
     nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
     llm-agents.url = "github:numtide/llm-agents.nix";
     determinate.url = "https://flakehub.com/f/DeterminateSystems/determinate/3";
-    hjem.url = "github:feel-co/hjem";
-    hjem.inputs.nixpkgs.follows = "nixpkgs";
-    hjem.inputs.nix-darwin.follows = "nix-darwin";
+    hjem = {
+      url = "github:feel-co/hjem";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.nix-darwin.follows = "nix-darwin";
+    };
   };
 
   outputs = { self, nixpkgs, nix-darwin, llm-agents, determinate, hjem }:
@@ -88,12 +90,14 @@
         default = mkDarvm {
           inherit darvm-agent dvm-host-cmd;
           modules = [{
-            dvm.agents.claude.enable = true;
-            dvm.agents.claude.package = llmPkgs.claude-code;
-            # dvm.agents.codex.enable = true;
-            # dvm.agents.codex.package = llmPkgs.codex;
-            dvm.integrations.direnv.enable = true;
-            dvm.xcode.enable = true;
+            dvm = {
+              agents.claude.enable = true;
+              agents.claude.package = llmPkgs.claude-code;
+              # agents.codex.enable = true;
+              # agents.codex.package = llmPkgs.codex;
+              integrations.direnv.enable = true;
+              xcode.enable = true;
+            };
           }];
         };
       };
@@ -114,8 +118,59 @@
         inherit dvm-core darvm-agent dvm-host-cmd dvm-netstack;
       };
 
+      checks.${system} = {
+        swift-lint = pkgs.runCommand "swift-lint" {
+          nativeBuildInputs = [ pkgs.swiftlint ];
+          src = self;
+        } ''
+          export HOME="$TMPDIR"
+          export XDG_CACHE_HOME="$TMPDIR/cache"
+          cd "$src"
+          swiftlint lint --strict --quiet --no-cache --config .swiftlint.yml
+          touch "$out"
+        '';
+
+        go-lint-agent = pkgs.runCommand "go-lint-agent" {
+          nativeBuildInputs = [ pkgs.go pkgs.golangci-lint ];
+          src = self;
+        } ''
+          export HOME="$TMPDIR"
+          export XDG_CACHE_HOME="$TMPDIR/cache"
+          export GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint-cache"
+          cd "$src/guest/agent"
+          golangci-lint run ./...
+          touch "$out"
+        '';
+
+        go-lint-netstack = pkgs.runCommand "go-lint-netstack" {
+          nativeBuildInputs = [ pkgs.go pkgs.golangci-lint ];
+          src = self;
+        } ''
+          export HOME="$TMPDIR"
+          export XDG_CACHE_HOME="$TMPDIR/cache"
+          export GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint-cache"
+          cd "$src/host/netstack"
+          golangci-lint run ./...
+          touch "$out"
+        '';
+
+        nix-lint = pkgs.runCommand "nix-lint" {
+          nativeBuildInputs = [ pkgs.deadnix pkgs.statix ];
+          src = self;
+        } ''
+          cd "$src"
+          deadnix flake.nix guest/modules nix
+          statix check flake.nix
+          statix check guest/modules
+          statix check nix
+          touch "$out"
+        '';
+      };
+
       devShells.${system}.default = pkgs.mkShellNoCC {
         packages = with pkgs; [
+          deadnix
+          golangci-lint
           just
           go
           jq
@@ -123,6 +178,8 @@
           protobuf
           protoc-gen-go
           protoc-gen-go-grpc
+          statix
+          swiftlint
         ];
         shellHook = ''
           # Make DVM_CORE overridable from local build

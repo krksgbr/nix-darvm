@@ -15,7 +15,7 @@
 
 let
   pkgs = nixpkgs.legacyPackages.${system};
-  lib = pkgs.lib;
+  inherit (pkgs) lib;
   inherit (lib) escapeShellArg;
 
   imageInputsHash = builtins.substring 0 8 (builtins.hashString "sha256"
@@ -228,7 +228,11 @@ pkgs.writeShellApplication {
         sleep 1
       done
       if [ "$phase" != "running" ]; then
-        echo "Error: VM did not reach running state. Current phase: ${phase:-unknown}" >&2
+        local phase_display="$phase"
+        if [ -z "$phase_display" ]; then
+          phase_display="unknown"
+        fi
+        echo "Error: VM did not reach running state. Current phase: $phase_display" >&2
         exit 1
       fi
 

@@ -3,29 +3,31 @@
 { lib, pkgs, username ? "admin", ... }:
 {
   # -- Zsh --
-  programs.zsh.enable = true;
-  # Disable default prompt — starship takes over.
-  programs.zsh.promptInit = lib.mkForce "";
-  programs.zsh.interactiveShellInit = ''
-    # Vi mode
-    bindkey -v
-    KEY_TIMEOUT=10
+  programs.zsh = {
+    enable = true;
+    # Disable default prompt — starship takes over.
+    promptInit = lib.mkForce "";
+    interactiveShellInit = ''
+      # Vi mode
+      bindkey -v
+      KEY_TIMEOUT=10
 
-    # History
-    HISTSIZE=10000
-    SAVEHIST=10000
-    setopt SHARE_HISTORY HIST_IGNORE_DUPS HIST_IGNORE_SPACE
+      # History
+      HISTSIZE=10000
+      SAVEHIST=10000
+      setopt SHARE_HISTORY HIST_IGNORE_DUPS HIST_IGNORE_SPACE
 
-    # Completions
-    autoload -Uz compinit && compinit -u
-    zstyle ':completion:*' menu select
-    zstyle ':completion:*' matcher-list 'm:{[:lower:]}={[:upper:]}'
-    zstyle ':completion:*' group-name ""
-    zstyle ':completion:*' verbose yes
+      # Completions
+      autoload -Uz compinit && compinit -u
+      zstyle ':completion:*' menu select
+      zstyle ':completion:*' matcher-list 'm:{[:lower:]}={[:upper:]}'
+      zstyle ':completion:*' group-name ""
+      zstyle ':completion:*' verbose yes
 
-    # Starship prompt
-    eval "$(starship init zsh)"
-  '';
+      # Starship prompt
+      eval "$(starship init zsh)"
+    '';
+  };
 
   # -- Starship --
   environment.systemPackages = with pkgs; [ starship coreutils ];

@@ -6,10 +6,8 @@ package stack
 import (
 	"context"
 	"fmt"
-	"syscall"
 	"log"
 	"net"
-	"os"
 	"sync"
 
 	"github.com/containers/gvisor-tap-vsock/pkg/services/dhcp"
@@ -50,12 +48,12 @@ func (ns *Stack) CACertPEM() string { return ns.caCertPEM }
 
 // Stack is the gVisor-based network stack with credential interception.
 type Stack struct {
-	caCertPEM string
-	gstack      *gstack.Stack
-	netSwitch   *tap.Switch
-	interceptor *proxy.Interceptor
-	secrets     []control.SecretRule
-	frameConn   net.Conn
+	caCertPEM    string
+	gstack       *gstack.Stack
+	netSwitch    *tap.Switch
+	interceptor  *proxy.Interceptor
+	secrets      []control.SecretRule
+	frameConn    net.Conn
 	cancelSwitch context.CancelFunc
 
 	mu     sync.Mutex
@@ -323,16 +321,4 @@ func (ns *Stack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int
 		}
 	}
 	<-done
-}
-
-// dupFD creates a new *os.File by dup'ing the FD from the given file.
-// This is needed because os.NewFile takes ownership and net.FileConn
-// also dups, but the original FD from the inherited socketpair may not
-// be in a state that net.FileConn can work with directly.
-func dupFD(f *os.File) (*os.File, error) {
-	fd, err := syscall.Dup(int(f.Fd()))
-	if err != nil {
-		return nil, err
-	}
-	return os.NewFile(uintptr(fd), f.Name()+"-dup"), nil
 }

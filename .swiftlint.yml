@@ -1,0 +1,12 @@
+included:
+  - host/Package.swift
+  - host/Sources
+  - host/Tests
+
+excluded:
+  - host/.build
+  - build
+
+only_rules:
+  - statement_position
+  - unused_optional_binding

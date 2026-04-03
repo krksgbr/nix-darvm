@@ -19,8 +19,8 @@ import (
 
 const (
 	standardStreamsBufferSize = 4096
-	eofChar                  = 0x04
-	execUID                  = 501 // UID of the primary VM user (admin or renamed)
+	eofChar                   = 0x04
+	execUID                   = 501 // UID of the primary VM user (admin or renamed)
 )
 
 func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResponse]) error {
@@ -94,7 +94,6 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 		cmd = exec.CommandContext(stream.Context(), "sudo", args...)
 	}
 
-
 	var stdin io.WriteCloser
 	var stdout, stderr io.ReadCloser
 	var ptmx *os.File
@@ -133,7 +132,11 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 		return err
 	}
 	if ptmx != nil {
-		defer ptmx.Close()
+		defer func() {
+			if closeErr := ptmx.Close(); closeErr != nil {
+				log.Printf("close PTY: %v", closeErr)
+			}
+		}()
 	}
 
 	// Handle stdin and terminal resize from client
