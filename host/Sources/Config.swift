@@ -53,120 +53,108 @@ struct DVMConfig: Codable {
     }
 
     let contents = try String(contentsOfFile: path, encoding: .utf8)
-    try validateKeys(contents, path: path)
+    try validateKeys(contents)
     return try TOMLDecoder().decode(DVMConfig.self, from: contents)
   }
 
   /// Parse TOML as raw dictionary and reject unknown keys.
-  private static func validateKeys(_ contents: String, path: String) throws {
-    // TOMLDecoder can decode to a [String: Any]-like structure via
-    // a wrapper type. Simpler: just use the same decoder with a
-    // loose type to extract top-level keys.
-    struct RawConfig: Decodable {
-      struct RawMirrorMounts: Decodable {
-        var dirs: [String]
-        var transport: MountTransport
-
-        struct CodingKeys: CodingKey {
-          var stringValue: String
-          var intValue: Int?
-          init?(stringValue: String) { self.stringValue = stringValue }
-          init?(intValue: Int) { return nil }
-        }
-
-        init(from decoder: Decoder) throws {
-          let container = try decoder.container(keyedBy: CodingKeys.self)
-          for key in container.allKeys where !DVMConfig.knownMirror.contains(key.stringValue) {
-            throw ConfigError.unknownKey(
-              key: key.stringValue, section: "mounts.mirror",
-              known: DVMConfig.knownMirror.sorted())
-          }
-          dirs = try container.decode(
-            [String].self,
-            forKey: CodingKeys(stringValue: "dirs")!)
-          transport = try container.decode(
-            MountTransport.self,
-            forKey: CodingKeys(stringValue: "transport")!)
-        }
-      }
-
-      struct RawHomeMounts: Decodable {
-        var dirs: [String]
-
-        struct CodingKeys: CodingKey {
-          var stringValue: String
-          var intValue: Int?
-          init?(stringValue: String) { self.stringValue = stringValue }
-          init?(intValue: Int) { return nil }
-        }
-
-        init(from decoder: Decoder) throws {
-          let container = try decoder.container(keyedBy: CodingKeys.self)
-          for key in container.allKeys where !DVMConfig.knownHome.contains(key.stringValue) {
-            throw ConfigError.unknownKey(
-              key: key.stringValue, section: "mounts.home",
-              known: DVMConfig.knownHome.sorted())
-          }
-          dirs = try container.decode(
-            [String].self,
-            forKey: CodingKeys(stringValue: "dirs")!)
-        }
-      }
-
-      struct RawMounts: Decodable {
-        // Accept known keys, catch unknown via CodingKeys
-        var mirror: RawMirrorMounts?
-        var home: RawHomeMounts?
-
-        struct CodingKeys: CodingKey {
-          var stringValue: String
-          var intValue: Int?
-          init?(stringValue: String) { self.stringValue = stringValue }
-          init?(intValue: Int) { return nil }
-        }
-
-        init(from decoder: Decoder) throws {
-          let container = try decoder.container(keyedBy: CodingKeys.self)
-          for key in container.allKeys where !DVMConfig.knownMounts.contains(key.stringValue) {
-            throw ConfigError.unknownKey(
-              key: key.stringValue, section: "mounts",
-              known: DVMConfig.knownMounts.sorted())
-          }
-          mirror = try container.decodeIfPresent(
-            RawMirrorMounts.self,
-            forKey: CodingKeys(stringValue: "mirror")!)
-          home = try container.decodeIfPresent(
-            RawHomeMounts.self,
-            forKey: CodingKeys(stringValue: "home")!)
-        }
-      }
-
-      var mounts: RawMounts?
-      var flake: String?
-
-      struct CodingKeys: CodingKey {
-        var stringValue: String
-        var intValue: Int?
-        init?(stringValue: String) { self.stringValue = stringValue }
-        init?(intValue: Int) { return nil }
-      }
-
-      init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        for key in container.allKeys where !DVMConfig.knownTopLevel.contains(key.stringValue) {
-          throw ConfigError.unknownKey(
-            key: key.stringValue, section: "top level",
-            known: DVMConfig.knownTopLevel.sorted())
-        }
-        mounts = try container.decodeIfPresent(
-          RawMounts.self,
-          forKey: CodingKeys(stringValue: "mounts")!)
-        flake = try container.decodeIfPresent(
-          String.self,
-          forKey: CodingKeys(stringValue: "flake")!)
-      }
-    }
-
+  private static func validateKeys(_ contents: String) throws {
     _ = try TOMLDecoder().decode(RawConfig.self, from: contents)
+  }
+}
+
+private struct RawConfig: Decodable {
+  var mounts: RawMounts?
+  var flake: String?
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+    try DVMConfig.validate(
+      keys: container.allKeys,
+      known: DVMConfig.knownTopLevel,
+      section: "top level"
+    )
+    mounts = try container.decodeIfPresent(RawMounts.self, forKey: .named("mounts"))
+    flake = try container.decodeIfPresent(String.self, forKey: .named("flake"))
+  }
+}
+
+private struct RawMounts: Decodable {
+  var mirror: RawMirrorMounts?
+  var home: RawHomeMounts?
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+    try DVMConfig.validate(
+      keys: container.allKeys,
+      known: DVMConfig.knownMounts,
+      section: "mounts"
+    )
+    mirror = try container.decodeIfPresent(RawMirrorMounts.self, forKey: .named("mirror"))
+    home = try container.decodeIfPresent(RawHomeMounts.self, forKey: .named("home"))
+  }
+}
+
+private struct RawMirrorMounts: Decodable {
+  var dirs: [String]
+  var transport: MountTransport
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+    try DVMConfig.validate(
+      keys: container.allKeys,
+      known: DVMConfig.knownMirror,
+      section: "mounts.mirror"
+    )
+    dirs = try container.decode([String].self, forKey: .named("dirs"))
+    transport = try container.decode(MountTransport.self, forKey: .named("transport"))
+  }
+}
+
+private struct RawHomeMounts: Decodable {
+  var dirs: [String]
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+    try DVMConfig.validate(
+      keys: container.allKeys,
+      known: DVMConfig.knownHome,
+      section: "mounts.home"
+    )
+    dirs = try container.decode([String].self, forKey: .named("dirs"))
+  }
+}
+
+private struct DynamicCodingKey: CodingKey {
+  let stringValue: String
+  let intValue: Int?
+
+  init?(stringValue: String) {
+    self.stringValue = stringValue
+    self.intValue = nil
+  }
+
+  init?(intValue: Int) {
+    return nil
+  }
+
+  static func named(_ stringValue: String) -> DynamicCodingKey {
+    DynamicCodingKey(stringValue: stringValue)!
+  }
+}
+
+extension DVMConfig {
+  fileprivate static func validate(
+    keys: [DynamicCodingKey],
+    known: Set<String>,
+    section: String
+  ) throws {
+    for key in keys where !known.contains(key.stringValue) {
+      throw ConfigError.unknownKey(
+        key: key.stringValue,
+        section: section,
+        known: known.sorted()
+      )
+    }
   }
 }
