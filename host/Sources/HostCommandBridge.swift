@@ -128,8 +128,9 @@ final class HostCommandBridge {
     self.listenerDelegate = delegate
     listener.delegate = delegate
     socketDevice.setSocketListener(listener, forPort: listenPort)
+    let actions = manifest.handlers.keys.sorted().joined(separator: ", ")
     DVMLog.log(
-      "host action bridge listening on vsock port \(listenPort) (actions: \(manifest.handlers.keys.sorted().joined(separator: ", ")))"
+      "host action bridge listening on vsock port \(listenPort) (actions: \(actions))"
     )
   }
 

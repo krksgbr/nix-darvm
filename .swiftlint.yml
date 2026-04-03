@@ -9,5 +9,10 @@ excluded:
 
 only_rules:
   - for_where
+  - line_length
   - statement_position
   - unused_optional_binding
+
+line_length:
+  warning: 120
+  error: 120

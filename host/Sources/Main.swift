@@ -417,16 +417,20 @@ struct Start: AsyncParsableCommand {
     )
     try netstackSupervisor.configure(config: netstackConfig)
     caCertPEM = netstackSupervisor.caCertPEM
+    let caDescription = caCertPEM.isEmpty ? "none" : "\(caCertPEM.count) bytes"
     DVMLog.log(
       phase: .configuring,
-      "dvm-netstack sidecar ready (CA: \(caCertPEM.isEmpty ? "none" : "\(caCertPEM.count) bytes"), guest_mac=\(configured.macAddress.string))"
+      "dvm-netstack sidecar ready (CA: \(caDescription), guest_mac=\(configured.macAddress.string))"
     )
     netstackSupervisor.startMonitoring()
     tprint("Credential proxy started.")
+    let primaryTransport = netstackSupervisor.vmFD >= 0 ? "netstack" : "nat"
+    let nfsTransport =
+      nfsMACAddress.map { ", nfs(mac=\($0.string), transport=nat)" } ?? ""
     DVMLog.log(
       phase: .configuring,
-      "VM NICs: primary(mac=\(configured.macAddress.string), transport=\(netstackSupervisor.vmFD >= 0 ? "netstack" : "nat"))"
-        + (nfsMACAddress.map { ", nfs(mac=\($0.string), transport=nat)" } ?? "")
+      "VM NICs: primary(mac=\(configured.macAddress.string), transport=\(primaryTransport))"
+        + nfsTransport
     )
 
     let runner = VMRunner(configured)
@@ -714,9 +718,12 @@ struct Start: AsyncParsableCommand {
       let hostResolution = try HostNetworkResolver.resolve(reachableFrom: nfsGuestIP)
       let resolvedHostIP = hostResolution.hostIP
       nfsHostIP = resolvedHostIP
+      let mountSummary =
+        "configuring NFS exports for \(nfsMirrorMounts.count) mirror mounts "
+        + "(guest=\(nfsGuestIP), host=\(resolvedHostIP), mac=\(nfsMACAddress.string), \(hostResolution))"
       DVMLog.log(
         phase: .mounting,
-        "configuring NFS exports for \(nfsMirrorMounts.count) mirror mounts (guest=\(nfsGuestIP), host=\(resolvedHostIP), mac=\(nfsMACAddress.string), \(hostResolution))"
+        mountSummary
       )
       let manager = NFSExportManager(guestIP: nfsGuestIP)
       try manager.install(for: nfsMirrorMounts)
@@ -788,7 +795,8 @@ struct Start: AsyncParsableCommand {
           if [ -L \(p) ]; then ln -sfn \(mountPath) \(p); \
           elif [ -d \(p) ]; then \
             if [ -z \"$(ls -A \(p) 2>/dev/null)\" ]; then rmdir \(p) && ln -sfn \(mountPath) \(p); \
-            else echo \"WARNING: \(p) is a non-empty directory, expected symlink. Remove it manually: rm -rf \(p)\" >&2; fi; \
+            else echo \"WARNING: \(p) is a non-empty directory, expected symlink.\" >&2; \
+              echo \"Remove it manually: rm -rf \(p)\" >&2; fi; \
           else ln -sfn \(mountPath) \(p); fi
           """)
       } else {
@@ -810,6 +818,9 @@ struct Start: AsyncParsableCommand {
       let displayPrefix = shellQuote(
         "[\(tag.rawValue)] \(mount.hostPath.rawValue) -> \(path.rawValue) (\(mount.transport.rawValue))"
       )
+      let logMountBegin =
+        "log_mount \"[BEGIN] tag=\(tag.rawValue) transport=\(mount.transport.rawValue) "
+        + "guest=\(path.rawValue) host=\(mount.hostPath.rawValue)\""
       let expectedFS: String
       let mountCommand: String
       switch mount.transport {
@@ -841,17 +852,21 @@ struct Start: AsyncParsableCommand {
             done
             return 1
           }
-          log_mount "[BEGIN] tag=\(tag.rawValue) transport=\(mount.transport.rawValue) guest=\(path.rawValue) host=\(mount.hostPath.rawValue)"
+          \(logMountBegin)
           log_mount "[CMD] \(mountCommand)"
           LINE=$(current_mount_line)
           if [ -n "$LINE" ]; then
-            echo "  \(displayPrefix) (already mounted)"; log_mount "[ALREADY] $LINE"; \(writeManifest); return 0
+            echo "  \(displayPrefix) (already mounted)"
+            log_mount "[ALREADY] $LINE"
+            \(writeManifest)
+            return 0
           fi
           for i in 1 2 3 4 5; do
             ERR=$(\(mountCommand) 2>&1) && {
               LINE=$(wait_for_mount_line || true)
               case "$LINE" in
-                *"(\(expectedFS),"*|*"(\(expectedFS))"*|*"("AppleVirtIOFS","*|*"("AppleVirtIOFS")"*|*"(virtio-fs,"*|*"(virtio-fs))"*)
+                *"(\(expectedFS),"*|*"(\(expectedFS))"*|*"("AppleVirtIOFS","*|*"("AppleVirtIOFS")"*|\
+                *"(virtio-fs,"*|*"(virtio-fs))"*)
                   echo "  \(displayPrefix)"
                   log_mount "[OK] $LINE"
                   \(writeManifest)
@@ -892,7 +907,10 @@ struct Start: AsyncParsableCommand {
     if let mountLog = try await agentClient.execCaptureOutput(
       command: [
         "sudo", "sh", "-c",
-        "for f in /tmp/dvm-mount-logs/*.log; do [ -f \"$f\" ] || continue; echo \"=== $(basename \"$f\") ===\"; cat \"$f\"; echo; done"
+        """
+        for f in /tmp/dvm-mount-logs/*.log; do [ -f "$f" ] || continue; \
+        echo "=== $(basename "$f") ==="; cat "$f"; echo; done
+        """
       ]
     ),
       !mountLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
