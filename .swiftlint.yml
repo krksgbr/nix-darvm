@@ -10,5 +10,4 @@ excluded:
 only_rules:
   - for_where
   - statement_position
-  - trailing_comma
   - unused_optional_binding
