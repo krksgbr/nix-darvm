@@ -21,10 +21,10 @@ struct AgentClient: Sendable {
     let response = try await withAgentClient { agent in
       try await agent.resolveIP(Darvm_ResolveIPRequest())
     }
-    guard let ip = GuestIP(response.ip) else {
+    guard let guestIP = GuestIP(response.ip) else {
       throw AgentClientError.invalidIP(response.ip)
     }
-    return ip
+    return guestIP
   }
 
   /// Activate a nix-darwin system closure in the guest.
@@ -69,10 +69,10 @@ struct AgentClient: Sendable {
           cmd.tty = false
           if let workDir { cmd.workingDirectory = workDir }
           cmd.environment = env.map { key, value in
-            var ev = Darvm_EnvVar()
-            ev.name = key
-            ev.value = value
-            return ev
+            var envVar = Darvm_EnvVar()
+            envVar.name = key
+            envVar.value = value
+            return envVar
           }
 
           var req = Darvm_ExecRequest()
@@ -131,16 +131,16 @@ struct AgentClient: Sendable {
               cmd.tty = useTTY
               if let workDir { cmd.workingDirectory = workDir }
               cmd.environment = env.map { key, value in
-                var ev = Darvm_EnvVar()
-                ev.name = key
-                ev.value = value
-                return ev
+                var envVar = Darvm_EnvVar()
+                envVar.name = key
+                envVar.value = value
+                return envVar
               }
               if useTTY {
-                let (w, h) = try Term.getSize()
+                let (width, height) = try Term.getSize()
                 var size = Darvm_TerminalSize()
-                size.cols = UInt32(w)
-                size.rows = UInt32(h)
+                size.cols = UInt32(width)
+                size.rows = UInt32(height)
                 cmd.terminalSize = size
               }
 
@@ -353,19 +353,19 @@ struct AgentClient: Sendable {
   /// Stream stdin to the gRPC writer until EOF or cancellation.
   /// Uses DispatchSource for non-blocking reads that respect task cancellation.
   private static func streamStdin(to writer: RPCWriter<Darvm_ExecRequest>) async throws {
-    let fd = FileHandle.standardInput.fileDescriptor
+    let fileDescriptor = FileHandle.standardInput.fileDescriptor
     let stream = AsyncStream<Data> { continuation in
       let source = DispatchSource.makeReadSource(
-        fileDescriptor: fd,
+        fileDescriptor: fileDescriptor,
         queue: DispatchQueue.global(qos: .userInteractive)
       )
       source.setEventHandler {
         let available = source.data  // estimated bytes available
         guard available > 0 else { return }
         var buf = [UInt8](repeating: 0, count: Int(available))
-        let n = read(fd, &buf, buf.count)
-        if n > 0 {
-          continuation.yield(Data(buf[..<n]))
+        let bytesRead = read(fileDescriptor, &buf, buf.count)
+        if bytesRead > 0 {
+          continuation.yield(Data(buf[..<bytesRead]))
         } else {
           continuation.finish()
         }
@@ -407,10 +407,10 @@ struct AgentClient: Sendable {
     }
 
     for await _ in stream {
-      guard let (w, h) = try? Term.getSize() else { continue }
+      guard let (width, height) = try? Term.getSize() else { continue }
       var size = Darvm_TerminalSize()
-      size.cols = UInt32(w)
-      size.rows = UInt32(h)
+      size.cols = UInt32(width)
+      size.rows = UInt32(height)
       var req = Darvm_ExecRequest()
       req.type = .terminalResize(size)
       try await writer.write(req)
@@ -424,9 +424,9 @@ enum AgentClientError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
-    case .invalidIP(let ip): return "Agent returned invalid IP: \(ip)"
-    case .agentTimeout(let err):
-      if let err { return "Agent not reachable after timeout: \(err)" }
+    case .invalidIP(let ipAddress): return "Agent returned invalid IP: \(ipAddress)"
+    case .agentTimeout(let error):
+      if let error { return "Agent not reachable after timeout: \(error)" }
       return "Agent not reachable after timeout"
     }
   }
