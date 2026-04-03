@@ -8,14 +8,25 @@ excluded:
   - build
 
 only_rules:
+  - contains_over_filter_count
+  - contains_over_filter_is_empty
   - cyclomatic_complexity
+  - duplicate_imports
+  - empty_count
+  - empty_string
   - file_length
+  - first_where
   - for_where
   - function_body_length
   - identifier_name
   - line_length
   - nesting
+  - prefer_zero_over_explicit_init
+  - redundant_nil_coalescing
   - statement_position
+  - superfluous_else
+  - trailing_newline
+  - trailing_whitespace
   - type_body_length
   - unused_optional_binding
 

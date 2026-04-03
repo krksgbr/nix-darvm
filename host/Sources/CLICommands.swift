@@ -89,7 +89,8 @@ func discoverManifestPath(
       throw SecretConfigError.manifestNotFound(resolved)
     }
     return resolved
-  } else if let envPath = ProcessInfo.processInfo.environment["DVM_CREDENTIALS"] {
+  }
+  if let envPath = ProcessInfo.processInfo.environment["DVM_CREDENTIALS"] {
     // Explicit env var — empty = error, missing file = error
     guard !envPath.isEmpty else {
       throw SecretConfigError.manifestNotFound(
@@ -101,11 +102,10 @@ func discoverManifestPath(
       throw SecretConfigError.manifestNotFound(resolved)
     }
     return resolved
-  } else {
-    // CWD discovery — no walking, silent skip if not found
-    let cwdManifest = (cwd as NSString).appendingPathComponent(".dvm/credentials.toml")
-    return FileManager.default.fileExists(atPath: cwdManifest) ? cwdManifest : nil
   }
+  // CWD discovery — no walking, silent skip if not found
+  let cwdManifest = (cwd as NSString).appendingPathComponent(".dvm/credentials.toml")
+  return FileManager.default.fileExists(atPath: cwdManifest) ? cwdManifest : nil
 }
 
 private func resolveAndPushCredentials(
