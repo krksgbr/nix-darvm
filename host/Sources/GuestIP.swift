@@ -8,7 +8,9 @@ struct GuestIP: Equatable, CustomStringConvertible, Codable {
 
   init?(_ string: String) {
     var addr = in_addr()
-    guard inet_pton(AF_INET, string, &addr) == 1 else { return nil }
+    guard inet_pton(AF_INET, string, &addr) == 1 else {
+      return nil
+    }
     self.rawValue = string
   }
 

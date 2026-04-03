@@ -80,7 +80,9 @@ extension ControlSocket {
 
   private static func openClientSocket() -> Int32? {
     let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fileDescriptor >= 0 else { return nil }
+    guard fileDescriptor >= 0 else {
+      return nil
+    }
 
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
@@ -107,7 +109,9 @@ extension ControlSocket {
   }
 
   private static func performClientRequest(_ requestData: Data, timeout: TimeInterval) -> Data? {
-    guard let fileDescriptor = openClientSocket() else { return nil }
+    guard let fileDescriptor = openClientSocket() else {
+      return nil
+    }
     defer { close(fileDescriptor) }
 
     var data = requestData
@@ -125,9 +129,11 @@ extension ControlSocket {
       socklen_t(MemoryLayout<timeval>.size)
     )
 
-    var buffer = [UInt8](repeating: 0, count: 4096)
+    var buffer = [UInt8](repeating: 0, count: 4_096)
     let bytesRead = read(fileDescriptor, &buffer, buffer.count)
-    guard bytesRead > 0 else { return nil }
+    guard bytesRead > 0 else {
+      return nil
+    }
 
     let responseData = Data(buffer[..<bytesRead])
     return trimTrailingWhitespace(responseData)

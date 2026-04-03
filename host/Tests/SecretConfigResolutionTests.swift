@@ -5,7 +5,6 @@ import XCTest
 // MARK: - Manifest Resolution
 
 final class ManifestResolveTests: XCTestCase {
-
   let testKey = HostKey(bytes: Array(repeating: 0x42, count: 32))
 
   func testResolveProxySuccess() throws {
@@ -193,7 +192,6 @@ final class ManifestResolveTests: XCTestCase {
 // MARK: - HostKey Filesystem
 
 final class HostKeyTests: XCTestCase {
-
   func testLoadOrCreate_generatesNewKey() throws {
     let dir = NSTemporaryDirectory() + "dvm-hostkey-test-\(UUID().uuidString)"
     let path = dir + "/placeholder.key"

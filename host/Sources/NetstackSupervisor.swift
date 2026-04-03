@@ -9,7 +9,6 @@ import Foundation
 ///
 /// On sidecar crash, networking fails closed. There is no silent fallback to NAT.
 final class NetstackSupervisor: @unchecked Sendable {
-
   /// The file descriptor for the VM-side of the socketpair.
   /// Pass this to VZFileHandleNetworkDeviceAttachment.
   let vmFD: Int32
@@ -46,14 +45,19 @@ final class NetstackSupervisor: @unchecked Sendable {
       switch self {
       case .socketpairFailed(let code):
         return "socketpair(AF_UNIX, SOCK_DGRAM) failed: \(String(cString: strerror(code)))"
+
       case .sidecarNotFound(let name):
         return "Sidecar binary not found: \(name)"
+
       case .sidecarStartFailed(let detail):
         return "Failed to start sidecar: \(detail)"
+
       case .controlSocketTimeout:
         return "Sidecar control socket did not appear within timeout"
+
       case .controlSocketError(let msg):
         return "Sidecar control socket error: \(msg)"
+
       case .sidecarCrashed(let code):
         return "Sidecar crashed (exit code \(code)) — networking is down"
       }
@@ -295,10 +299,10 @@ final class NetstackSupervisor: @unchecked Sendable {
 
     // Read response
     var responseData = Data()
-    let buf = UnsafeMutableRawPointer.allocate(byteCount: 4096, alignment: 1)
+    let buf = UnsafeMutableRawPointer.allocate(byteCount: 4_096, alignment: 1)
     defer { buf.deallocate() }
     while true {
-      let bytesRead = read(fileDescriptor, buf, 4096)
+      let bytesRead = read(fileDescriptor, buf, 4_096)
       if bytesRead <= 0 { break }
       responseData.append(buf.assumingMemoryBound(to: UInt8.self), count: bytesRead)
     }

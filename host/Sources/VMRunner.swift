@@ -19,6 +19,7 @@ final class VMRunner {
         switch result {
         case .success:
           cont.resume()
+
         case .failure(let error):
           cont.resume(throwing: error)
         }

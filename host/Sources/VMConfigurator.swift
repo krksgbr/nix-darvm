@@ -19,7 +19,6 @@ struct ConfiguredVM {
 /// and Tart's VM.craftConfiguration(). Stripped to headless essentials.
 @MainActor
 enum VMConfigurator {
-
   struct VMPaths {
     let config: URL
     let disk: URL
@@ -198,7 +197,7 @@ enum VMConfigurator {
     let graphics = VZMacGraphicsDeviceConfiguration()
     graphics.displays = [
       VZMacGraphicsDisplayConfiguration(
-        widthInPixels: 1024,
+        widthInPixels: 1_024,
         heightInPixels: 768,
         pixelsPerInch: 220
       )

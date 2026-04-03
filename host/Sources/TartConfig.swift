@@ -65,10 +65,12 @@ enum ConfigError: Error, CustomStringConvertible {
     switch self {
     case .invalidField(let name):
       return "Invalid or missing field in config.json: \(name)"
-    case .unknownKey(let key, let section, let known):
+
+    case let .unknownKey(key, section, known):
       return
         "Unknown key '\(key)' in \(section) of ~/.config/dvm/config.toml (valid keys: \(known.joined(separator: ", ")))"
-    case .missingKey(let key, let section):
+
+    case let .missingKey(key, section):
       return "Missing required key '\(key)' in \(section) of ~/.config/dvm/config.toml"
     }
   }

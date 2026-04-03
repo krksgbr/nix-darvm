@@ -3,7 +3,6 @@ import Foundation
 import Virtualization
 
 extension Start {
-
   fileprivate func mountRuntimeShares(
     services: StartedGuestServices,
     controlSocket: ControlSocket,
@@ -290,6 +289,7 @@ extension Start {
     switch mount.transport {
     case .virtiofs:
       return ("virtiofs", "/sbin/mount_virtiofs \(mount.tag) \(mountPath)")
+
     case .nfs:
       guard let nfsHostIP else {
         fatalError("NFS mount command requested without resolved NFS host IP")
@@ -325,7 +325,9 @@ extension Start {
       DVMLog.log(phase: .mounting, level: "warn", "runtime mount manifest missing or unreadable")
     }
 
-    guard hasNFSMirrorMounts else { return }
+    guard hasNFSMirrorMounts else {
+      return
+    }
     if let nfsMountState = try await agentClient.execCaptureOutput(
       command: ["sh", "-c", "nfsstat -m 2>/dev/null || true"]
     ), !nfsMountState.isEmpty {

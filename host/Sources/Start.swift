@@ -63,12 +63,11 @@ extension Start {
 
   fileprivate func makeNetstackSupervisor(netstackBinary: String) throws -> NetstackSupervisor {
     try NetstackSupervisor.launch(
-      config: initialNetstackConfig(netstackBinary: netstackBinary),
-      onCrash: {
-        DVMLog.log(level: "error", "dvm-netstack crashed — networking is down, failing closed")
-        tprint("FATAL: Credential proxy (dvm-netstack) crashed. VM networking is down.")
-      }
-    )
+      config: initialNetstackConfig(netstackBinary: netstackBinary)
+    ) {
+      DVMLog.log(level: "error", "dvm-netstack crashed — networking is down, failing closed")
+      tprint("FATAL: Credential proxy (dvm-netstack) crashed. VM networking is down.")
+    }
   }
 
   fileprivate func initialNetstackConfig(netstackBinary: String) -> NetstackSupervisor.Config {
@@ -109,7 +108,9 @@ extension Start {
   }
 
   fileprivate func writeActivationFilesIfNeeded(stateDir: URL) throws {
-    guard let closure = systemClosure else { return }
+    guard let closure = systemClosure else {
+      return
+    }
     try closure.write(
       to: stateDir.appendingPathComponent("closure-path"),
       atomically: true,
@@ -247,9 +248,13 @@ extension Start {
     runner: VMRunner,
     hostCommandBridgeBox: HostCommandBridgeBox
   ) throws {
-    guard let capPath = capabilities else { return }
+    guard let capPath = capabilities else {
+      return
+    }
     let manifest = try CapabilitiesManifest.load(from: capPath)
-    guard !manifest.handlers.isEmpty else { return }
+    guard !manifest.handlers.isEmpty else {
+      return
+    }
     let bridge = try HostCommandBridge(
       virtualMachine: runner.virtualMachine,
       manifest: manifest
@@ -296,7 +301,11 @@ extension Start {
       try bridge.reload(from: path)
       return
     }
-    guard !manifest.handlers.isEmpty, let virtualMachine = runner?.virtualMachine else { return }
+    guard !manifest.handlers.isEmpty,
+      let virtualMachine = runner?.virtualMachine
+    else {
+      return
+    }
     let bridge = try HostCommandBridge(
       virtualMachine: virtualMachine,
       manifest: manifest
@@ -351,5 +360,4 @@ extension Start {
       nfsExportManager: nfsExportManager
     )
   }
-
 }

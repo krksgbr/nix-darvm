@@ -7,7 +7,7 @@ import Foundation
 /// to the host's nix daemon Unix socket and proxy data bidirectionally.
 @MainActor
 final class VsockDaemonBridge {
-  static let defaultPort: UInt32 = 6174
+  static let defaultPort: UInt32 = 6_174
   static let defaultDaemonSocket = "/nix/var/nix/daemon-socket/socket"
 
   let socketDevice: VZVirtioSocketDevice
@@ -114,7 +114,7 @@ final class VsockDaemonBridge {
   }
 
   private nonisolated func proxy(readFD: Int32, writeFD: Int32, direction: String) {
-    let bufferSize = 32768
+    let bufferSize = 32_768
     let buffer = UnsafeMutableRawPointer.allocate(byteCount: bufferSize, alignment: 1)
     defer { buffer.deallocate() }
 

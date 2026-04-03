@@ -14,7 +14,7 @@ import NIOPosix
 @MainActor
 final class AgentProxy {
   static let defaultPath = "/tmp/darvm-agent.sock"
-  static let defaultPort: UInt32 = 6175
+  static let defaultPort: UInt32 = 6_175
 
   let socketPath: String
   let vmPort: UInt32
@@ -71,6 +71,7 @@ final class AgentProxy {
               connection: conn,
               fileDescriptor: conn.fileDescriptor
             ))
+
         case .failure(let error):
           cont.resume(throwing: error)
         }

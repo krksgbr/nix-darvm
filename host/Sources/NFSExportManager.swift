@@ -27,10 +27,12 @@ final class NFSExportManager {
 
     var description: String {
       switch self {
-      case .nestedMirrorPaths(let parent, let child):
+      case let .nestedMirrorPaths(parent, child):
         return "NFS mirror mounts cannot be nested: \(parent) contains \(child)"
-      case .commandFailed(let command, let exitCode, let output):
+
+      case let .commandFailed(command, exitCode, output):
         return "Command failed (\(command), exit \(exitCode)): \(output)"
+
       case .malformedExportsBlock:
         return "Malformed DVM block in /etc/exports"
       }
@@ -39,7 +41,9 @@ final class NFSExportManager {
 
   func install(for mounts: [MountConfig]) throws {
     let mirrorMounts = mounts.filter { $0.transport == .nfs && $0.isMirror }
-    guard !mirrorMounts.isEmpty else { return }
+    guard !mirrorMounts.isEmpty else {
+      return
+    }
 
     let paths = mirrorMounts.map(\.hostPath)
     try validate(paths: paths)
@@ -92,7 +96,9 @@ final class NFSExportManager {
   func removeManagedExports() throws {
     let current = (try? String(contentsOfFile: Self.exportsPath, encoding: .utf8)) ?? ""
     let updated = try replacingManagedBlock(in: current, with: nil)
-    if updated == current { return }
+    if updated == current {
+      return
+    }
     DVMLog.log(phase: .stopped, "removing DVM-managed NFS exports")
 
     let tempPath = "/tmp/dvm-exports-\(ProcessInfo.processInfo.processIdentifier)"
@@ -130,11 +136,14 @@ final class NFSExportManager {
 
     switch (beginRange, endRange) {
     case (nil, nil):
-      guard let block else { return contents }
+      guard let block else {
+        return contents
+      }
       if contents.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         return block + "\n"
       }
       return contents + (contents.hasSuffix("\n") ? "" : "\n") + block + "\n"
+
     case let (.some(begin), .some(end)):
       guard begin.lowerBound < end.lowerBound else {
         throw Error.malformedExportsBlock
@@ -151,6 +160,7 @@ final class NFSExportManager {
         rebuilt += suffix
       }
       return rebuilt
+
     default:
       throw Error.malformedExportsBlock
     }
@@ -167,8 +177,12 @@ final class NFSExportManager {
   }
 
   private func isNested(parent: String, child: String) -> Bool {
-    guard child.hasPrefix(parent) else { return false }
-    if child == parent { return false }
+    guard child.hasPrefix(parent) else {
+      return false
+    }
+    if child == parent {
+      return false
+    }
     return child[parent.endIndex] == "/"
   }
 

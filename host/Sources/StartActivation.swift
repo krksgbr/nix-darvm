@@ -9,7 +9,9 @@ extension Start {
     bootErrorMonitor: BootErrorMonitor,
     controlSocket: ControlSocket
   ) async throws {
-    guard systemClosure != nil else { return }
+    guard systemClosure != nil else {
+      return
+    }
     controlSocket.update(.activating)
     DVMLog.log(phase: .activating, "waiting for guest activation via state files")
     tprint("Waiting for guest activation...")
@@ -31,10 +33,11 @@ extension Start {
         logLineBuffer: &logLineBuffer,
         activatorStarted: &activatorStarted
       )
-      if result != .pending { return }
+      if result != .pending {
+        return
+      }
       try? await Task.sleep(nanoseconds: 500_000_000)
     }
-
     if !stopRequested, Date() >= deadline {
       DVMLog.log(phase: .activating, level: "error", "activation timed out after 5 min")
       tprint("Warning: activation did not complete within 5 minutes.")
@@ -45,7 +48,9 @@ extension Start {
     bootErrorMonitor: BootErrorMonitor,
     runner: VMRunner
   ) async throws {
-    guard let bootError = bootErrorMonitor.currentError() else { return }
+    guard let bootError = bootErrorMonitor.currentError() else {
+      return
+    }
     DVMLog.log(phase: .activating, level: "error", "guest boot failed: \(bootError)")
     tprint("FATAL: Guest boot failed: \(bootError)")
     try? await runner.stop()
@@ -57,10 +62,14 @@ extension Start {
     logOffset: inout Int,
     logLineBuffer: inout String
   ) {
-    guard let data = try? Data(contentsOf: logFile), data.count > logOffset else { return }
+    guard let data = try? Data(contentsOf: logFile), data.count > logOffset else {
+      return
+    }
     let newData = data.subdata(in: logOffset..<data.count)
     logOffset = data.count
-    guard let text = String(data: newData, encoding: .utf8) else { return }
+    guard let text = String(data: newData, encoding: .utf8) else {
+      return
+    }
     logLineBuffer += text
     var lines = logLineBuffer.components(separatedBy: "\n")
     logLineBuffer = lines.removeLast()
@@ -78,7 +87,9 @@ extension Start {
     guard
       let statusText = try? String(contentsOf: statusFile, encoding: .utf8)
         .trimmingCharacters(in: .whitespacesAndNewlines)
-    else { return .pending }
+    else {
+      return .pending
+    }
     if statusText == "running", !activatorStarted {
       activatorStarted = true
       DVMLog.log(phase: .activating, "activator running")
@@ -89,7 +100,9 @@ extension Start {
       tprint("Activation succeeded.")
       return .succeeded
     }
-    guard statusText == "failed" || statusText == "invalid-closure" else { return .pending }
+    guard statusText == "failed" || statusText == "invalid-closure" else {
+      return .pending
+    }
     flushActivationLogBuffer(&logLineBuffer)
     let exitCode = activationExitCode(runDir: runDir)
     DVMLog.log(
@@ -102,7 +115,9 @@ extension Start {
   }
 
   fileprivate func flushActivationLogBuffer(_ logLineBuffer: inout String) {
-    guard !logLineBuffer.isEmpty else { return }
+    guard !logLineBuffer.isEmpty else {
+      return
+    }
     tprint(logLineBuffer)
     logLineBuffer = ""
   }
@@ -125,7 +140,9 @@ extension Start {
     tprint("Waiting for guest agent...")
 
     guard await pollForGuestAgent(services: services, bootErrorMonitor: bootErrorMonitor) else {
-      if stopRequested { return }
+      if stopRequested {
+        return
+      }
       controlSocket.update(.failed, error: "guest agent unreachable")
       tprint("Stopping VM.")
       try? await runner.stop()
@@ -206,5 +223,4 @@ extension Start {
     tprint("VM stopped.")
     throw DVMError.activationFailed(message)
   }
-
 }

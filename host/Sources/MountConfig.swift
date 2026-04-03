@@ -8,8 +8,8 @@ enum AccessMode {
 
 /// Runtime transport for a guest-visible mount.
 enum MountTransport: String, Codable {
-  case virtiofs
-  case nfs
+  case virtiofs = "virtiofs"
+  case nfs = "nfs"
 }
 
 /// An absolute filesystem path. Rejects empty and relative paths.

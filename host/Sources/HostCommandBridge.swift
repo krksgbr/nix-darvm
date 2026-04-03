@@ -49,16 +49,22 @@ enum HostActionError: Error, CustomStringConvertible {
     switch self {
     case .manifestNotInStore(let path):
       return "capabilities manifest must be in /nix/store/: \(path)"
+
     case .invalidManifest(let msg):
       return "invalid capabilities manifest: \(msg)"
-    case .handlerNotInStore(let name, let path):
+
+    case let .handlerNotInStore(name, path):
       return "handler for '\(name)' must be in /nix/store/: \(path)"
-    case .handlerNotExecutable(let name, let path):
+
+    case let .handlerNotExecutable(name, path):
       return "handler for '\(name)' is not executable: \(path)"
+
     case .unknownAction(let name):
       return "unknown action: \(name)"
+
     case .payloadTooLarge(let size):
       return "payload too large: \(size) bytes (max 65536)"
+
     case .malformedRequest(let msg):
       return "malformed request: \(msg)"
     }
@@ -89,7 +95,7 @@ enum HostActionError: Error, CustomStringConvertible {
 ///   Response: 0\n                     (exit code, or code\x00error\n on failure)
 @MainActor
 final class HostCommandBridge {
-  static let defaultPort: UInt32 = 6176
+  static let defaultPort: UInt32 = 6_176
 
   let socketDevice: VZVirtioSocketDevice
   let listenPort: UInt32
@@ -140,13 +146,13 @@ final class HostCommandBridge {
     let fileDescriptor = connection.fileDescriptor
 
     // Read request until EOF or 64KB + header limit
-    let maxBytes = 65536 + 1024  // payload cap + room for action name line
+    let maxBytes = 65_536 + 1_024  // payload cap + room for action name line
     var data = Data()
-    let buf = UnsafeMutableRawPointer.allocate(byteCount: 4096, alignment: 1)
+    let buf = UnsafeMutableRawPointer.allocate(byteCount: 4_096, alignment: 1)
     defer { buf.deallocate() }
 
     while data.count < maxBytes {
-      let bytesRead = read(fileDescriptor, buf, min(4096, maxBytes - data.count))
+      let bytesRead = read(fileDescriptor, buf, min(4_096, maxBytes - data.count))
       if bytesRead <= 0 { break }
       data.append(buf.assumingMemoryBound(to: UInt8.self), count: bytesRead)
     }
@@ -175,7 +181,7 @@ final class HostCommandBridge {
 
     let payload = String(request[request.index(after: newlineIndex)...])
     let payloadBytes = payload.utf8.count
-    if payloadBytes > 65536 {
+    if payloadBytes > 65_536 {
       writeResponse(
         fd: fileDescriptor,
         code: 1,

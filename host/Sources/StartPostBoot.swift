@@ -22,7 +22,9 @@ extension Start {
     agentClient: AgentClient,
     caCertPEM: String
   ) async throws {
-    guard !caCertPEM.isEmpty else { return }
+    guard !caCertPEM.isEmpty else {
+      return
+    }
     let certScript = """
       printf '%s' \(shellQuote(caCertPEM)) > /tmp/dvm-ca.pem && \
       security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/dvm-ca.pem && \
@@ -72,7 +74,9 @@ extension Start {
           )
         }
       }
-      guard semaphore.wait(timeout: .now() + 5) == .success else { return nil }
+      guard semaphore.wait(timeout: .now() + 5) == .success else {
+        return nil
+      }
       return box.value
     }
   }

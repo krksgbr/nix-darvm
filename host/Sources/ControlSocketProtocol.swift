@@ -1,10 +1,10 @@
 import Foundation
 
 enum ControlSocketCommand: String, Codable {
-  case status
-  case guestHealth
-  case loadCredentials
-  case reloadCapabilities
+  case status = "status"
+  case guestHealth = "guestHealth"
+  case loadCredentials = "loadCredentials"
+  case reloadCapabilities = "reloadCapabilities"
 }
 
 struct ControlSocketStatusPayload: Codable {
@@ -16,9 +16,12 @@ struct ControlSocketStatusPayload: Codable {
   let phaseError: String?
 
   enum CodingKeys: String, CodingKey {
-    case running
+    case running = "running"
     case ipAddress = "ip"
-    case phase, runId, phaseEnteredAt, phaseError
+    case phase = "phase"
+    case runId = "runId"
+    case phaseEnteredAt = "phaseEnteredAt"
+    case phaseError = "phaseError"
   }
 }
 
@@ -28,10 +31,17 @@ enum ControlSocketResponse: Codable {
   case error(message: String)
 
   enum CodingKeys: String, CodingKey {
-    case running
+    case running = "running"
     case ipAddress = "ip"
-    case error, phase, runId, phaseEnteredAt, phaseError
-    case type, mounts, activation, services
+    case error = "error"
+    case phase = "phase"
+    case runId = "runId"
+    case phaseEnteredAt = "phaseEnteredAt"
+    case phaseError = "phaseError"
+    case type = "type"
+    case mounts = "mounts"
+    case activation = "activation"
+    case services = "services"
   }
 
   func encode(to encoder: Encoder) throws {
@@ -44,11 +54,13 @@ enum ControlSocketResponse: Codable {
       try container.encodeIfPresent(payload.runId, forKey: .runId)
       try container.encodeIfPresent(payload.phaseEnteredAt, forKey: .phaseEnteredAt)
       try container.encodeIfPresent(payload.phaseError, forKey: .phaseError)
+
     case .guestHealth(let payload):
       try container.encode("guestHealth", forKey: .type)
       try container.encode(payload.mounts, forKey: .mounts)
       try container.encode(payload.activation, forKey: .activation)
       try container.encode(payload.services, forKey: .services)
+
     case .error(let message):
       try container.encode(message, forKey: .error)
     }

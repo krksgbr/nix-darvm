@@ -2,8 +2,15 @@ import Foundation
 
 /// Lifecycle phases matching the actual boot/activation cycle.
 enum VMPhase: String, Codable, Sendable {
-  case stopped, configuring, booting, waitingForAgent
-  case mounting, activating, running, stopping, failed
+  case stopped = "stopped"
+  case configuring = "configuring"
+  case booting = "booting"
+  case waitingForAgent = "waitingForAgent"
+  case mounting = "mounting"
+  case activating = "activating"
+  case running = "running"
+  case stopping = "stopping"
+  case failed = "failed"
 }
 
 /// Snapshot of VM status at a point in time.
@@ -32,9 +39,11 @@ final class ControlSocket: @unchecked Sendable {
   private var acceptSource: DispatchSourceRead?
   private let queue = DispatchQueue(label: "dvm.control")
   private var status = VMStatus(
-    phase: .stopped, ipAddress: nil,
+    phase: .stopped,
+    ipAddress: nil,
     phaseEnteredAt: Date().timeIntervalSince1970,
-    runId: "", error: nil
+    runId: "",
+    error: nil
   )
 
   /// Closure to query guest health via gRPC. Set by Start after agent is connected.
@@ -131,18 +140,24 @@ final class ControlSocket: @unchecked Sendable {
 
   private func acceptConnection() {
     let clientFD = accept(listenerFD, nil, nil)
-    guard clientFD >= 0 else { return }
+    guard clientFD >= 0 else {
+      return
+    }
 
     // Read until newline or EOF. The protocol is newline-delimited JSON,
     // and SOCK_STREAM may fragment large payloads (e.g. loadCredentials).
     var requestData = Data()
-    var buf = [UInt8](repeating: 0, count: 4096)
+    var buf = [UInt8](repeating: 0, count: 4_096)
     while true {
       let bytesRead = read(clientFD, &buf, buf.count)
-      if bytesRead <= 0 { break }
+      if bytesRead <= 0 {
+        break
+      }
       requestData.append(buf, count: bytesRead)
       // Newline terminates the request
-      if buf[..<bytesRead].contains(0x0A) { break }
+      if buf[..<bytesRead].contains(0x0A) {
+        break
+      }
     }
 
     let response = handleRequest(requestData.isEmpty ? nil : requestData)
@@ -168,22 +183,29 @@ final class ControlSocket: @unchecked Sendable {
     switch command {
     case .status:
       return statusResponse()
+
     case .guestHealth:
       return guestHealthResponse()
+
     case .loadCredentials:
       return loadCredentialsResponse(decoded)
+
     case .reloadCapabilities:
       return reloadCapabilitiesResponse(decoded)
     }
   }
 
   private func decodeRequest(_ data: Data?) -> [String: Any]? {
-    guard let data else { return nil }
+    guard let data else {
+      return nil
+    }
     return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
   }
 
   private func parseCommand(from decoded: [String: Any]) -> Command? {
-    guard let commandString = decoded["cmd"] as? String else { return nil }
+    guard let commandString = decoded["cmd"] as? String else {
+      return nil
+    }
     return Command(rawValue: commandString)
   }
 

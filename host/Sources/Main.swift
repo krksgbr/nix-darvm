@@ -12,10 +12,11 @@ nonisolated(unsafe) var stopRequested = false
 
 /// Elapsed time since process start, for timestamped log output.
 private let processStartTime = CFAbsoluteTimeGetCurrent()
+
 func tprint(_ message: String) {
   let elapsed = CFAbsoluteTimeGetCurrent() - processStartTime
   let secs = Int(elapsed)
-  let milliseconds = Int((elapsed - Double(secs)) * 1000)
+  let milliseconds = Int((elapsed - Double(secs)) * 1_000)
   print(String(format: "[%3d.%03ds] %@", secs, milliseconds, message))
 }
 
@@ -265,13 +266,15 @@ private func printGuestHealthSummary() {
     print("  Activation: \(health.activation)")
     if !health.services.isEmpty {
       let serviceSummary = health.services
-        .sorted(by: { $0.key < $1.key })
+        .sorted { $0.key < $1.key }
         .map { "\($0.key)=\($0.value)" }
         .joined(separator: ", ")
       print("  Services:   \(serviceSummary)")
     }
+
   case .success(.error(let message)):
     print("  Guest:      unavailable (\(message))")
+
   default:
     print("  Guest:      unavailable")
   }
@@ -281,12 +284,16 @@ private func throwStatusFailure(_ result: Result<ControlSocket.Response, Control
   switch result {
   case .success(.error(let message)):
     print("VM not running (server error: \(message))")
+
   case .success(.guestHealth):
     print("VM not running (unexpected response)")
+
   case .failure(.socketNotFound):
     print("VM not running")
+
   case .failure(let error):
     print("VM not running (\(error))")
+
   case .success(.status):
     fatalError("throwStatusFailure should not be called with a status response")
   }
@@ -303,26 +310,6 @@ struct NixStorePath {
       throw DVMError.invalidStorePath(trimmed)
     }
     self.rawValue = trimmed
-  }
-}
-
-enum DVMError: Error, CustomStringConvertible {
-  case noIPAddress
-  case buildFailed
-  case invalidStorePath(String)
-  case activationFailed(String)
-  case alreadyRunning
-
-  var description: String {
-    switch self {
-    case .noIPAddress: return "Could not resolve VM IP address. Is the VM running?"
-    case .buildFailed: return "nix build failed"
-    case .invalidStorePath(let storePath):
-      return "Invalid nix store path from build output: \(storePath)"
-    case .activationFailed(let msg): return "Activation failed: \(msg)"
-    case .alreadyRunning:
-      return "A VM is already running. Stop it first or use `dvm switch` to apply changes."
-    }
   }
 }
 

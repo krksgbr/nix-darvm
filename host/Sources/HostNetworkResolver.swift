@@ -50,7 +50,9 @@ enum HostNetworkResolver {
       let mask = netmask.withMemoryRebound(to: sockaddr_in.self, capacity: 1) {
         IPv4(sockaddrIn: $0.pointee)
       }
-      guard candidate.isGlobalUnicast else { continue }
+      guard candidate.isGlobalUnicast else {
+        continue
+      }
 
       if candidate.networkAddress(mask: mask) == guest.networkAddress(mask: mask) {
         return Resolution(
@@ -81,8 +83,12 @@ enum HostNetworkResolver {
 
     var isGlobalUnicast: Bool {
       let firstOctet = (rawValue >> 24) & 0xff
-      if firstOctet == 127 || firstOctet == 0 { return false }
-      if (rawValue & 0xffff_0000) == 0xa9fe_0000 { return false }  // 169.254.0.0/16
+      if firstOctet == 127 || firstOctet == 0 {
+        return false
+      }
+      if (rawValue & 0xffff_0000) == 0xa9fe_0000 {
+        return false  // 169.254.0.0/16
+      }
       return true
     }
 

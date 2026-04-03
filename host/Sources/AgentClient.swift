@@ -83,6 +83,7 @@ struct AgentClient: Sendable {
           switch response.accepted {
           case .success(let contents):
             return try await Self.processExecStream(contents.bodyParts)
+
           case .failure(let error):
             throw error
           }
@@ -148,7 +149,6 @@ struct AgentClient: Sendable {
       }
     }
   }
-
 }
 
 enum AgentClientError: Error, CustomStringConvertible {
@@ -157,9 +157,13 @@ enum AgentClientError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
-    case .invalidIP(let ipAddress): return "Agent returned invalid IP: \(ipAddress)"
+    case .invalidIP(let ipAddress):
+      return "Agent returned invalid IP: \(ipAddress)"
+
     case .agentTimeout(let error):
-      if let error { return "Agent not reachable after timeout: \(error)" }
+      if let error {
+        return "Agent not reachable after timeout: \(error)"
+      }
       return "Agent not reachable after timeout"
     }
   }

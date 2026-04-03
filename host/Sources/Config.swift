@@ -135,7 +135,7 @@ private struct DynamicCodingKey: CodingKey {
   }
 
   init?(intValue: Int) {
-    return nil
+    nil
   }
 
   static func named(_ stringValue: String) -> DynamicCodingKey {

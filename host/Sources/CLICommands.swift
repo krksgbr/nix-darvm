@@ -18,6 +18,7 @@ struct ConfigGet: ParsableCommand {
     case "flake":
       guard let flake = config.flake else { throw ExitCode(1) }
       print(flake)
+
     default:
       throw ExitCode(1)
     }
@@ -276,8 +277,10 @@ struct Status: AsyncParsableCommand {
           result["services"] = health.services
         }
       }
+
     case .failure:
       break
+
     default:
       break
     }
@@ -303,6 +306,7 @@ struct Status: AsyncParsableCommand {
       if payload.phase == VMPhase.running.rawValue {
         printGuestHealthSummary()
       }
+
     default:
       try throwStatusFailure(statusResult)
     }

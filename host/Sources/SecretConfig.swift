@@ -9,8 +9,8 @@ import TOML
 /// - `proxy`: placeholder injected as env var, real value substituted by MITM proxy on matching hosts.
 /// - `passthrough`: real value injected directly as env var, no proxy interception.
 enum SecretMode: String, Sendable {
-  case proxy
-  case passthrough
+  case proxy = "proxy"
+  case passthrough = "passthrough"
 }
 
 /// A single secret declaration from `.dvm/credentials.toml`.
@@ -116,8 +116,10 @@ func derivePlaceholder(project: String, envVar: String, hostKey: HostKey) -> Str
   var hmac = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
   CCHmac(
     CCHmacAlgorithm(kCCHmacAlgSHA256),
-    hostKey.bytes, hostKey.bytes.count,
-    inputBytes, inputBytes.count,
+    hostKey.bytes,
+    hostKey.bytes.count,
+    inputBytes,
+    inputBytes.count,
     &hmac)
 
   // First 8 bytes = 16 hex chars
@@ -207,24 +209,34 @@ enum SecretConfigError: Error, CustomStringConvertible {
     switch self {
     case .unsupportedVersion(let version):
       return "Unsupported credentials.toml version: \(version) (expected 1)"
+
     case .missingProjectName:
       return "credentials.toml missing required 'project' field"
+
     case .duplicateSecret(let secret):
       return "Secret '\(secret)' appears in both [proxy] and [passthrough] tables"
+
     case .emptyHosts(let secret):
       return "Secret '\(secret)' has empty hosts list"
-    case .wildcardHost(let secret, let host):
+
+    case let .wildcardHost(secret, host):
       return "Secret '\(secret)': wildcard hosts not supported: \(host)"
-    case .envVarNotSet(let secret, let envVar):
+
+    case let .envVarNotSet(secret, envVar):
       return "Secret '\(secret)': environment variable '\(envVar)' is not set"
-    case .envVarEmpty(let secret, let envVar):
+
+    case let .envVarEmpty(secret, envVar):
       return "Secret '\(secret)': environment variable '\(envVar)' is set but empty"
+
     case .manifestNotFound(let path):
       return "Credential manifest not found: \(path)"
-    case .manifestUnreadable(let path, let error):
+
+    case let .manifestUnreadable(path, error):
       return "Failed to read credential manifest at \(path): \(error)"
-    case .invalidHostKey(let path, let byteCount):
+
+    case let .invalidHostKey(path, byteCount):
       return "Host key at \(path) has wrong size (\(byteCount) bytes, expected 32)"
+
     case .hostKeyGenerationFailed(let status):
       return "Failed to generate host key: SecRandomCopyBytes status \(status)"
     }
@@ -234,7 +246,6 @@ enum SecretConfigError: Error, CustomStringConvertible {
 // MARK: - Manifest Loading
 
 extension CredentialManifest {
-
   /// Parse a `.dvm/credentials.toml` file into a typed manifest.
   static func load(from path: String) throws -> CredentialManifest {
     guard FileManager.default.fileExists(atPath: path) else {
@@ -285,7 +296,7 @@ extension CredentialManifest {
       SecretDecl(envVar: envVar, mode: .passthrough, hosts: [])
     }
 
-    decls.sort(by: { $0.envVar < $1.envVar })  // deterministic order
+    decls.sort { $0.envVar < $1.envVar }  // deterministic order
 
     return CredentialManifest(
       version: raw.version,
@@ -298,7 +309,6 @@ extension CredentialManifest {
 // MARK: - Resolution
 
 extension CredentialManifest {
-
   /// Resolve secrets from host environment.
   /// Missing or empty env vars are skipped with a per-secret warning.
   /// Structural errors (bad format, duplicate secrets) still throw.
@@ -331,6 +341,7 @@ extension CredentialManifest {
             value: trimmed,
             hosts: decl.hosts
           ))
+
       case .passthrough:
         // Passthrough: real value injected directly, no proxy interception
         resolved.append(

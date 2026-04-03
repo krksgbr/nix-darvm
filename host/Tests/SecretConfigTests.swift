@@ -7,7 +7,6 @@ import XCTest
 // MARK: - Placeholder Derivation
 
 final class PlaceholderDerivationTests: XCTestCase {
-
   let testKey = HostKey(bytes: Array(repeating: 0x42, count: 32))
 
   func testFormat() {
@@ -63,7 +62,6 @@ final class PlaceholderDerivationTests: XCTestCase {
 // MARK: - Slugify
 
 final class SlugifyTests: XCTestCase {
-
   func testBasic() {
     XCTAssertEqual(slugify("HELLO_WORLD"), "hello-world")
   }
@@ -100,7 +98,6 @@ final class SlugifyTests: XCTestCase {
 // MARK: - Normalize
 
 final class NormalizeTests: XCTestCase {
-
   func testNormalizeProjectName_lowercaseAndTrim() {
     XCTAssertEqual(normalizeProjectName("  My Project  "), "my project")
   }
@@ -133,7 +130,6 @@ final class NormalizeTests: XCTestCase {
 // MARK: - Manifest Loading
 
 final class ManifestLoadTests: XCTestCase {
-
   func testValidManifest() throws {
     let toml = """
       version = 1

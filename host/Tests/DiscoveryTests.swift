@@ -9,7 +9,6 @@ import XCTest
 /// These tests mutate the process-global `DVM_CREDENTIALS` env var and must run
 /// serially (the default for XCTest in SwiftPM).
 final class DiscoveryTests: XCTestCase {
-
   var tempDir: String!
 
   override func setUp() {

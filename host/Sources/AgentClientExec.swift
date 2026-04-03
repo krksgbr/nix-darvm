@@ -64,6 +64,7 @@ extension AgentClient {
     switch response.accepted {
     case .success(let contents):
       return try await Self.processExecStream(contents.bodyParts)
+
     case .failure(let error):
       throw error
     }
@@ -98,18 +99,24 @@ extension AgentClient {
                 switch msg.type {
                 case .standardOutput(let chunk):
                   output.append(chunk.data)
+
                 case .exit(let exit):
-                  guard exit.code == 0 else { return nil }
+                  guard exit.code == 0 else {
+                    return nil
+                  }
                   return String(data: output, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
+
                 default:
                   break
                 }
+
               case .trailingMetadata:
                 break
               }
             }
             return nil
+
           case .failure:
             return nil
           }
@@ -129,13 +136,17 @@ extension AgentClient {
         switch response.type {
         case .standardOutput(let chunk):
           try FileHandle.standardOutput.write(contentsOf: chunk.data)
+
         case .standardError(let chunk):
           try FileHandle.standardError.write(contentsOf: chunk.data)
+
         case .exit(let exit):
           return exit.code
+
         case nil:
           break
         }
+
       case .trailingMetadata:
         break
       }
@@ -152,7 +163,9 @@ extension AgentClient {
       )
       source.setEventHandler {
         let available = source.data
-        guard available > 0 else { return }
+        guard available > 0 else {
+          return
+        }
         var buf = [UInt8](repeating: 0, count: Int(available))
         let bytesRead = read(fileDescriptor, &buf, buf.count)
         if bytesRead > 0 {
@@ -196,7 +209,9 @@ extension AgentClient {
     }
 
     for await _ in stream {
-      guard let (width, height) = try? Term.getSize() else { continue }
+      guard let (width, height) = try? Term.getSize() else {
+        continue
+      }
       var size = Darvm_TerminalSize()
       size.cols = UInt32(width)
       size.rows = UInt32(height)
