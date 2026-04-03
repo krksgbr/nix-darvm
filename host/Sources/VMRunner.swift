@@ -5,17 +5,17 @@ import Virtualization
 /// Reference: Lume's BaseVirtualizationService (MIT).
 @MainActor
 final class VMRunner {
-  let vm: VZVirtualMachine
+  let virtualMachine: VZVirtualMachine
   let macAddress: VZMACAddress
 
   init(_ configured: ConfiguredVM) {
-    self.vm = configured.vm
+    self.virtualMachine = configured.virtualMachine
     self.macAddress = configured.macAddress
   }
 
   func start() async throws {
     try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-      vm.start { result in
+      virtualMachine.start { result in
         switch result {
         case .success:
           cont.resume()
@@ -28,7 +28,7 @@ final class VMRunner {
 
   func stop() async throws {
     try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-      vm.stop { error in
+      virtualMachine.stop { error in
         if let error {
           cont.resume(throwing: error)
         } else {
@@ -39,12 +39,12 @@ final class VMRunner {
   }
 
   func requestStop() throws {
-    try vm.requestStop()
+    try virtualMachine.requestStop()
   }
 
   /// Wait for the VM to stop. Returns when the VM reaches the stopped state.
   func waitUntilStopped() async {
-    while vm.state != .stopped && vm.state != .error {
+    while virtualMachine.state != .stopped && virtualMachine.state != .error {
       try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
     }
   }

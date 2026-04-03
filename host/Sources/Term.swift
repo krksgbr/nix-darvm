@@ -8,8 +8,8 @@ struct TermState {
 /// Terminal utilities for TTY mode support.
 enum Term {
   static func isTerminal() -> Bool {
-    var t = termios()
-    return tcgetattr(FileHandle.standardInput.fileDescriptor, &t) != -1
+    var terminalAttributes = termios()
+    return tcgetattr(FileHandle.standardInput.fileDescriptor, &terminalAttributes) != -1
   }
 
   /// Switch the terminal to raw mode. Returns the previous state for restore.
@@ -31,17 +31,17 @@ enum Term {
 
   /// Restore terminal to a previously saved state.
   static func restore(_ state: TermState) {
-    var t = state.termios
-    tcsetattr(FileHandle.standardInput.fileDescriptor, TCSANOW, &t)
+    var terminalAttributes = state.termios
+    tcsetattr(FileHandle.standardInput.fileDescriptor, TCSANOW, &terminalAttributes)
   }
 
   /// Get current terminal dimensions.
   static func getSize() throws -> (width: UInt16, height: UInt16) {
-    var ws = winsize()
-    guard ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != -1 else {
+    var windowSize = winsize()
+    guard ioctl(STDOUT_FILENO, TIOCGWINSZ, &windowSize) != -1 else {
       throw TermError.operationFailed("failed to get terminal size: \(errnoMessage())")
     }
-    return (width: ws.ws_col, height: ws.ws_row)
+    return (width: windowSize.ws_col, height: windowSize.ws_row)
   }
 }
 

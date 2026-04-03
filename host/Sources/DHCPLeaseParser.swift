@@ -11,8 +11,8 @@ enum DHCPLeaseParser {
     // Try vmnet DHCP leases first (NAT mode)
     if let contents = try? String(contentsOfFile: leasePath, encoding: .utf8) {
       let leases = parseDHCPLeases(contents)
-      if let ip = leases.first(where: { $0.mac == normalized })?.ip,
-        let guest = GuestIP(ip)
+      if let ipAddress = leases.first(where: { $0.mac == normalized })?.ipAddress,
+        let guest = GuestIP(ipAddress)
       {
         return guest
       }
@@ -24,7 +24,7 @@ enum DHCPLeaseParser {
 
   private struct Lease {
     let mac: String
-    let ip: String
+    let ipAddress: String
   }
 
   private static func parseDHCPLeases(_ contents: String) -> [Lease] {
@@ -39,12 +39,12 @@ enum DHCPLeaseParser {
         current = [:]
       } else if trimmed == "}" {
         if let hwAddress = current["hw_address"],
-          let ip = current["ip_address"]
+          let ipAddress = current["ip_address"]
         {
           let parts = hwAddress.split(separator: ",")
           if parts.count >= 2 {
             let mac = normalize(mac: String(parts[1]).trimmingCharacters(in: .whitespaces))
-            leases.append(Lease(mac: mac, ip: ip))
+            leases.append(Lease(mac: mac, ipAddress: ipAddress))
           }
         }
         inBlock = false
@@ -76,9 +76,9 @@ enum DHCPLeaseParser {
       let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
     else { return nil }
 
-    let lowered = macAddress.lowercased()
+    let normalizedAddress = macAddress.lowercased()
     for line in output.components(separatedBy: "\n") {
-      if line.lowercased().contains(lowered),
+      if line.lowercased().contains(normalizedAddress),
         let open = line.firstIndex(of: "("),
         let close = line.firstIndex(of: ")")
       {

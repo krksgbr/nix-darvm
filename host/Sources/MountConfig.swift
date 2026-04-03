@@ -113,8 +113,8 @@ enum MountConfigError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
-    case .relativePath(let p): return "Path must be absolute: \(p)"
-    case .invalidTag(let t): return "Invalid mount tag: \(t)"
+    case .relativePath(let path): return "Path must be absolute: \(path)"
+    case .invalidTag(let tag): return "Invalid mount tag: \(tag)"
     }
   }
 }

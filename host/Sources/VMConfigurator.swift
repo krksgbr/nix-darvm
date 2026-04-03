@@ -7,7 +7,7 @@ import Virtualization
 /// actually installed into the VM configuration (host paths that exist).
 @MainActor
 struct ConfiguredVM {
-  let vm: VZVirtualMachine
+  let virtualMachine: VZVirtualMachine
   let macAddress: VZMACAddress
   let nfsMACAddress: VZMACAddress?
   let effectiveMounts: [MountConfig]
@@ -88,8 +88,8 @@ enum VMConfigurator {
       ? VZMACAddress.randomLocallyAdministered()
       : config.macAddress
     primaryNetwork.macAddress = primaryMAC
-    if let fd = netstackFD {
-      let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+    if let fileDescriptor = netstackFD {
+      let handle = FileHandle(fileDescriptor: fileDescriptor, closeOnDealloc: false)
       primaryNetwork.attachment = VZFileHandleNetworkDeviceAttachment(fileHandle: handle)
     } else {
       primaryNetwork.attachment = VZNATNetworkDeviceAttachment()
@@ -182,7 +182,7 @@ enum VMConfigurator {
 
     try vzConfig.validate()
     return ConfiguredVM(
-      vm: VZVirtualMachine(configuration: vzConfig),
+      virtualMachine: VZVirtualMachine(configuration: vzConfig),
       macAddress: primaryMAC,
       nfsMACAddress: nfsMACAddress,
       effectiveMounts: effectiveMounts
