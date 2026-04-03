@@ -136,8 +136,8 @@ extension ControlSocket {
   private static func trimTrailingWhitespace(_ data: Data) -> Data {
     data.withUnsafeBytes { rawBuffer in
       var end = rawBuffer.count
-      while end > 0
-        && (rawBuffer[end - 1] == 0x0A || rawBuffer[end - 1] == 0x0D || rawBuffer[end - 1] == 0x20)
+      while end > 0,
+        rawBuffer[end - 1] == 0x0A || rawBuffer[end - 1] == 0x0D || rawBuffer[end - 1] == 0x20
       {
         end -= 1
       }

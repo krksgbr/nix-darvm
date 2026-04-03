@@ -23,7 +23,7 @@ func tprint(_ message: String) {
 
 /// Structured JSON logger for DVM. Writes JSON lines to /tmp/dvm-<pid>.log.
 /// In debug mode, also emits to stderr.
-struct DVMLog {
+enum DVMLog {
   /// Unique run identifier, shared with VMStatus.
   static let runId: String = {
     let chars = "abcdefghijklmnopqrstuvwxyz0123456789"

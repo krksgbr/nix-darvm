@@ -201,7 +201,7 @@ final class NFSExportManager {
       (String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
       + (String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
 
-    if !allowNonZeroExit && process.terminationStatus != 0 {
+    if !allowNonZeroExit, process.terminationStatus != 0 {
       let command = ([executable] + arguments).map(shellQuote).joined(separator: " ")
       throw Error.commandFailed(
         command: command,

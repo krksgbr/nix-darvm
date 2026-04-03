@@ -269,7 +269,7 @@ struct Status: AsyncParsableCommand {
       if let runId = payload.runId { result["run_id"] = runId }
       if let phaseError = payload.phaseError { result["error"] = phaseError }
 
-      if payload.running && payload.phase == VMPhase.running.rawValue {
+      if payload.running, payload.phase == VMPhase.running.rawValue {
         if case .success(.guestHealth(let health)) = ControlSocket.send(.guestHealth, timeout: 5) {
           result["mounts"] = health.mounts
           result["activation"] = health.activation

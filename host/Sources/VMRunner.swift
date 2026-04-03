@@ -44,7 +44,7 @@ final class VMRunner {
 
   /// Wait for the VM to stop. Returns when the VM reaches the stopped state.
   func waitUntilStopped() async {
-    while virtualMachine.state != .stopped && virtualMachine.state != .error {
+    while virtualMachine.state != .stopped, virtualMachine.state != .error {
       try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
     }
   }

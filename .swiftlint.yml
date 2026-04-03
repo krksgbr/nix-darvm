@@ -10,10 +10,13 @@ excluded:
 only_rules:
   - contains_over_filter_count
   - contains_over_filter_is_empty
+  - direct_return
   - cyclomatic_complexity
   - duplicate_imports
   - empty_count
+  - empty_collection_literal
   - empty_string
+  - explicit_init
   - file_length
   - first_where
   - for_where
@@ -21,14 +24,19 @@ only_rules:
   - identifier_name
   - line_length
   - nesting
+  - prefer_condition_list
+  - prefer_key_path
   - prefer_zero_over_explicit_init
+  - reduce_into
   - redundant_nil_coalescing
   - statement_position
   - superfluous_else
   - trailing_newline
   - trailing_whitespace
+  - toggle_bool
   - type_body_length
   - unused_optional_binding
+  - convenience_type
 
 line_length:
   warning: 120

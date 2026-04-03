@@ -22,7 +22,7 @@ extension Start {
     var logLineBuffer = ""
     var activatorStarted = false
 
-    while Date() < deadline && !stopRequested {
+    while Date() < deadline, !stopRequested {
       try await checkActivationBootError(bootErrorMonitor: bootErrorMonitor, runner: runner)
       drainActivationLog(logFile: logFile, logOffset: &logOffset, logLineBuffer: &logLineBuffer)
       let result = processActivationStatus(
@@ -35,7 +35,7 @@ extension Start {
       try? await Task.sleep(nanoseconds: 500_000_000)
     }
 
-    if !stopRequested && Date() >= deadline {
+    if !stopRequested, Date() >= deadline {
       DVMLog.log(phase: .activating, level: "error", "activation timed out after 5 min")
       tprint("Warning: activation did not complete within 5 minutes.")
     }
@@ -79,7 +79,7 @@ extension Start {
       let statusText = try? String(contentsOf: statusFile, encoding: .utf8)
         .trimmingCharacters(in: .whitespacesAndNewlines)
     else { return .pending }
-    if statusText == "running" && !activatorStarted {
+    if statusText == "running", !activatorStarted {
       activatorStarted = true
       DVMLog.log(phase: .activating, "activator running")
     }
@@ -144,7 +144,7 @@ extension Start {
     bootErrorMonitor: BootErrorMonitor
   ) async -> Bool {
     let deadline = Date().addingTimeInterval(120)
-    while Date() < deadline && !stopRequested {
+    while Date() < deadline, !stopRequested {
       if let bootError = bootErrorMonitor.currentError() {
         DVMLog.log(phase: .waitingForAgent, level: "error", "guest boot failed: \(bootError)")
         tprint("FATAL: Guest boot failed: \(bootError)")

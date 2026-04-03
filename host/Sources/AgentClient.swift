@@ -100,7 +100,7 @@ struct AgentClient: Sendable {
     env: [String: String] = [:]
   ) async throws -> Int32 {
     var termState: TermState?
-    if tty && Term.isTerminal() {
+    if tty, Term.isTerminal() {
       termState = try Term.makeRaw()
     }
     defer {

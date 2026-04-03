@@ -196,7 +196,7 @@ final class NetstackSupervisor: @unchecked Sendable {
 
     // Wait briefly for graceful exit
     let deadline = Date().addingTimeInterval(5)
-    while process.isRunning && Date() < deadline {
+    while process.isRunning, Date() < deadline {
       Thread.sleep(forTimeInterval: 0.1)
     }
 

@@ -20,7 +20,7 @@ final class PlaceholderDerivationTests: XCTestCase {
     let parts = placeholder.split(separator: "_")
     let hmacSuffix = String(parts.last!)
     XCTAssertEqual(hmacSuffix.count, 16)
-    XCTAssertTrue(hmacSuffix.allSatisfy { $0.isHexDigit })
+    XCTAssertTrue(hmacSuffix.allSatisfy(\.isHexDigit))
   }
 
   func testDeterministic() {
