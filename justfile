@@ -14,7 +14,7 @@ fmt:
 
 # Run language linters for Swift, Go, and Nix.
 lint:
-    nix build \
+    nix build --no-link \
         .#checks.aarch64-darwin.swift-lint \
         .#checks.aarch64-darwin.go-lint-agent \
         .#checks.aarch64-darwin.go-lint-netstack \

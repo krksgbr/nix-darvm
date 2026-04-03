@@ -64,7 +64,7 @@ extension AgentClient {
         return
       } catch {
         let errStr = "\(error)"
-        if lastError == nil || "\(lastError!)" != errStr {
+        if lastError == nil || errStr != "\(lastError!)" {
           DVMLog.log(level: "debug", "waitForAgent attempt \(attempts): \(errStr)")
         }
         lastError = error

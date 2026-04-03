@@ -261,7 +261,7 @@ extension CredentialManifest {
     let proxyKeys = Set((raw.proxy ?? [:]).keys)
     let passthroughKeys = Set((raw.passthrough ?? [:]).keys)
     let duplicates = proxyKeys.intersection(passthroughKeys)
-    if let first = duplicates.sorted().first {
+    if let first = duplicates.min() {
       throw SecretConfigError.duplicateSecret(secret: first)
     }
 
