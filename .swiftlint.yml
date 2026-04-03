@@ -8,11 +8,15 @@ excluded:
   - build
 
 only_rules:
+  - cyclomatic_complexity
+  - file_length
   - for_where
   - function_body_length
   - identifier_name
   - line_length
+  - nesting
   - statement_position
+  - type_body_length
   - unused_optional_binding
 
 line_length:
