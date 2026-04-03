@@ -15,11 +15,11 @@ final class VsockDaemonBridge {
   let daemonSocketPath: String
 
   init(
-    vm: VZVirtualMachine,
+    virtualMachine: VZVirtualMachine,
     listenPort: UInt32 = defaultPort,
     daemonSocketPath: String = defaultDaemonSocket
   ) throws {
-    guard let device = vm.socketDevices.first as? VZVirtioSocketDevice else {
+    guard let device = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
       throw BridgeError.noSocketDevice
     }
     self.socketDevice = device
@@ -66,8 +66,8 @@ final class VsockDaemonBridge {
     }
     withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
       ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
-        for (i, byte) in pathBytes.enumerated() {
-          dest[i] = byte
+        for (index, byte) in pathBytes.enumerated() {
+          dest[index] = byte
         }
       }
     }
@@ -96,23 +96,23 @@ final class VsockDaemonBridge {
       let buf = UnsafeMutableRawPointer.allocate(byteCount: bufSize, alignment: 1)
       defer { buf.deallocate() }
       while true {
-        let n = read(vsockFD, buf, bufSize)
-        if n <= 0 {
-          if n < 0 {
+        let bytesRead = read(vsockFD, buf, bufSize)
+        if bytesRead <= 0 {
+          if bytesRead < 0 {
             let err = String(cString: strerror(errno))
             fputs("Bridge: vsock→daemon read error: \(err)\n", stderr)
           }
           break
         }
         var written = 0
-        while written < n {
-          let w = write(daemonFD, buf + written, n - written)
-          if w <= 0 {
+        while written < bytesRead {
+          let bytesWritten = write(daemonFD, buf + written, bytesRead - written)
+          if bytesWritten <= 0 {
             let err = String(cString: strerror(errno))
             fputs("Bridge: vsock→daemon write error: \(err)\n", stderr)
             return
           }
-          written += w
+          written += bytesWritten
         }
       }
       shutdown(daemonFD, SHUT_WR)
@@ -124,23 +124,23 @@ final class VsockDaemonBridge {
       let buf = UnsafeMutableRawPointer.allocate(byteCount: bufSize, alignment: 1)
       defer { buf.deallocate() }
       while true {
-        let n = read(daemonFD, buf, bufSize)
-        if n <= 0 {
-          if n < 0 {
+        let bytesRead = read(daemonFD, buf, bufSize)
+        if bytesRead <= 0 {
+          if bytesRead < 0 {
             let err = String(cString: strerror(errno))
             fputs("Bridge: daemon→vsock read error: \(err)\n", stderr)
           }
           break
         }
         var written = 0
-        while written < n {
-          let w = write(vsockFD, buf + written, n - written)
-          if w <= 0 {
+        while written < bytesRead {
+          let bytesWritten = write(vsockFD, buf + written, bytesRead - written)
+          if bytesWritten <= 0 {
             let err = String(cString: strerror(errno))
             fputs("Bridge: daemon→vsock write error: \(err)\n", stderr)
             return
           }
-          written += w
+          written += bytesWritten
         }
       }
       shutdown(vsockFD, SHUT_WR)

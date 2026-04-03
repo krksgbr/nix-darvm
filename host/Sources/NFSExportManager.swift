@@ -158,9 +158,10 @@ final class NFSExportManager {
 
   private func validate(paths: [AbsolutePath]) throws {
     let sorted = paths.map(\.rawValue).sorted()
-    for i in 0..<sorted.count {
-      for j in (i + 1)..<sorted.count where isNested(parent: sorted[i], child: sorted[j]) {
-        throw Error.nestedMirrorPaths(sorted[i], sorted[j])
+    for parentIndex in 0..<sorted.count {
+      for childIndex in (parentIndex + 1)..<sorted.count
+      where isNested(parent: sorted[parentIndex], child: sorted[childIndex]) {
+        throw Error.nestedMirrorPaths(sorted[parentIndex], sorted[childIndex])
       }
     }
   }

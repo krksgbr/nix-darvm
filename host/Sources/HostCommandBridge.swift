@@ -47,8 +47,8 @@ enum HostActionError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
-    case .manifestNotInStore(let p):
-      return "capabilities manifest must be in /nix/store/: \(p)"
+    case .manifestNotInStore(let path):
+      return "capabilities manifest must be in /nix/store/: \(path)"
     case .invalidManifest(let msg):
       return "invalid capabilities manifest: \(msg)"
     case .handlerNotInStore(let name, let path):
@@ -101,11 +101,11 @@ final class HostCommandBridge {
   private var listenerDelegate: ListenerDelegate?
 
   init(
-    vm: VZVirtualMachine,
+    virtualMachine: VZVirtualMachine,
     manifest: CapabilitiesManifest,
     listenPort: UInt32 = defaultPort
   ) throws {
-    guard let device = vm.socketDevices.first as? VZVirtioSocketDevice else {
+    guard let device = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
       throw BridgeError.noSocketDevice
     }
     self.socketDevice = device
@@ -137,7 +137,7 @@ final class HostCommandBridge {
   /// Handle a guest connection. Runs on a background thread.
   /// The connection object must stay alive for the duration.
   nonisolated func handleConnection(_ connection: VZVirtioSocketConnection) {
-    let fd = connection.fileDescriptor
+    let fileDescriptor = connection.fileDescriptor
 
     // Read request until EOF or 64KB + header limit
     let maxBytes = 65536 + 1024  // payload cap + room for action name line
@@ -146,54 +146,63 @@ final class HostCommandBridge {
     defer { buf.deallocate() }
 
     while data.count < maxBytes {
-      let n = read(fd, buf, min(4096, maxBytes - data.count))
-      if n <= 0 { break }
-      data.append(buf.assumingMemoryBound(to: UInt8.self), count: n)
+      let bytesRead = read(fileDescriptor, buf, min(4096, maxBytes - data.count))
+      if bytesRead <= 0 { break }
+      data.append(buf.assumingMemoryBound(to: UInt8.self), count: bytesRead)
     }
 
     guard !data.isEmpty else {
-      writeResponse(fd: fd, code: 1, error: "empty request")
+      writeResponse(fd: fileDescriptor, code: 1, error: "empty request")
       return
     }
 
     guard let request = String(data: data, encoding: .utf8) else {
-      writeResponse(fd: fd, code: 1, error: "invalid UTF-8")
+      writeResponse(fd: fileDescriptor, code: 1, error: "invalid UTF-8")
       return
     }
 
     // Parse: first line = action name, rest = payload
     guard let newlineIndex = request.firstIndex(of: "\n") else {
-      writeResponse(fd: fd, code: 1, error: "malformed request: no newline separator")
+      writeResponse(fd: fileDescriptor, code: 1, error: "malformed request: no newline separator")
       return
     }
 
     let actionName = String(request[request.startIndex..<newlineIndex])
     guard !actionName.isEmpty else {
-      writeResponse(fd: fd, code: 1, error: "empty action name")
+      writeResponse(fd: fileDescriptor, code: 1, error: "empty action name")
       return
     }
 
     let payload = String(request[request.index(after: newlineIndex)...])
     let payloadBytes = payload.utf8.count
     if payloadBytes > 65536 {
-      writeResponse(fd: fd, code: 1, error: "payload too large: \(payloadBytes) bytes (max 65536)")
+      writeResponse(
+        fd: fileDescriptor,
+        code: 1,
+        error: "payload too large: \(payloadBytes) bytes (max 65536)"
+      )
       return
     }
 
     // Look up handler in manifest
     guard let handlerPath = manifest.handlers[actionName] else {
       DVMLog.log(level: "warn", "unknown action: \(actionName)")
-      writeResponse(fd: fd, code: 1, error: "unknown action: \(actionName)")
+      writeResponse(fd: fileDescriptor, code: 1, error: "unknown action: \(actionName)")
       return
     }
 
     DVMLog.log(level: "debug", "host action: \(actionName) (payload: \(payloadBytes) bytes)")
 
-    executeHandler(fd: fd, handlerPath: handlerPath, actionName: actionName, payload: payload)
+    executeHandler(
+      fileDescriptor: fileDescriptor,
+      handlerPath: handlerPath,
+      actionName: actionName,
+      payload: payload
+    )
   }
 
   private nonisolated func executeHandler(
-    fd: Int32, handlerPath: String, actionName: String, payload: String
+    fileDescriptor: Int32, handlerPath: String, actionName: String, payload: String
   ) {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: handlerPath)
@@ -234,21 +243,21 @@ final class HostCommandBridge {
           String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
           ?? ""
         if !stderrStr.isEmpty {
-          writeResponse(fd: fd, code: exitCode, error: stderrStr)
+          writeResponse(fd: fileDescriptor, code: exitCode, error: stderrStr)
         } else {
-          writeResponse(fd: fd, code: exitCode, error: nil)
+          writeResponse(fd: fileDescriptor, code: exitCode, error: nil)
         }
       } else {
-        writeResponse(fd: fd, code: 0, error: nil)
+        writeResponse(fd: fileDescriptor, code: 0, error: nil)
       }
     } catch {
       timeoutItem.cancel()
       DVMLog.log(level: "error", "host action '\(actionName)' exec failed: \(error)")
-      writeResponse(fd: fd, code: 1, error: "exec failed: \(error)")
+      writeResponse(fd: fileDescriptor, code: 1, error: "exec failed: \(error)")
     }
   }
 
-  private nonisolated func writeResponse(fd: Int32, code: Int32, error: String?) {
+  private nonisolated func writeResponse(fd fileDescriptor: Int32, code: Int32, error: String?) {
     let response: String
     if let error, !error.isEmpty {
       response = "\(code)\0\(error)\n"
@@ -257,7 +266,7 @@ final class HostCommandBridge {
     }
     let bytes = Array(response.utf8)
     _ = bytes.withUnsafeBufferPointer { ptr in
-      write(fd, ptr.baseAddress!, ptr.count)
+      write(fileDescriptor, ptr.baseAddress!, ptr.count)
     }
   }
 }

@@ -463,10 +463,10 @@ struct Start: AsyncParsableCommand {
     try await runner.start()
 
     // Start host-side bridges
-    let bridge = try VsockDaemonBridge(vm: runner.virtualMachine)
+    let bridge = try VsockDaemonBridge(virtualMachine: runner.virtualMachine)
     bridge.start()
 
-    let agentProxy = try AgentProxy(vm: runner.virtualMachine)
+    let agentProxy = try AgentProxy(virtualMachine: runner.virtualMachine)
     agentProxy.start()
 
     // Host action bridge: forward capability actions from guest → host
@@ -478,7 +478,7 @@ struct Start: AsyncParsableCommand {
       let manifest = try CapabilitiesManifest.load(from: capPath)
       if !manifest.handlers.isEmpty {
         hostCmdBridge = try HostCommandBridge(
-          vm: runner.virtualMachine,
+          virtualMachine: runner.virtualMachine,
           manifest: manifest
         )
         hostCmdBridge!.start()
@@ -499,7 +499,10 @@ struct Start: AsyncParsableCommand {
           } else if !newManifest.handlers.isEmpty,
             let virtualMachine = runner?.virtualMachine
           {
-            let bridge = try HostCommandBridge(vm: virtualMachine, manifest: newManifest)
+            let bridge = try HostCommandBridge(
+              virtualMachine: virtualMachine,
+              manifest: newManifest
+            )
             bridge.start()
             hostCmdBridge = bridge
           }

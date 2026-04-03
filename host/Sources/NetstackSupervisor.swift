@@ -255,27 +255,27 @@ final class NetstackSupervisor: @unchecked Sendable {
 
   /// Send a JSON message to the control socket and read the response.
   private func sendControlMessage(_ message: [String: Any]) throws -> [String: Any] {
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fd >= 0 else {
+    let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fileDescriptor >= 0 else {
       throw SupervisorError.controlSocketError(
         "failed to create socket: \(String(cString: strerror(errno)))")
     }
-    defer { close(fd) }
+    defer { close(fileDescriptor) }
 
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
     let pathBytes = controlSocketPath.utf8CString
     withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
       ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
-        for (i, byte) in pathBytes.enumerated() {
-          dest[i] = byte
+        for (index, byte) in pathBytes.enumerated() {
+          dest[index] = byte
         }
       }
     }
 
     let connectResult = withUnsafePointer(to: &addr) { ptr in
       ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-        connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+        connect(fileDescriptor, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
       }
     }
     guard connectResult == 0 else {
@@ -286,21 +286,21 @@ final class NetstackSupervisor: @unchecked Sendable {
     // Send JSON
     let data = try JSONSerialization.data(withJSONObject: message, options: [.sortedKeys])
     let sent = data.withUnsafeBytes { ptr in
-      write(fd, ptr.baseAddress!, ptr.count)
+      write(fileDescriptor, ptr.baseAddress!, ptr.count)
     }
     guard sent == data.count else {
       throw SupervisorError.controlSocketError("short write to control socket")
     }
-    Darwin.shutdown(fd, SHUT_WR)
+    Darwin.shutdown(fileDescriptor, SHUT_WR)
 
     // Read response
     var responseData = Data()
     let buf = UnsafeMutableRawPointer.allocate(byteCount: 4096, alignment: 1)
     defer { buf.deallocate() }
     while true {
-      let n = read(fd, buf, 4096)
-      if n <= 0 { break }
-      responseData.append(buf.assumingMemoryBound(to: UInt8.self), count: n)
+      let bytesRead = read(fileDescriptor, buf, 4096)
+      if bytesRead <= 0 { break }
+      responseData.append(buf.assumingMemoryBound(to: UInt8.self), count: bytesRead)
     }
 
     guard let json = try JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {

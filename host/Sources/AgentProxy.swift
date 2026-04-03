@@ -23,11 +23,11 @@ final class AgentProxy {
   private var serverTask: Task<Void, Error>?
 
   init(
-    vm: VZVirtualMachine,
+    virtualMachine: VZVirtualMachine,
     socketPath: String = defaultPath,
     vmPort: UInt32 = defaultPort
   ) throws {
-    guard let device = vm.socketDevices.first as? VZVirtioSocketDevice else {
+    guard let device = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
       throw BridgeError.noSocketDevice
     }
     self.socketDevice = device
