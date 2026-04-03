@@ -337,6 +337,75 @@ private func formatElapsed(_ seconds: Double) -> String {
 
 // MARK: - Start
 
+private struct PreparedStartContext {
+  let controlSocket: ControlSocket
+  let vmDirectory: URL
+  let mounts: [MountConfig]
+  let netstackSupervisor: NetstackSupervisor
+  let stateDir: URL
+  let homeDataDir: URL
+  let netstackBinary: String
+}
+
+private struct ConfiguredStartContext {
+  let runner: VMRunner
+  let effectiveMounts: [MountConfig]
+  let nfsMACAddress: VZMACAddress?
+  let caCertPEM: String
+}
+
+private struct StartedGuestServices {
+  let vsockBridge: VsockDaemonBridge
+  let agentProxy: AgentProxy
+  let agentClient: AgentClient
+  let hostCommandBridgeBox: HostCommandBridgeBox
+}
+
+private struct SignalSources {
+  let sigintSource: DispatchSourceSignal
+  let sigtermSource: DispatchSourceSignal
+}
+
+private struct BootErrorMonitor {
+  let bootErrorFile: URL
+
+  init(stateDir: URL) {
+    bootErrorFile = stateDir.appendingPathComponent("boot-error")
+  }
+
+  func currentError() -> String? {
+    guard
+      let error = try? String(contentsOf: bootErrorFile, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+      !error.isEmpty
+    else { return nil }
+    return error
+  }
+}
+
+private final class HostCommandBridgeBox: @unchecked Sendable {
+  var bridge: HostCommandBridge?
+}
+
+private enum ActivationPollResult {
+  case pending
+  case succeeded
+  case failed
+}
+
+private struct RuntimeMountPreparation {
+  let nfsMirrorMounts: [MountConfig]
+  let nfsHostIP: GuestIP?
+  let nfsExportManager: NFSExportManager?
+}
+
+private struct RunningStartContext {
+  let signalSources: SignalSources
+  let services: StartedGuestServices
+  let guestIP: GuestIP
+  let nfsExportManager: NFSExportManager?
+}
+
 struct Start: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     abstract: "Boot the VM and block until stopped (Ctrl-C)"
@@ -369,49 +438,106 @@ struct Start: AsyncParsableCommand {
 
   @MainActor
   func run() async throws {
+    configureLogging()
+    let prepared = try prepareStartContext()
+    let configured = try configureRuntime(using: prepared)
+    let running = try await startRuntime(prepared: prepared, configured: configured)
+    defer { removeManagedExports(running.nfsExportManager) }
+
+    try await restartGuestBridgeAndInstallCA(
+      agentClient: running.services.agentClient,
+      caCertPEM: configured.caCertPEM
+    )
+    registerRuntimeHandlers(
+      controlSocket: prepared.controlSocket,
+      services: running.services,
+      netstackSupervisor: prepared.netstackSupervisor
+    )
+    await finishRunningSession(
+      guestIP: running.guestIP,
+      controlSocket: prepared.controlSocket,
+      services: running.services,
+      netstackSupervisor: prepared.netstackSupervisor,
+      runner: configured.runner
+    )
+
+    withExtendedLifetime(running.signalSources) {}
+    withExtendedLifetime(running.services.vsockBridge) {}
+    withExtendedLifetime(running.services.hostCommandBridgeBox) {}
+  }
+}
+
+extension Start {
+  fileprivate func configureLogging() {
     let effectiveDebug =
       debug || logPredicate != nil || ProcessInfo.processInfo.environment["DVM_DEBUG"] == "1"
     DVMLog.debugMode = effectiveDebug
     DVMLog.log(phase: .stopped, "dvm starting (run_id=\(DVMLog.runId), log=\(DVMLog.logPath))")
+  }
 
+  fileprivate func prepareStartContext() throws -> PreparedStartContext {
+    let mounts = try buildConfiguredMounts()
+    let controlSocket = try prepareControlSocket()
+    let vmDirectory = currentVMDirectory()
+    let netstackBinary =
+      ProcessInfo.processInfo.environment["DVM_NETSTACK"] ?? "/usr/local/bin/dvm-netstack"
+    let netstackSupervisor = try makeNetstackSupervisor(netstackBinary: netstackBinary)
+    let stateDir = try makeStateDir()
+    let homeDataDir = try makeHomeDataDir(from: stateDir)
+    try writeActivationFilesIfNeeded(stateDir: stateDir)
+    controlSocket.update(.configuring)
+    DVMLog.log(phase: .configuring, "configuring VM from \(vmDirectory.path)")
+    tprint("Configuring VM from \(vmDirectory.path)...")
+    return PreparedStartContext(
+      controlSocket: controlSocket,
+      vmDirectory: vmDirectory,
+      mounts: mounts,
+      netstackSupervisor: netstackSupervisor,
+      stateDir: stateDir,
+      homeDataDir: homeDataDir,
+      netstackBinary: netstackBinary
+    )
+  }
+
+  fileprivate func buildConfiguredMounts() throws -> [MountConfig] {
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     let config = try DVMConfig.load()
-    let mounts = try buildMounts(
+    return try buildMounts(
       hostHome: home,
       mirrorDirs: config.mirrorDirs,
       mirrorTransport: config.mirrorTransport,
       homeDirs: config.homeDirs + homeDir,
       systemDirs: systemDir
     )
+  }
 
-    // Control socket for CLI coordination (status, stop, etc.)
-    // Check for an already-running instance BEFORE creating our socket.
-    // ControlSocket.listen() unlinks the existing socket file, which would
-    // orphan the running instance (it becomes unreachable via the control
-    // socket even though the VM is still running).
-    if ControlSocket.isRunning() {
+  fileprivate func prepareControlSocket() throws -> ControlSocket {
+    guard !ControlSocket.isRunning() else {
       throw DVMError.alreadyRunning
     }
     let controlSocket = ControlSocket()
     try controlSocket.listen()
+    return controlSocket
+  }
 
-    // Phase: configuring
+  fileprivate func currentVMDirectory() -> URL {
     let effectiveVMName = vmName ?? defaultVMName
-    let vmDirectory = FileManager.default.homeDirectoryForCurrentUser
+    return FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".tart/vms/\(effectiveVMName)")
-    controlSocket.update(.configuring)
-    DVMLog.log(phase: .configuring, "configuring VM from \(vmDirectory.path)")
-    tprint("Configuring VM from \(vmDirectory.path)...")
+  }
 
-    // Credential proxy: always launch sidecar with empty secrets.
-    // Credentials are pushed per-project at exec/ssh time, not at startup.
-    var caCertPEM = ""
+  fileprivate func makeNetstackSupervisor(netstackBinary: String) throws -> NetstackSupervisor {
+    try NetstackSupervisor.launch(
+      config: initialNetstackConfig(netstackBinary: netstackBinary),
+      onCrash: {
+        DVMLog.log(level: "error", "dvm-netstack crashed — networking is down, failing closed")
+        tprint("FATAL: Credential proxy (dvm-netstack) crashed. VM networking is down.")
+      }
+    )
+  }
 
-    let netstackBinary =
-      ProcessInfo.processInfo.environment["DVM_NETSTACK"]
-      ?? "/usr/local/bin/dvm-netstack"
-
-    let initialNetstackConfig = NetstackSupervisor.Config(
+  fileprivate func initialNetstackConfig(netstackBinary: String) -> NetstackSupervisor.Config {
+    NetstackSupervisor.Config(
       netstackBinary: netstackBinary,
       subnet: "172.22.0.0/24",
       gatewayIP: "172.22.0.1",
@@ -421,84 +547,86 @@ struct Start: AsyncParsableCommand {
       caCertPEM: "",
       caKeyPEM: ""
     )
+  }
 
-    let netstackSupervisor = try NetstackSupervisor.launch(
-      config: initialNetstackConfig,
-      onCrash: {
-        DVMLog.log(level: "error", "dvm-netstack crashed — networking is down, failing closed")
-        tprint("FATAL: Credential proxy (dvm-netstack) crashed. VM networking is down.")
-      }
-    )
-    var nfsExportManager: NFSExportManager?
-    defer {
-      do {
-        try nfsExportManager?.removeManagedExports()
-      } catch {
-        DVMLog.log(level: "error", "failed to remove DVM NFS exports: \(error)")
-      }
-    }
-
-    // Create state directory for host↔guest activation state exchange.
-    // Shared via VirtioFS as "dvm-state", mounted at /var/run/dvm-state in guest.
+  fileprivate func makeStateDir() throws -> URL {
     let dvmLocalDir = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".local/state/dvm")
     let stateDir = URL(fileURLWithPath: dvmLocalDir.path)
-    // Clean up stale state from previous runs
     try? FileManager.default.removeItem(at: stateDir)
     try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
     DVMLog.log(phase: .configuring, "state dir: \(stateDir.path)")
+    return stateDir
+  }
 
-    // Host-backed guest home directory.
-    // The guest VM disk has ~1GB free after macOS /System (~45GB on a 46GB
-    // disk). User data (tool caches, configs, node_modules temp, etc.) must
-    // live on the host to avoid NoSpaceLeft errors. This directory backs
-    // /Users/admin in the guest via VirtioFS, mounted by the boot script
-    // before any launchd services touch ~/. Created once, persists across
-    // VM rebuilds — tool caches, shell history, etc. survive dvm init.
+  fileprivate func makeHomeDataDir(from stateDir: URL) throws -> URL {
     let homeDataDir =
-      dvmLocalDir
-      .deletingLastPathComponent()  // ~/.local/state
-      .deletingLastPathComponent()  // ~/.local
+      stateDir
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
       .appendingPathComponent("state/dvm/home")
     if !FileManager.default.fileExists(atPath: homeDataDir.path) {
       try FileManager.default.createDirectory(at: homeDataDir, withIntermediateDirectories: true)
       DVMLog.log(phase: .configuring, "created home data dir: \(homeDataDir.path)")
     }
     DVMLog.log(phase: .configuring, "home data dir: \(homeDataDir.path)")
+    return homeDataDir
+  }
 
-    // Write activation files if closure provided. The guest's mount script
-    // touches the trigger after mounting, which fires the activator daemon.
-    if let closure = systemClosure {
-      try closure.write(
-        to: stateDir.appendingPathComponent("closure-path"),
-        atomically: true, encoding: .utf8)
-      try DVMLog.runId.write(
-        to: stateDir.appendingPathComponent("run-id"),
-        atomically: true, encoding: .utf8)
-      DVMLog.log(phase: .configuring, "activation requested: \(closure)")
-    }
-
-    let configured = try VMConfigurator.create(
-      vmDir: vmDirectory,
-      mounts: mounts,
-      netstackFD: netstackSupervisor.vmFD,
-      stateDir: stateDir,
-      homeDataDir: homeDataDir
+  fileprivate func writeActivationFilesIfNeeded(stateDir: URL) throws {
+    guard let closure = systemClosure else { return }
+    try closure.write(
+      to: stateDir.appendingPathComponent("closure-path"),
+      atomically: true,
+      encoding: .utf8
     )
-    let effectiveMounts = configured.effectiveMounts
-    let nfsMACAddress = configured.nfsMACAddress
+    try DVMLog.runId.write(
+      to: stateDir.appendingPathComponent("run-id"),
+      atomically: true,
+      encoding: .utf8
+    )
+    DVMLog.log(phase: .configuring, "activation requested: \(closure)")
+  }
+
+  fileprivate func configureRuntime(using prepared: PreparedStartContext) throws -> ConfiguredStartContext {
+    let configured = try VMConfigurator.create(
+      vmDir: prepared.vmDirectory,
+      mounts: prepared.mounts,
+      netstackFD: prepared.netstackSupervisor.vmFD,
+      stateDir: prepared.stateDir,
+      homeDataDir: prepared.homeDataDir
+    )
+    let caCertPEM = try configureNetstack(
+      configured: configured,
+      netstackSupervisor: prepared.netstackSupervisor,
+      netstackBinary: prepared.netstackBinary
+    )
+    return ConfiguredStartContext(
+      runner: VMRunner(configured),
+      effectiveMounts: configured.effectiveMounts,
+      nfsMACAddress: configured.nfsMACAddress,
+      caCertPEM: caCertPEM
+    )
+  }
+
+  fileprivate func configureNetstack(
+    configured: ConfiguredVM,
+    netstackSupervisor: NetstackSupervisor,
+    netstackBinary: String
+  ) throws -> String {
+    let initialConfig = initialNetstackConfig(netstackBinary: netstackBinary)
     let netstackConfig = NetstackSupervisor.Config(
       netstackBinary: netstackBinary,
-      subnet: initialNetstackConfig.subnet,
-      gatewayIP: initialNetstackConfig.gatewayIP,
-      guestIP: initialNetstackConfig.guestIP,
+      subnet: initialConfig.subnet,
+      gatewayIP: initialConfig.gatewayIP,
+      guestIP: initialConfig.guestIP,
       guestMAC: configured.macAddress.string,
-      dnsServers: initialNetstackConfig.dnsServers,
-      caCertPEM: initialNetstackConfig.caCertPEM,
-      caKeyPEM: initialNetstackConfig.caKeyPEM
+      dnsServers: initialConfig.dnsServers,
+      caCertPEM: initialConfig.caCertPEM,
+      caKeyPEM: initialConfig.caKeyPEM
     )
     try netstackSupervisor.configure(config: netstackConfig)
-    caCertPEM = netstackSupervisor.caCertPEM
+    let caCertPEM = netstackSupervisor.caCertPEM
     let caDescription = caCertPEM.isEmpty ? "none" : "\(caCertPEM.count) bytes"
     DVMLog.log(
       phase: .configuring,
@@ -506,28 +634,47 @@ struct Start: AsyncParsableCommand {
     )
     netstackSupervisor.startMonitoring()
     tprint("Credential proxy started.")
+    logNetworkConfiguration(configured: configured, netstackSupervisor: netstackSupervisor)
+    return caCertPEM
+  }
+
+  fileprivate func logNetworkConfiguration(
+    configured: ConfiguredVM,
+    netstackSupervisor: NetstackSupervisor
+  ) {
     let primaryTransport = netstackSupervisor.vmFD >= 0 ? "netstack" : "nat"
     let nfsTransport =
-      nfsMACAddress.map { ", nfs(mac=\($0.string), transport=nat)" } ?? ""
+      configured.nfsMACAddress.map { ", nfs(mac=\($0.string), transport=nat)" } ?? ""
     DVMLog.log(
       phase: .configuring,
       "VM NICs: primary(mac=\(configured.macAddress.string), transport=\(primaryTransport))"
         + nfsTransport
     )
+  }
 
-    let runner = VMRunner(configured)
-
-    // Phase: booting
+  fileprivate func installSignalHandlers(
+    controlSocket: ControlSocket,
+    runner: VMRunner
+  ) -> SignalSources {
     controlSocket.update(.booting)
     DVMLog.log(phase: .booting, "starting VM")
-
-    // Signal handler: Ctrl-C stops the VM immediately.
     let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
     let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
     signal(SIGINT, SIG_IGN)
     signal(SIGTERM, SIG_IGN)
+    let handleStop = makeStopHandler(controlSocket: controlSocket, runner: runner)
+    sigintSource.setEventHandler(handler: handleStop)
+    sigtermSource.setEventHandler(handler: handleStop)
+    sigintSource.resume()
+    sigtermSource.resume()
+    return SignalSources(sigintSource: sigintSource, sigtermSource: sigtermSource)
+  }
 
-    let handleStop: @Sendable () -> Void = {
+  fileprivate func makeStopHandler(
+    controlSocket: ControlSocket,
+    runner: VMRunner
+  ) -> @Sendable () -> Void {
+    {
       stopRequested = true
       controlSocket.update(.stopping)
       DVMLog.log(phase: .stopping, "stop signal received")
@@ -536,463 +683,643 @@ struct Start: AsyncParsableCommand {
         try? await runner.stop()
       }
     }
-    sigintSource.setEventHandler(handler: handleStop)
-    sigtermSource.setEventHandler(handler: handleStop)
-    sigintSource.resume()
-    sigtermSource.resume()
+  }
 
-    tprint("Starting VM...")
-    try await runner.start()
-
-    // Start host-side bridges
-    let bridge = try VsockDaemonBridge(virtualMachine: runner.virtualMachine)
-    bridge.start()
-
+  fileprivate func startGuestServices(
+    runner: VMRunner,
+    controlSocket: ControlSocket
+  ) throws -> StartedGuestServices {
+    let vsockBridge = try VsockDaemonBridge(virtualMachine: runner.virtualMachine)
+    vsockBridge.start()
     let agentProxy = try AgentProxy(virtualMachine: runner.virtualMachine)
     agentProxy.start()
+    let hostCommandBridgeBox = HostCommandBridgeBox()
+    try startInitialHostCommandBridge(runner: runner, hostCommandBridgeBox: hostCommandBridgeBox)
+    registerCapabilitiesReloadHandler(
+      controlSocket: controlSocket,
+      runner: runner,
+      hostCommandBridgeBox: hostCommandBridgeBox
+    )
+    return StartedGuestServices(
+      vsockBridge: vsockBridge,
+      agentProxy: agentProxy,
+      agentClient: AgentClient(),
+      hostCommandBridgeBox: hostCommandBridgeBox
+    )
+  }
 
-    // Host action bridge: forward capability actions from guest → host
-    // All access is on the main actor (initial setup + Task { @MainActor in } in
-    // the reload handler). nonisolated(unsafe) lets the @Sendable closure capture
-    // it without the compiler flagging a cross-isolation send.
-    nonisolated(unsafe) var hostCmdBridge: HostCommandBridge?
-    if let capPath = capabilities {
-      let manifest = try CapabilitiesManifest.load(from: capPath)
-      if !manifest.handlers.isEmpty {
-        hostCmdBridge = try HostCommandBridge(
-          virtualMachine: runner.virtualMachine,
-          manifest: manifest
-        )
-        hostCmdBridge!.start()
-      }
-    }
+  fileprivate func startInitialHostCommandBridge(
+    runner: VMRunner,
+    hostCommandBridgeBox: HostCommandBridgeBox
+  ) throws {
+    guard let capPath = capabilities else { return }
+    let manifest = try CapabilitiesManifest.load(from: capPath)
+    guard !manifest.handlers.isEmpty else { return }
+    let bridge = try HostCommandBridge(
+      virtualMachine: runner.virtualMachine,
+      manifest: manifest
+    )
+    bridge.start()
+    hostCommandBridgeBox.bridge = bridge
+  }
 
-    // Register reload handler so `dvm switch` can hot-reload capabilities
+  fileprivate func registerCapabilitiesReloadHandler(
+    controlSocket: ControlSocket,
+    runner: VMRunner,
+    hostCommandBridgeBox: HostCommandBridgeBox
+  ) {
     controlSocket.reloadCapabilitiesHandler = { [weak runner] path in
-      // Must dispatch to main actor for VZ framework access
       final class Box: @unchecked Sendable { var result: String? }
       let box = Box()
       let semaphore = DispatchSemaphore(value: 0)
       Task { @MainActor in
+        defer { semaphore.signal() }
         do {
-          let newManifest = try CapabilitiesManifest.load(from: path)
-          if let bridge = hostCmdBridge {
-            try bridge.reload(from: path)
-          } else if !newManifest.handlers.isEmpty,
-            let virtualMachine = runner?.virtualMachine
-          {
-            let bridge = try HostCommandBridge(
-              virtualMachine: virtualMachine,
-              manifest: newManifest
-            )
-            bridge.start()
-            hostCmdBridge = bridge
-          }
-          // If manifest is empty and no bridge exists, nothing to do
+          let manifest = try CapabilitiesManifest.load(from: path)
+          try reloadHostCommandBridge(
+            manifest: manifest,
+            path: path,
+            runner: runner,
+            hostCommandBridgeBox: hostCommandBridgeBox
+          )
         } catch {
           box.result = "\(error)"
         }
-        semaphore.signal()
       }
-      let waitResult = semaphore.wait(timeout: .now() + 5)
-      if waitResult != .success { return "reload timed out" }
-      return box.result
+      return semaphore.wait(timeout: .now() + 5) == .success ? box.result : "reload timed out"
+    }
+  }
+
+  @MainActor
+  fileprivate func reloadHostCommandBridge(
+    manifest: CapabilitiesManifest,
+    path: String,
+    runner: VMRunner?,
+    hostCommandBridgeBox: HostCommandBridgeBox
+  ) throws {
+    if let bridge = hostCommandBridgeBox.bridge {
+      try bridge.reload(from: path)
+      return
+    }
+    guard !manifest.handlers.isEmpty, let virtualMachine = runner?.virtualMachine else { return }
+    let bridge = try HostCommandBridge(
+      virtualMachine: virtualMachine,
+      manifest: manifest
+    )
+    bridge.start()
+    hostCommandBridgeBox.bridge = bridge
+  }
+
+  fileprivate func startRuntime(
+    prepared: PreparedStartContext,
+    configured: ConfiguredStartContext
+  ) async throws -> RunningStartContext {
+    let signalSources = installSignalHandlers(
+      controlSocket: prepared.controlSocket,
+      runner: configured.runner
+    )
+    tprint("Starting VM...")
+    try await configured.runner.start()
+    let services = try startGuestServices(
+      runner: configured.runner,
+      controlSocket: prepared.controlSocket
+    )
+    let bootErrorMonitor = BootErrorMonitor(stateDir: prepared.stateDir)
+    try await waitForActivationIfNeeded(
+      stateDir: prepared.stateDir,
+      runner: configured.runner,
+      bootErrorMonitor: bootErrorMonitor,
+      controlSocket: prepared.controlSocket
+    )
+    try await waitForGuestAgent(
+      services: services,
+      runner: configured.runner,
+      controlSocket: prepared.controlSocket,
+      bootErrorMonitor: bootErrorMonitor
+    )
+    let guestIP = try await resolveGuestIP(
+      services: services,
+      runner: configured.runner,
+      controlSocket: prepared.controlSocket
+    )
+    let nfsExportManager = try await mountRuntimeShares(
+      services: services,
+      controlSocket: prepared.controlSocket,
+      effectiveMounts: configured.effectiveMounts,
+      nfsMACAddress: configured.nfsMACAddress,
+      guestIP: guestIP
+    )
+    return RunningStartContext(
+      signalSources: signalSources,
+      services: services,
+      guestIP: guestIP,
+      nfsExportManager: nfsExportManager
+    )
+  }
+
+  fileprivate func waitForActivationIfNeeded(
+    stateDir: URL,
+    runner: VMRunner,
+    bootErrorMonitor: BootErrorMonitor,
+    controlSocket: ControlSocket
+  ) async throws {
+    guard systemClosure != nil else { return }
+    controlSocket.update(.activating)
+    DVMLog.log(phase: .activating, "waiting for guest activation via state files")
+    tprint("Waiting for guest activation...")
+
+    let runDir = stateDir.appendingPathComponent(DVMLog.runId)
+    let statusFile = runDir.appendingPathComponent("status")
+    let logFile = stateDir.appendingPathComponent("run.log")
+    let deadline = Date().addingTimeInterval(300)
+    var logOffset = 0
+    var logLineBuffer = ""
+    var activatorStarted = false
+
+    while Date() < deadline && !stopRequested {
+      try await checkActivationBootError(bootErrorMonitor: bootErrorMonitor, runner: runner)
+      drainActivationLog(logFile: logFile, logOffset: &logOffset, logLineBuffer: &logLineBuffer)
+      let result = processActivationStatus(
+        statusFile: statusFile,
+        runDir: runDir,
+        logLineBuffer: &logLineBuffer,
+        activatorStarted: &activatorStarted
+      )
+      if result != .pending { return }
+      try? await Task.sleep(nanoseconds: 500_000_000)
     }
 
-    let agentClient = AgentClient()
-
-    // Check for guest boot errors. The boot mount script (dvm-mount-store)
-    // writes an error marker to dvm-state if an infrastructure mount fails,
-    // then halts the VM. We check for this marker during activation and
-    // agent wait phases to surface the failure quickly.
-    let bootErrorFile = stateDir.appendingPathComponent("boot-error")
-    func checkBootError() -> String? {
-      guard
-        let error = try? String(contentsOf: bootErrorFile, encoding: .utf8)
-          .trimmingCharacters(in: .whitespacesAndNewlines),
-        !error.isEmpty
-      else { return nil }
-      return error
+    if !stopRequested && Date() >= deadline {
+      DVMLog.log(phase: .activating, level: "error", "activation timed out after 5 min")
+      tprint("Warning: activation did not complete within 5 minutes.")
     }
+  }
 
-    // Phase: activating (if closure was provided)
-    // Watch state files on host filesystem — the state dir is shared via
-    // VirtioFS, so guest writes are instantly visible to the host.
-    // On first boot, the agent doesn't exist yet; activation installs it.
-    if systemClosure != nil {
-      controlSocket.update(.activating)
-      DVMLog.log(phase: .activating, "waiting for guest activation via state files")
-      tprint("Waiting for guest activation...")
+  fileprivate func checkActivationBootError(
+    bootErrorMonitor: BootErrorMonitor,
+    runner: VMRunner
+  ) async throws {
+    guard let bootError = bootErrorMonitor.currentError() else { return }
+    DVMLog.log(phase: .activating, level: "error", "guest boot failed: \(bootError)")
+    tprint("FATAL: Guest boot failed: \(bootError)")
+    try? await runner.stop()
+    throw DVMError.activationFailed("guest boot failed: \(bootError)")
+  }
 
-      let runDir = stateDir.appendingPathComponent(DVMLog.runId)
-      let statusFile = runDir.appendingPathComponent("status")
-      // Single host-visible log for the full boot session: boot progress
-      // from dvm-mount-store + activation output from dvm-activator.
-      let logFile = stateDir.appendingPathComponent("run.log")
-      let deadline = Date().addingTimeInterval(300)  // 5 min timeout
-
-      // Stream run.log live by polling for new bytes each iteration.
-      // We cannot use `tail -F` here: VirtioFS writes from the guest do not
-      // trigger kqueue NOTE_WRITE events on the host, so tail opens the file
-      // and blocks waiting for events that never arrive.
-      var logOffset = 0
-      var logLineBuffer = ""
-      var activatorStarted = false
-
-      var activationSucceeded = false
-      while Date() < deadline && !stopRequested {
-        // Check for boot-level failures (infrastructure mount failure → VM halt)
-        if let bootError = checkBootError() {
-          DVMLog.log(phase: .activating, level: "error", "guest boot failed: \(bootError)")
-          tprint("FATAL: Guest boot failed: \(bootError)")
-          try? await runner.stop()
-          throw DVMError.activationFailed("guest boot failed: \(bootError)")
-        }
-        // Drain any new log bytes, print complete lines with timestamps
-        if let data = try? Data(contentsOf: logFile), data.count > logOffset {
-          let newData = data.subdata(in: logOffset..<data.count)
-          logOffset = data.count
-          if let text = String(data: newData, encoding: .utf8) {
-            logLineBuffer += text
-            var lines = logLineBuffer.components(separatedBy: "\n")
-            logLineBuffer = lines.removeLast()  // hold back incomplete trailing line
-            for line in lines where !line.isEmpty {
-              tprint(line)
-            }
-          }
-        }
-        if let statusText = try? String(contentsOf: statusFile, encoding: .utf8)
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-        {
-          if statusText == "running" && !activatorStarted {
-            activatorStarted = true
-            DVMLog.log(phase: .activating, "activator running")
-          }
-          if statusText == "done" {
-            if !logLineBuffer.isEmpty { tprint(logLineBuffer) }
-            activationSucceeded = true
-            DVMLog.log(phase: .activating, "activation succeeded")
-            tprint("Activation succeeded.")
-            break
-          }
-          if statusText == "failed" || statusText == "invalid-closure" {
-            if !logLineBuffer.isEmpty { tprint(logLineBuffer) }
-            let exitCode =
-              (try? String(
-                contentsOf: runDir.appendingPathComponent("exit-code"),
-                encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
-            DVMLog.log(
-              phase: .activating, level: "error",
-              "activation failed (status=\(statusText), exit=\(exitCode))")
-            tprint("Activation failed (exit code \(exitCode)).")
-            break
-          }
-        }
-        try? await Task.sleep(nanoseconds: 500_000_000)  // 0.5s
-      }
-
-      if !activationSucceeded && !stopRequested {
-        if Date() >= deadline {
-          DVMLog.log(phase: .activating, level: "error", "activation timed out after 5 min")
-          tprint("Warning: activation did not complete within 5 minutes.")
-        }
-        // Continue anyway — agent might still come up
-      }
+  fileprivate func drainActivationLog(
+    logFile: URL,
+    logOffset: inout Int,
+    logLineBuffer: inout String
+  ) {
+    guard let data = try? Data(contentsOf: logFile), data.count > logOffset else { return }
+    let newData = data.subdata(in: logOffset..<data.count)
+    logOffset = data.count
+    guard let text = String(data: newData, encoding: .utf8) else { return }
+    logLineBuffer += text
+    var lines = logLineBuffer.components(separatedBy: "\n")
+    logLineBuffer = lines.removeLast()
+    for line in lines where !line.isEmpty {
+      tprint(line)
     }
+  }
 
-    // Phase: waitingForAgent
-    // Simplified: just poll gRPC. On first boot the agent is installed by
-    // activation; on subsequent boots it starts from /nix/store via KeepAlive.
+  fileprivate func processActivationStatus(
+    statusFile: URL,
+    runDir: URL,
+    logLineBuffer: inout String,
+    activatorStarted: inout Bool
+  ) -> ActivationPollResult {
+    guard
+      let statusText = try? String(contentsOf: statusFile, encoding: .utf8)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    else { return .pending }
+    if statusText == "running" && !activatorStarted {
+      activatorStarted = true
+      DVMLog.log(phase: .activating, "activator running")
+    }
+    if statusText == "done" {
+      flushActivationLogBuffer(&logLineBuffer)
+      DVMLog.log(phase: .activating, "activation succeeded")
+      tprint("Activation succeeded.")
+      return .succeeded
+    }
+    guard statusText == "failed" || statusText == "invalid-closure" else { return .pending }
+    flushActivationLogBuffer(&logLineBuffer)
+    let exitCode = activationExitCode(runDir: runDir)
+    DVMLog.log(
+      phase: .activating,
+      level: "error",
+      "activation failed (status=\(statusText), exit=\(exitCode))"
+    )
+    tprint("Activation failed (exit code \(exitCode)).")
+    return .failed
+  }
+
+  fileprivate func flushActivationLogBuffer(_ logLineBuffer: inout String) {
+    guard !logLineBuffer.isEmpty else { return }
+    tprint(logLineBuffer)
+    logLineBuffer = ""
+  }
+
+  fileprivate func activationExitCode(runDir: URL) -> String {
+    (try? String(
+      contentsOf: runDir.appendingPathComponent("exit-code"),
+      encoding: .utf8
+    ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
+  }
+
+  fileprivate func waitForGuestAgent(
+    services: StartedGuestServices,
+    runner: VMRunner,
+    controlSocket: ControlSocket,
+    bootErrorMonitor: BootErrorMonitor
+  ) async throws {
     controlSocket.update(.waitingForAgent)
     DVMLog.log(phase: .waitingForAgent, "waiting for guest agent")
     tprint("Waiting for guest agent...")
 
-    let agentConnected: Bool = await {
-      let deadline = Date().addingTimeInterval(120)  // 2 min
-      while Date() < deadline && !stopRequested {
-        // Check for boot-level failures before the agent is even available
-        if let bootError = checkBootError() {
-          DVMLog.log(phase: .waitingForAgent, level: "error", "guest boot failed: \(bootError)")
-          tprint("FATAL: Guest boot failed: \(bootError)")
-          return false
-        }
-        if (try? await agentClient.status()) != nil {
-          return true
-        }
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-      }
-      return false
-    }()
-
-    if agentConnected {
-      DVMLog.log(phase: .waitingForAgent, "agent is reachable")
-      tprint("Guest agent connected.")
-      if let networkSnapshot = try? await agentClient.execCaptureOutput(
-        command: ["sh", "-c", "ifconfig -a; printf '\\n--- ROUTES ---\\n'; netstat -rn -f inet"]
-      ), !networkSnapshot.isEmpty {
-        DVMLog.log(phase: .waitingForAgent, "guest network snapshot:\n\(networkSnapshot)")
-      } else {
-        DVMLog.log(
-          phase: .waitingForAgent, level: "warn", "failed to capture guest network snapshot")
-      }
-    } else if !stopRequested {
+    guard await pollForGuestAgent(services: services, bootErrorMonitor: bootErrorMonitor) else {
+      if stopRequested { return }
       controlSocket.update(.failed, error: "guest agent unreachable")
       tprint("Stopping VM.")
       try? await runner.stop()
       controlSocket.cleanup()
-      agentProxy.cleanup()
+      services.agentProxy.cleanup()
       throw DVMError.activationFailed("guest agent unreachable")
     }
 
-    // Resolve guest IP via gRPC
-    let guestIP: GuestIP
-    do {
-      guestIP = try await agentClient.resolveIP()
-      tprint("VM reachable at \(guestIP)")
-      DVMLog.log(phase: .waitingForAgent, "guest IP: \(guestIP)")
-    } catch {
-      // Fallback to DHCP
-      if let dhcpIP = runner.resolveIP() {
-        guestIP = dhcpIP
-        tprint("VM reachable at \(guestIP) (DHCP fallback)")
-      } else {
-        let msg = "Could not resolve guest IP: \(error)"
-        controlSocket.update(.failed, error: msg)
-        DVMLog.log(phase: .failed, level: "error", msg)
-        tprint("Warning: \(msg)")
-        tprint("VM running. Press Ctrl-C to stop.")
-        await runner.waitUntilStopped()
-        controlSocket.cleanup()
-        agentProxy.cleanup()
-        tprint("VM stopped.")
-        return
+    DVMLog.log(phase: .waitingForAgent, "agent is reachable")
+    tprint("Guest agent connected.")
+    await logGuestNetworkSnapshot(agentClient: services.agentClient)
+  }
+
+  fileprivate func pollForGuestAgent(
+    services: StartedGuestServices,
+    bootErrorMonitor: BootErrorMonitor
+  ) async -> Bool {
+    let deadline = Date().addingTimeInterval(120)
+    while Date() < deadline && !stopRequested {
+      if let bootError = bootErrorMonitor.currentError() {
+        DVMLog.log(phase: .waitingForAgent, level: "error", "guest boot failed: \(bootError)")
+        tprint("FATAL: Guest boot failed: \(bootError)")
+        return false
       }
-    }
-
-    // Phase: mounting
-    // Infrastructure mounts (nix-store, dvm-home) are already mounted by
-    // the image's boot script (dvm-mount-store). Mount remaining shares
-    // (nix-cache, mirror dirs, home dirs) via gRPC exec.
-    // Note: dvm-home (guest home at /Users/admin) is an early-boot mount
-    // because it must land before any launchd service touches ~/. This is
-    // critical for GUI login where WindowServer/Finder/Dock race on ~.
-    let bootMountedTags: Set<String> = ["nix-store", "dvm-home"]
-    let remainingMounts = effectiveMounts.filter { mount in
-      !bootMountedTags.contains(mount.tag.rawValue)
-    }
-    controlSocket.update(.mounting, guestIP: guestIP)
-    let nfsMirrorMounts = remainingMounts.filter { $0.transport == .nfs && $0.isMirror }
-    var nfsHostIP: GuestIP?
-    if !nfsMirrorMounts.isEmpty {
-      guard let nfsMACAddress else {
-        fatalError("NFS mirror mounts exist but no NFS network MAC was configured")
+      if (try? await services.agentClient.status()) != nil {
+        return true
       }
+      try? await Task.sleep(nanoseconds: 1_000_000_000)
+    }
+    return false
+  }
 
-      DVMLog.log(phase: .mounting, "waiting for NFS NIC DHCP lease (mac=\(nfsMACAddress.string))")
-
-      let nfsGuestIP: GuestIP = try await {
-        let deadline = Date().addingTimeInterval(30)
-        while Date() < deadline {
-          if let leaseIP = DHCPLeaseParser.getIPAddress(forMAC: nfsMACAddress.string) {
-            return leaseIP
-          }
-          try await Task.sleep(nanoseconds: 500_000_000)
-        }
-        throw DVMError.activationFailed(
-          "timed out waiting for NFS NIC DHCP lease for MAC \(nfsMACAddress.string)")
-      }()
-
-      let hostResolution = try HostNetworkResolver.resolve(reachableFrom: nfsGuestIP)
-      let resolvedHostIP = hostResolution.hostIP
-      nfsHostIP = resolvedHostIP
-      let mountSummary =
-        "configuring NFS exports for \(nfsMirrorMounts.count) mirror mounts "
-        + "(guest=\(nfsGuestIP), host=\(resolvedHostIP), mac=\(nfsMACAddress.string), \(hostResolution))"
-      DVMLog.log(
-        phase: .mounting,
-        mountSummary
-      )
-      let manager = NFSExportManager(guestIP: nfsGuestIP)
-      try manager.install(for: nfsMirrorMounts)
-      nfsExportManager = manager
+  fileprivate func logGuestNetworkSnapshot(agentClient: AgentClient) async {
+    if let networkSnapshot = try? await agentClient.execCaptureOutput(
+      command: ["sh", "-c", "ifconfig -a; printf '\\n--- ROUTES ---\\n'; netstat -rn -f inet"]
+    ), !networkSnapshot.isEmpty {
+      DVMLog.log(phase: .waitingForAgent, "guest network snapshot:\n\(networkSnapshot)")
+      return
     }
     DVMLog.log(
+      phase: .waitingForAgent,
+      level: "warn",
+      "failed to capture guest network snapshot"
+    )
+  }
+
+  fileprivate func resolveGuestIP(
+    services: StartedGuestServices,
+    runner: VMRunner,
+    controlSocket: ControlSocket
+  ) async throws -> GuestIP {
+    do {
+      let guestIP = try await services.agentClient.resolveIP()
+      tprint("VM reachable at \(guestIP)")
+      DVMLog.log(phase: .waitingForAgent, "guest IP: \(guestIP)")
+      return guestIP
+    } catch {
+      return try await resolveFallbackGuestIP(error: error, runner: runner, controlSocket: controlSocket)
+    }
+  }
+
+  fileprivate func resolveFallbackGuestIP(
+    error: Error,
+    runner: VMRunner,
+    controlSocket: ControlSocket
+  ) async throws -> GuestIP {
+    if let dhcpIP = runner.resolveIP() {
+      tprint("VM reachable at \(dhcpIP) (DHCP fallback)")
+      return dhcpIP
+    }
+    let message = "Could not resolve guest IP: \(error)"
+    controlSocket.update(.failed, error: message)
+    DVMLog.log(phase: .failed, level: "error", message)
+    tprint("Warning: \(message)")
+    tprint("VM running. Press Ctrl-C to stop.")
+    await runner.waitUntilStopped()
+    controlSocket.cleanup()
+    tprint("VM stopped.")
+    throw DVMError.activationFailed(message)
+  }
+
+  fileprivate func mountRuntimeShares(
+    services: StartedGuestServices,
+    controlSocket: ControlSocket,
+    effectiveMounts: [MountConfig],
+    nfsMACAddress: VZMACAddress?,
+    guestIP: GuestIP
+  ) async throws -> NFSExportManager? {
+    let remainingMounts = effectiveMounts.filter { !["nix-store", "dvm-home"].contains($0.tag.rawValue) }
+    controlSocket.update(.mounting, guestIP: guestIP)
+    let preparation = try await prepareRuntimeMounts(
+      remainingMounts: remainingMounts,
+      nfsMACAddress: nfsMACAddress
+    )
+    DVMLog.log(
       phase: .mounting,
-      "mounting \(remainingMounts.count) runtime shares (nix-store handled by image)")
+      "mounting \(remainingMounts.count) runtime shares (nix-store handled by image)"
+    )
     tprint("Mounting runtime shares...")
 
-    // Build mount script and execute via gRPC Exec.
-    //
-    // Home mounts (guest paths under /Users/admin) use symlinks instead of
-    // direct VirtioFS mounts. macOS VirtioFS has a kernel-level bug where
-    // nested mounts (VirtioFS inside VirtioFS) silently fail: mount_virtiofs
-    // succeeds and appears in `mount` output, but reads/writes fall through
-    // to the parent mount due to vnode identity instability in AppleVirtIOFS.
-    // See: docs/research/macos-virtiofs-nested-mount-failure.md
-    //
-    // Instead, we mount at /var/dvm-mounts/<tag> (not nested inside dvm-home)
-    // and create a symlink from the guest path. The symlink persists in the
-    // dvm-home backing store across reboots. On subsequent boots, the symlink
-    // already exists and becomes valid once the VirtioFS device is mounted.
-    //
-    // The pwd-resolution trade-off (symlinks resolve in pwd) only matters for
-    // project directories (mirror mounts), not config dirs like .claude/.codex.
-    // Mirror mounts are NOT under /Users/admin, so they're unaffected.
-    //
-    // NOTE: home mounts currently come from config.toml (opaque to nix).
-    // hjem (nix home manager) also manages paths under ~/. If both manage
-    // the same path, the symlink will conflict with hjem's managed content.
-    // There's no nix-level assertion for this yet — requires migrating home
-    // mounts to nix config (bean nix-darvm-xuus).
+    let scriptBody = try makeRuntimeMountScript(
+      remainingMounts: remainingMounts,
+      nfsHostIP: preparation.nfsHostIP
+    )
+    let mountExitCode = try await services.agentClient.exec(command: ["sudo", "sh", "-c", scriptBody])
+    try await logRuntimeMountDiagnostics(
+      agentClient: services.agentClient,
+      hasNFSMirrorMounts: !preparation.nfsMirrorMounts.isEmpty
+    )
+    if mountExitCode != 0 {
+      DVMLog.log(phase: .mounting, level: "error", "one or more runtime mounts failed")
+      tprint("ERROR: One or more runtime mounts failed.")
+    } else {
+      DVMLog.log(phase: .mounting, "all mounts succeeded")
+    }
+    return preparation.nfsExportManager
+  }
+
+  fileprivate func prepareRuntimeMounts(
+    remainingMounts: [MountConfig],
+    nfsMACAddress: VZMACAddress?
+  ) async throws -> RuntimeMountPreparation {
+    let nfsMirrorMounts = remainingMounts.filter { $0.transport == .nfs && $0.isMirror }
+    guard !nfsMirrorMounts.isEmpty else {
+      return RuntimeMountPreparation(nfsMirrorMounts: [], nfsHostIP: nil, nfsExportManager: nil)
+    }
+    guard let nfsMACAddress else {
+      fatalError("NFS mirror mounts exist but no NFS network MAC was configured")
+    }
+    DVMLog.log(phase: .mounting, "waiting for NFS NIC DHCP lease (mac=\(nfsMACAddress.string))")
+    let nfsGuestIP = try await waitForNFSGuestIP(macAddress: nfsMACAddress)
+    let hostResolution = try HostNetworkResolver.resolve(reachableFrom: nfsGuestIP)
+    let manager = NFSExportManager(guestIP: nfsGuestIP)
+    try manager.install(for: nfsMirrorMounts)
+    DVMLog.log(
+      phase: .mounting,
+      "configuring NFS exports for \(nfsMirrorMounts.count) mirror mounts "
+        + "(guest=\(nfsGuestIP), host=\(hostResolution.hostIP), mac=\(nfsMACAddress.string), \(hostResolution))"
+    )
+    return RuntimeMountPreparation(
+      nfsMirrorMounts: nfsMirrorMounts,
+      nfsHostIP: hostResolution.hostIP,
+      nfsExportManager: manager
+    )
+  }
+
+  fileprivate func waitForNFSGuestIP(macAddress: VZMACAddress) async throws -> GuestIP {
+    let deadline = Date().addingTimeInterval(30)
+    while Date() < deadline {
+      if let leaseIP = DHCPLeaseParser.getIPAddress(forMAC: macAddress.string) {
+        return leaseIP
+      }
+      try await Task.sleep(nanoseconds: 500_000_000)
+    }
+    throw DVMError.activationFailed(
+      "timed out waiting for NFS NIC DHCP lease for MAC \(macAddress.string)"
+    )
+  }
+
+  fileprivate func makeRuntimeMountScript(
+    remainingMounts: [MountConfig],
+    nfsHostIP: GuestIP?
+  ) throws -> String {
     let dvmMountsDir = "/var/dvm-mounts"
-    // manifest maps type+tag→mountPath so dvctl can distinguish transport.
     let manifestPath = shellQuote(dvmMountsDir + "/.manifest")
     let mountLogDir = shellQuote("/tmp/dvm-mount-logs")
-    var setupLines: [String] = [
+    var scriptParts: [String] = [
       "mkdir -p \(shellQuote(dvmMountsDir))",
       "> \(manifestPath)",
       "rm -rf \(mountLogDir)",
-      "mkdir -p \(mountLogDir)"
+      "mkdir -p \(mountLogDir)",
+      "PIDS=\"\""
     ]
-    var mountFunctions: [String] = []
-    var mountCalls: [String] = []
     for mount in remainingMounts {
-      let tag = mount.tag
-      let path = mount.guestPath
-      let quotedTag = shellQuote(tag.rawValue)
-      let isNestedInHome = path.rawValue.hasPrefix(guestHome + "/")
-
-      // For paths inside /Users/admin (dvm-home VirtioFS), mount at a
-      // non-nested path and symlink. For all other paths, mount directly.
-      let mountPathRaw: String
-      if isNestedInHome {
-        let indirectPath = "\(dvmMountsDir)/\(tag.rawValue)"
-        mountPathRaw = indirectPath
-        let mountPath = shellQuote(mountPathRaw)
-        setupLines.append("mkdir -p \(mountPath)")
-        // Replace any existing directory with a symlink. If the path is
-        // already a symlink, ln -sfn updates it. If it's a directory (stale
-        // content from a previous session), warn and skip — user must clean
-        // it up manually.
-        let quotedPath = shellQuote(path.rawValue)
-        let parentDir = shellQuote((path.rawValue as NSString).deletingLastPathComponent)
-        setupLines.append("mkdir -p \(parentDir)")
-        setupLines.append(
-          """
-          if [ -L \(quotedPath) ]; then ln -sfn \(mountPath) \(quotedPath); \
-          elif [ -d \(quotedPath) ]; then \
-            if [ -z \"$(ls -A \(quotedPath) 2>/dev/null)\" ]; then \
-              rmdir \(quotedPath) && ln -sfn \(mountPath) \(quotedPath); \
-            else echo \"WARNING: \(quotedPath) is a non-empty directory, expected symlink.\" >&2; \
-              echo \"Remove it manually: rm -rf \(quotedPath)\" >&2; fi; \
-          else ln -sfn \(mountPath) \(quotedPath); fi
-          """)
-      } else {
-        let quotedPath = shellQuote(path.rawValue)
-        mountPathRaw = path.rawValue
-        setupLines.append("[ -L \(quotedPath) ] && rm -f \(quotedPath); mkdir -p \(quotedPath)")
-      }
-      let mountPath = shellQuote(mountPathRaw)
-      let privateMountPathRaw =
-        mountPathRaw.hasPrefix("/private/")
-        ? mountPathRaw
-        : "/private" + mountPathRaw
-
-      // printf strips shell quoting, so the manifest contains bare unquoted values.
-      let transport = shellQuote(mount.transport.rawValue)
-      let writeManifest =
-        "printf '%s %s %s\\n' \(transport) \(quotedTag) \(mountPath) >> \(manifestPath)"
-      let funcName = "mount_\(tag.rawValue.replacingOccurrences(of: "-", with: "_"))"
-      let tagLogPath = shellQuote("/tmp/dvm-mount-logs/\(tag.rawValue).log")
-      let displayPrefix = shellQuote(
-        "[\(tag.rawValue)] \(mount.hostPath.rawValue) -> \(path.rawValue) (\(mount.transport.rawValue))"
+      let snippet = try runtimeMountSnippet(
+        mount: mount,
+        dvmMountsDir: dvmMountsDir,
+        manifestPath: manifestPath,
+        nfsHostIP: nfsHostIP
       )
-      let logMountBegin =
-        "log_mount \"[BEGIN] tag=\(tag.rawValue) transport=\(mount.transport.rawValue) "
-        + "guest=\(path.rawValue) host=\(mount.hostPath.rawValue)\""
-      let expectedFS: String
-      let mountCommand: String
-      switch mount.transport {
-      case .virtiofs:
-        expectedFS = "virtiofs"
-        mountCommand = "/sbin/mount_virtiofs \(t) \(mountPath)"
-      case .nfs:
-        expectedFS = "nfs"
-        guard let nfsHostIP else {
-          fatalError("NFS mount command requested without resolved NFS host IP")
-        }
-        let remote = shellQuote("\(nfsHostIP.rawValue):\(mount.hostPath.rawValue)")
-        mountCommand = "/sbin/mount_nfs -o actimeo=1 \(remote) \(mountPath)"
-      }
-      mountFunctions.append(
-        """
-        \(funcName)() {
-          log_mount() { printf '%s\\n' "$1" >> \(tagLogPath); }
-          current_mount_line() {
-            /sbin/mount | grep " on \(mountPathRaw) " | tail -n 1 || \
-            /sbin/mount | grep " on \(privateMountPathRaw) " | tail -n 1
-          }
-          wait_for_mount_line() {
-            line=""
-            for _ in 1 2 3 4 5; do
-              line=$(current_mount_line)
-              [ -n "$line" ] && { printf '%s' "$line"; return 0; }
-              sleep 0.2
-            done
-            return 1
-          }
-          \(logMountBegin)
-          log_mount "[CMD] \(mountCommand)"
-          LINE=$(current_mount_line)
-          if [ -n "$LINE" ]; then
-            echo "  \(displayPrefix) (already mounted)"
-            log_mount "[ALREADY] $LINE"
-            \(writeManifest)
-            return 0
-          fi
-          for i in 1 2 3 4 5; do
-            ERR=$(\(mountCommand) 2>&1) && {
-              LINE=$(wait_for_mount_line || true)
-              case "$LINE" in
-                *"(\(expectedFS),"*|*"(\(expectedFS))"*|*"("AppleVirtIOFS","*|*"("AppleVirtIOFS")"*|\
-                *"(virtio-fs,"*|*"(virtio-fs))"*)
-                  echo "  \(displayPrefix)"
-                  log_mount "[OK] $LINE"
-                  \(writeManifest)
-                  return 0
-                  ;;
-                *)
-                  log_mount "[VERIFY-FAILED] expected=\(expectedFS) actual=$LINE"
-                  ERR="mounted but unexpected fs type: $LINE"
-                  ;;
-              esac
-            }
-            log_mount "[RETRY $i] $ERR"
-            case "$ERR" in *"Resource busy"*) echo "  \(displayPrefix)"; \(writeManifest); return 0;; esac
-            sleep 1
-          done
-          log_mount "[FAILED] tag=\(tag.rawValue) error=$ERR"
-          echo "  \(displayPrefix) (FAILED: $ERR)" >&2; return 1
-        }
-        """)
-      mountCalls.append("\(funcName) & PIDS=\"$PIDS $!\"")
+      scriptParts.append(snippet.functionBody)
+      scriptParts.append(snippet.callLine)
     }
+    scriptParts += ["FAIL=0", "for pid in $PIDS; do wait $pid || FAIL=1; done", "exit $FAIL"]
+    return scriptParts.joined(separator: "\n")
+  }
 
-    let waitBlock = [
-      "FAIL=0",
-      "for pid in $PIDS; do wait $pid || FAIL=1; done"
-    ]
-    var scriptParts: [String] = setupLines
-    scriptParts.append("PIDS=\"\"")
-    scriptParts += mountFunctions
-    scriptParts += mountCalls
-    scriptParts += waitBlock
-    scriptParts.append("exit $FAIL")
-    let scriptBody = scriptParts.joined(separator: "\n")
-
-    let mountExitCode = try await agentClient.exec(
-      command: ["sudo", "sh", "-c", scriptBody]
+  fileprivate func runtimeMountSnippet(
+    mount: MountConfig,
+    dvmMountsDir: String,
+    manifestPath: String,
+    nfsHostIP: GuestIP?
+  ) throws -> (functionBody: String, callLine: String) {
+    let mountPathRaw = runtimeMountPath(for: mount, dvmMountsDir: dvmMountsDir)
+    let setupLines = runtimeMountSetupLines(mount: mount, mountPathRaw: mountPathRaw)
+    let functionName = "mount_\(mount.tag.rawValue.replacingOccurrences(of: "-", with: "_"))"
+    let functionBody = try makeRuntimeMountFunction(
+      mount: mount,
+      mountPathRaw: mountPathRaw,
+      manifestPath: manifestPath,
+      nfsHostIP: nfsHostIP,
+      functionName: functionName
     )
+    return (setupLines + "\n" + functionBody, "\(functionName) & PIDS=\"$PIDS $!\"")
+  }
+
+  fileprivate func runtimeMountPath(for mount: MountConfig, dvmMountsDir: String) -> String {
+    mount.guestPath.rawValue.hasPrefix(guestHome + "/")
+      ? "\(dvmMountsDir)/\(mount.tag.rawValue)"
+      : mount.guestPath.rawValue
+  }
+
+  fileprivate func runtimeMountSetupLines(mount: MountConfig, mountPathRaw: String) -> String {
+    let guestPath = mount.guestPath.rawValue
+    guard guestPath.hasPrefix(guestHome + "/") else {
+      let quotedPath = shellQuote(guestPath)
+      return "[ -L \(quotedPath) ] && rm -f \(quotedPath); mkdir -p \(quotedPath)"
+    }
+    let mountPath = shellQuote(mountPathRaw)
+    let quotedPath = shellQuote(guestPath)
+    let parentDir = shellQuote((guestPath as NSString).deletingLastPathComponent)
+    return [
+      "mkdir -p \(mountPath)",
+      "mkdir -p \(parentDir)",
+      """
+      if [ -L \(quotedPath) ]; then ln -sfn \(mountPath) \(quotedPath); \
+      elif [ -d \(quotedPath) ]; then \
+        if [ -z \"$(ls -A \(quotedPath) 2>/dev/null)\" ]; then \
+          rmdir \(quotedPath) && ln -sfn \(mountPath) \(quotedPath); \
+        else echo \"WARNING: \(quotedPath) is a non-empty directory, expected symlink.\" >&2; \
+          echo \"Remove it manually: rm -rf \(quotedPath)\" >&2; fi; \
+      else ln -sfn \(mountPath) \(quotedPath); fi
+      """
+    ].joined(separator: "\n")
+  }
+
+  fileprivate func makeRuntimeMountFunction(
+    mount: MountConfig,
+    mountPathRaw: String,
+    manifestPath: String,
+    nfsHostIP: GuestIP?,
+    functionName: String
+  ) throws -> String {
+    let mountPath = shellQuote(mountPathRaw)
+    let privateMountPathRaw =
+      mountPathRaw.hasPrefix("/private/") ? mountPathRaw : "/private" + mountPathRaw
+    let quotedTag = shellQuote(mount.tag.rawValue)
+    let transport = shellQuote(mount.transport.rawValue)
+    let writeManifest =
+      "printf '%s %s %s\\n' \(transport) \(quotedTag) \(mountPath) >> \(manifestPath)"
+    let tagLogPath = shellQuote("/tmp/dvm-mount-logs/\(mount.tag.rawValue).log")
+    let displayPrefix = shellQuote(
+      "[\(mount.tag.rawValue)] \(mount.hostPath.rawValue) -> \(mount.guestPath.rawValue) (\(mount.transport.rawValue))"
+    )
+    let mountDetails = try runtimeMountDetails(mount: mount, mountPath: mountPath, nfsHostIP: nfsHostIP)
+    let prelude = runtimeMountFunctionPrelude(
+      functionName: functionName,
+      tagLogPath: tagLogPath,
+      mountPathRaw: mountPathRaw,
+      privateMountPathRaw: privateMountPathRaw,
+      mount: mount,
+      command: mountDetails.command
+    )
+    let alreadyMounted = runtimeMountAlreadyMountedBlock(
+      displayPrefix: displayPrefix,
+      writeManifest: writeManifest
+    )
+    let retryLoop = runtimeMountRetryLoop(
+      expectedFS: mountDetails.expectedFS,
+      command: mountDetails.command,
+      displayPrefix: displayPrefix,
+      writeManifest: writeManifest,
+      mount: mount
+    )
+    return [prelude, alreadyMounted, retryLoop, "}"].joined(separator: "\n")
+  }
+
+  fileprivate func runtimeMountFunctionPrelude(
+    functionName: String,
+    tagLogPath: String,
+    mountPathRaw: String,
+    privateMountPathRaw: String,
+    mount: MountConfig,
+    command: String
+  ) -> String {
+    """
+    \(functionName)() {
+      log_mount() { printf '%s\\n' "$1" >> \(tagLogPath); }
+      current_mount_line() {
+        /sbin/mount | grep " on \(mountPathRaw) " | tail -n 1 || \
+        /sbin/mount | grep " on \(privateMountPathRaw) " | tail -n 1
+      }
+      wait_for_mount_line() {
+        line=""
+        for _ in 1 2 3 4 5; do
+          line=$(current_mount_line)
+          [ -n "$line" ] && { printf '%s' "$line"; return 0; }
+          sleep 0.2
+        done
+        return 1
+      }
+      log_mount "[BEGIN] \
+      tag=\(mount.tag.rawValue) \
+      transport=\(mount.transport.rawValue) \
+      guest=\(mount.guestPath.rawValue) \
+      host=\(mount.hostPath.rawValue)"
+      log_mount "[CMD] \(command)"
+      LINE=$(current_mount_line)
+    """
+  }
+
+  fileprivate func runtimeMountAlreadyMountedBlock(
+    displayPrefix: String,
+    writeManifest: String
+  ) -> String {
+    """
+      if [ -n "$LINE" ]; then
+        echo "  \(displayPrefix) (already mounted)"
+        log_mount "[ALREADY] $LINE"
+        \(writeManifest)
+        return 0
+      fi
+    """
+  }
+
+  fileprivate func runtimeMountRetryLoop(
+    expectedFS: String,
+    command: String,
+    displayPrefix: String,
+    writeManifest: String,
+    mount: MountConfig
+  ) -> String {
+    """
+      for i in 1 2 3 4 5; do
+        ERR=$(\(command) 2>&1) && {
+          LINE=$(wait_for_mount_line || true)
+          case "$LINE" in
+            *"(\(expectedFS),"*|*"(\(expectedFS))"*|*"("AppleVirtIOFS","*|\
+            *"("AppleVirtIOFS")"*|*"(virtio-fs,"*|*"(virtio-fs))"*)
+              echo "  \(displayPrefix)"
+              log_mount "[OK] $LINE"
+              \(writeManifest)
+              return 0
+              ;;
+            *)
+              log_mount "[VERIFY-FAILED] expected=\(expectedFS) actual=$LINE"
+              ERR="mounted but unexpected fs type: $LINE"
+              ;;
+          esac
+        }
+        log_mount "[RETRY $i] $ERR"
+        case "$ERR" in *"Resource busy"*) echo "  \(displayPrefix)"; \(writeManifest); return 0;; esac
+        sleep 1
+      done
+      log_mount "[FAILED] tag=\(mount.tag.rawValue) error=$ERR"
+      echo "  \(displayPrefix) (FAILED: $ERR)" >&2; return 1
+    """
+  }
+
+  fileprivate func runtimeMountDetails(
+    mount: MountConfig,
+    mountPath: String,
+    nfsHostIP: GuestIP?
+  ) throws -> (expectedFS: String, command: String) {
+    switch mount.transport {
+    case .virtiofs:
+      return ("virtiofs", "/sbin/mount_virtiofs \(mount.tag) \(mountPath)")
+    case .nfs:
+      guard let nfsHostIP else {
+        fatalError("NFS mount command requested without resolved NFS host IP")
+      }
+      let remote = shellQuote("\(nfsHostIP.rawValue):\(mount.hostPath.rawValue)")
+      return ("nfs", "/sbin/mount_nfs -o actimeo=1 \(remote) \(mountPath)")
+    }
+  }
+
+  fileprivate func logRuntimeMountDiagnostics(
+    agentClient: AgentClient,
+    hasNFSMirrorMounts: Bool
+  ) async throws {
     if let mountLog = try await agentClient.execCaptureOutput(
       command: [
         "sudo", "sh", "-c",
@@ -1001,123 +1328,91 @@ struct Start: AsyncParsableCommand {
         echo "=== $(basename "$f") ==="; cat "$f"; echo; done
         """
       ]
-    ),
-      !mountLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    {
+    ), !mountLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       DVMLog.log(phase: .mounting, "guest mount transcript:\n\(mountLog)")
     } else {
       DVMLog.log(phase: .mounting, level: "warn", "guest mount transcript missing or empty")
     }
-    if let manifest = try await agentClient.execCaptureOutput(command: [
-      "cat", "/var/dvm-mounts/.manifest"
-    ]),
+
+    if let manifest = try await agentClient.execCaptureOutput(command: ["cat", "/var/dvm-mounts/.manifest"]),
       !manifest.isEmpty
     {
       DVMLog.log(phase: .mounting, "runtime mount manifest:\n\(manifest)")
     } else {
       DVMLog.log(phase: .mounting, level: "warn", "runtime mount manifest missing or unreadable")
     }
-    if !nfsMirrorMounts.isEmpty,
-      let nfsMountState = try await agentClient.execCaptureOutput(
-        command: ["sh", "-c", "nfsstat -m 2>/dev/null || true"]
-      ), !nfsMountState.isEmpty
-    {
+
+    guard hasNFSMirrorMounts else { return }
+    if let nfsMountState = try await agentClient.execCaptureOutput(
+      command: ["sh", "-c", "nfsstat -m 2>/dev/null || true"]
+    ), !nfsMountState.isEmpty {
       DVMLog.log(phase: .mounting, "guest nfsstat -m:\n\(nfsMountState)")
-    } else if !nfsMirrorMounts.isEmpty {
+    } else {
       DVMLog.log(phase: .mounting, level: "warn", "guest nfsstat -m empty or unavailable")
     }
-    if mountExitCode != 0 {
-      DVMLog.log(phase: .mounting, level: "error", "one or more runtime mounts failed")
-      tprint("ERROR: One or more runtime mounts failed.")
-    } else {
-      DVMLog.log(phase: .mounting, "all mounts succeeded")
-    }
+  }
 
-    // Restart nix daemon bridge in guest — it may have failed at boot
-    // because /nix/store wasn't mounted yet (VirtioFS).
-    // The agent binary is at /usr/local/bin so it was available at boot,
-    // but the bridge dials vsock host:6174 which may not have been ready.
+  fileprivate func restartGuestBridgeAndInstallCA(
+    agentClient: AgentClient,
+    caCertPEM: String
+  ) async throws {
     tprint("Restarting nix daemon bridge...")
-    _ = try await agentClient.exec(
-      command: ["sudo", "launchctl", "bootout", "system/com.darvm.agent-bridge"]
-    )
+    _ = try await agentClient.exec(command: ["sudo", "launchctl", "bootout", "system/com.darvm.agent-bridge"])
     _ = try await agentClient.exec(
       command: [
         "sudo", "launchctl", "bootstrap", "system",
         "/Library/LaunchDaemons/com.darvm.agent-bridge.plist"
       ]
     )
+    try await installGuestCA(agentClient: agentClient, caCertPEM: caCertPEM)
+  }
 
-    // Activation is handled by the in-image activator daemon (WatchPaths).
-    // It already ran (or is running) before the agent came up.
-    // Placeholder env vars are delivered per-process via the gRPC Exec protocol's
-    // environment field, not via guest-global state. See AgentClient.exec(env:).
-
-    // Install MITM CA in guest trust store so HTTPS interception works.
-    // Always install — credentials are pushed later at exec time.
-    if !caCertPEM.isEmpty {
-      let certScript = """
-        printf '%s' \(shellQuote(caCertPEM)) > /tmp/dvm-ca.pem && \
-        security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/dvm-ca.pem && \
-        rm -f /tmp/dvm-ca.pem
-        """
-      let caInstallCode = try await agentClient.exec(
-        command: ["sudo", "sh", "-c", certScript]
-      )
-      if caInstallCode != 0 {
-        DVMLog.log(level: "warn", "failed to install MITM CA in guest trust store")
-        tprint("Warning: failed to install CA cert in guest. HTTPS interception may not work.")
-      } else {
-        DVMLog.log(phase: .activating, "installed MITM CA in guest trust store")
-        tprint("MITM CA installed in guest trust store.")
-      }
-
-      // NODE_EXTRA_CA_CERTS for Node.js (uses OpenSSL, not macOS Keychain)
-      let nodeCAScript = """
-        printf '%s' \(shellQuote(caCertPEM)) > /etc/dvm-ca.pem && \
-        chmod 644 /etc/dvm-ca.pem
-        """
-      _ = try await agentClient.exec(command: ["sudo", "sh", "-c", nodeCAScript])
-      DVMLog.log(phase: .activating, "wrote CA cert to /etc/dvm-ca.pem for NODE_EXTRA_CA_CERTS")
+  fileprivate func installGuestCA(
+    agentClient: AgentClient,
+    caCertPEM: String
+  ) async throws {
+    guard !caCertPEM.isEmpty else { return }
+    let certScript = """
+      printf '%s' \(shellQuote(caCertPEM)) > /tmp/dvm-ca.pem && \
+      security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain /tmp/dvm-ca.pem && \
+      rm -f /tmp/dvm-ca.pem
+      """
+    let caInstallCode = try await agentClient.exec(command: ["sudo", "sh", "-c", certScript])
+    if caInstallCode != 0 {
+      DVMLog.log(level: "warn", "failed to install MITM CA in guest trust store")
+      tprint("Warning: failed to install CA cert in guest. HTTPS interception may not work.")
+    } else {
+      DVMLog.log(phase: .activating, "installed MITM CA in guest trust store")
+      tprint("MITM CA installed in guest trust store.")
     }
+    let nodeCAScript = """
+      printf '%s' \(shellQuote(caCertPEM)) > /etc/dvm-ca.pem && \
+      chmod 644 /etc/dvm-ca.pem
+      """
+    _ = try await agentClient.exec(command: ["sudo", "sh", "-c", nodeCAScript])
+    DVMLog.log(phase: .activating, "wrote CA cert to /etc/dvm-ca.pem for NODE_EXTRA_CA_CERTS")
+  }
 
-    // Phase: running
-    controlSocket.update(.running, guestIP: guestIP)
-    DVMLog.log(phase: .running, "VM running at \(guestIP)")
-
-    // Register credential loading handler for `dvm exec` credential push
+  fileprivate func registerRuntimeHandlers(
+    controlSocket: ControlSocket,
+    services: StartedGuestServices,
+    netstackSupervisor: NetstackSupervisor
+  ) {
     controlSocket.loadCredentialsHandler = { [netstackSupervisor] projectName, secretDicts in
       do {
-        var secrets: [ResolvedSecret] = []
-        for (index, dict) in secretDicts.enumerated() {
-          guard let name = dict["name"] as? String,
-            let placeholder = dict["placeholder"] as? String,
-            let value = dict["value"] as? String,
-            let hosts = dict["hosts"] as? [String]
-          else {
-            return "loadCredentials: secret at index \(index) has missing or invalid fields"
-          }
-          secrets.append(
-            ResolvedSecret(
-              name: name, mode: .proxy, placeholder: placeholder,
-              value: value, hosts: hosts))
-        }
-        try netstackSupervisor.loadCredentials(
-          projectName: projectName, secrets: secrets)
-        return nil  // success
+        let secrets = try decodeResolvedSecrets(secretDicts)
+        try netstackSupervisor.loadCredentials(projectName: projectName, secrets: secrets)
+        return nil
       } catch {
         return "\(error)"
       }
     }
-
-    // Register guest health handler for `dvm status` queries
-    controlSocket.guestHealthHandler = { [agentClient] in
-      final class Box: @unchecked Sendable {
-        var value: GuestHealthPayload?
-      }
+    controlSocket.guestHealthHandler = { [agentClient = services.agentClient] in
+      final class Box: @unchecked Sendable { var value: GuestHealthPayload? }
       let box = Box()
       let semaphore = DispatchSemaphore(value: 0)
       Task {
+        defer { semaphore.signal() }
         if let status = try? await agentClient.status() {
           box.value = GuestHealthPayload(
             mounts: status.mounts,
@@ -1125,27 +1420,59 @@ struct Start: AsyncParsableCommand {
             services: status.services.reduce(into: [:]) { $0[$1.key] = $1.value }
           )
         }
-        semaphore.signal()
       }
-      let waitResult = semaphore.wait(timeout: .now() + 5)
-      guard waitResult == .success else { return nil }
+      guard semaphore.wait(timeout: .now() + 5) == .success else { return nil }
       return box.value
     }
+  }
 
+  fileprivate func decodeResolvedSecrets(_ secretDicts: [[String: Any]]) throws -> [ResolvedSecret] {
+    try secretDicts.enumerated().map { index, dict in
+      guard let name = dict["name"] as? String,
+        let placeholder = dict["placeholder"] as? String,
+        let value = dict["value"] as? String,
+        let hosts = dict["hosts"] as? [String]
+      else {
+        throw DVMError.activationFailed(
+          "loadCredentials: secret at index \(index) has missing or invalid fields"
+        )
+      }
+      return ResolvedSecret(
+        name: name,
+        mode: .proxy,
+        placeholder: placeholder,
+        value: value,
+        hosts: hosts
+      )
+    }
+  }
+
+  fileprivate func finishRunningSession(
+    guestIP: GuestIP,
+    controlSocket: ControlSocket,
+    services: StartedGuestServices,
+    netstackSupervisor: NetstackSupervisor,
+    runner: VMRunner
+  ) async {
+    controlSocket.update(.running, guestIP: guestIP)
+    DVMLog.log(phase: .running, "VM running at \(guestIP)")
     tprint("VM running. Press Ctrl-C to stop.")
     await runner.waitUntilStopped()
     controlSocket.update(.stopped)
     DVMLog.log(phase: .stopped, "VM stopped")
-
-    // Shut down sidecar before cleanup
     DVMLog.log(phase: .stopped, "shutting down dvm-netstack")
     netstackSupervisor.shutdown()
-
     controlSocket.cleanup()
-    agentProxy.cleanup()
-    // Keep hostCmdBridge alive until VM stops (vsock listener needs the object)
-    withExtendedLifetime(hostCmdBridge) {}
+    services.agentProxy.cleanup()
     tprint("VM stopped.")
+  }
+
+  fileprivate func removeManagedExports(_ manager: NFSExportManager?) {
+    do {
+      try manager?.removeManagedExports()
+    } catch {
+      DVMLog.log(level: "error", "failed to remove DVM NFS exports: \(error)")
+    }
   }
 }
 

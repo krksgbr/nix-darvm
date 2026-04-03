@@ -9,6 +9,7 @@ excluded:
 
 only_rules:
   - for_where
+  - function_body_length
   - identifier_name
   - line_length
   - statement_position
