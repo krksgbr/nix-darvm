@@ -15,8 +15,8 @@ private let processStartTime = CFAbsoluteTimeGetCurrent()
 func tprint(_ message: String) {
   let elapsed = CFAbsoluteTimeGetCurrent() - processStartTime
   let secs = Int(elapsed)
-  let ms = Int((elapsed - Double(secs)) * 1000)
-  print(String(format: "[%3d.%03ds] %@", secs, ms, message))
+  let milliseconds = Int((elapsed - Double(secs)) * 1000)
+  print(String(format: "[%3d.%03ds] %@", secs, milliseconds, message))
 }
 
 // MARK: - Structured logging
@@ -93,23 +93,23 @@ func resolveGuestIP() throws -> GuestIP {
   // Prefer control socket — avoids stale DHCP lease issues
   if case .success(.status(let payload)) = ControlSocket.send(.status),
     payload.running,
-    let ipStr = payload.ip,
-    let ip = GuestIP(ipStr)
+    let ipAddress = payload.ipAddress,
+    let guestIP = GuestIP(ipAddress)
   {
-    return ip
+    return guestIP
   }
 
   // Fallback to DHCP lease (control socket may not be running, e.g. Tart-managed VM)
   let configURL = vmDir().appendingPathComponent("config.json")
   let config = try TartConfig(fromURL: configURL)
-  guard let ip = DHCPLeaseParser.getIPAddress(forMAC: config.macAddress.string) else {
+  guard let guestIP = DHCPLeaseParser.getIPAddress(forMAC: config.macAddress.string) else {
     throw DVMError.noIPAddress
   }
-  return ip
+  return guestIP
 }
 
-func shellQuote(_ s: String) -> String {
-  "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+func shellQuote(_ string: String) -> String {
+  "'" + string.replacingOccurrences(of: "'", with: "'\\''") + "'"
 }
 
 /// Guest user home. The base image has user "admin" with UID 501.
@@ -155,13 +155,13 @@ func buildMounts(
     resolvedMirrorTransport = mirrorTransport
   }
 
-  for (i, d) in mirrorDirs.enumerated() {
+  for (index, directory) in mirrorDirs.enumerated() {
     let resolved = URL(
-      fileURLWithPath: (d as NSString).expandingTildeInPath
+      fileURLWithPath: (directory as NSString).expandingTildeInPath
     ).standardizedFileURL.path
     mounts.append(
       .exact(
-        tag: try MountTag("mirror-\(i)"),
+        tag: try MountTag("mirror-\(index)"),
         hostPath: try AbsolutePath(resolved),
         guestPath: try AbsolutePath(resolved),
         access: .readWrite,
@@ -169,10 +169,10 @@ func buildMounts(
       ))
   }
 
-  for (i, d) in homeDirs.enumerated() {
+  for (index, directory) in homeDirs.enumerated() {
     // Resolve host path (expand ~)
     let hostPath = URL(
-      fileURLWithPath: (d as NSString).expandingTildeInPath
+      fileURLWithPath: (directory as NSString).expandingTildeInPath
     ).standardizedFileURL.path
 
     // Guest path: replace host home prefix with guest home
@@ -186,7 +186,7 @@ func buildMounts(
 
     mounts.append(
       .exact(
-        tag: try MountTag("home-\(i)"),
+        tag: try MountTag("home-\(index)"),
         hostPath: try AbsolutePath(hostPath),
         guestPath: try AbsolutePath(guestPath),
         access: .readWrite,
@@ -197,11 +197,11 @@ func buildMounts(
   // System dirs: same absolute path in guest, read-only.
   // Used for host toolchains (Xcode, developer tools) that should be
   // shared immutably — enforced at the VirtioFS device level (EROFS).
-  for (i, d) in systemDirs.enumerated() {
-    let resolved = URL(fileURLWithPath: d).standardizedFileURL.path
+  for (index, directory) in systemDirs.enumerated() {
+    let resolved = URL(fileURLWithPath: directory).standardizedFileURL.path
     mounts.append(
       .exact(
-        tag: try MountTag("system-\(i)"),
+        tag: try MountTag("system-\(index)"),
         hostPath: try AbsolutePath(resolved),
         guestPath: try AbsolutePath(resolved),
         access: .readOnly,
@@ -236,7 +236,8 @@ enum DVMError: Error, CustomStringConvertible {
     switch self {
     case .noIPAddress: return "Could not resolve VM IP address. Is the VM running?"
     case .buildFailed: return "nix build failed"
-    case .invalidStorePath(let s): return "Invalid nix store path from build output: \(s)"
+    case .invalidStorePath(let storePath):
+      return "Invalid nix store path from build output: \(storePath)"
     case .activationFailed(let msg): return "Activation failed: \(msg)"
     case .alreadyRunning:
       return "A VM is already running. Stop it first or use `dvm switch` to apply changes."
@@ -663,16 +664,16 @@ struct Start: AsyncParsableCommand {
     }
 
     // Resolve guest IP via gRPC
-    let ip: GuestIP
+    let guestIP: GuestIP
     do {
-      ip = try await agentClient.resolveIP()
-      tprint("VM reachable at \(ip)")
-      DVMLog.log(phase: .waitingForAgent, "guest IP: \(ip)")
+      guestIP = try await agentClient.resolveIP()
+      tprint("VM reachable at \(guestIP)")
+      DVMLog.log(phase: .waitingForAgent, "guest IP: \(guestIP)")
     } catch {
       // Fallback to DHCP
       if let dhcpIP = runner.resolveIP() {
-        ip = dhcpIP
-        tprint("VM reachable at \(ip) (DHCP fallback)")
+        guestIP = dhcpIP
+        tprint("VM reachable at \(guestIP) (DHCP fallback)")
       } else {
         let msg = "Could not resolve guest IP: \(error)"
         controlSocket.update(.failed, error: msg)
@@ -698,7 +699,7 @@ struct Start: AsyncParsableCommand {
     let remainingMounts = effectiveMounts.filter { mount in
       !bootMountedTags.contains(mount.tag.rawValue)
     }
-    controlSocket.update(.mounting, ip: ip)
+    controlSocket.update(.mounting, guestIP: guestIP)
     let nfsMirrorMounts = remainingMounts.filter { $0.transport == .nfs && $0.isMirror }
     var nfsHostIP: GuestIP?
     if !nfsMirrorMounts.isEmpty {
@@ -777,7 +778,7 @@ struct Start: AsyncParsableCommand {
     for mount in remainingMounts {
       let tag = mount.tag
       let path = mount.guestPath
-      let t = shellQuote(tag.rawValue)
+      let quotedTag = shellQuote(tag.rawValue)
       let isNestedInHome = path.rawValue.hasPrefix(guestHome + "/")
 
       // For paths inside /Users/admin (dvm-home VirtioFS), mount at a
@@ -792,22 +793,22 @@ struct Start: AsyncParsableCommand {
         // already a symlink, ln -sfn updates it. If it's a directory (stale
         // content from a previous session), warn and skip — user must clean
         // it up manually.
-        let p = shellQuote(path.rawValue)
+        let quotedPath = shellQuote(path.rawValue)
         let parentDir = shellQuote((path.rawValue as NSString).deletingLastPathComponent)
         setupLines.append("mkdir -p \(parentDir)")
         setupLines.append(
           """
-          if [ -L \(p) ]; then ln -sfn \(mountPath) \(p); \
-          elif [ -d \(p) ]; then \
-            if [ -z \"$(ls -A \(p) 2>/dev/null)\" ]; then rmdir \(p) && ln -sfn \(mountPath) \(p); \
-            else echo \"WARNING: \(p) is a non-empty directory, expected symlink.\" >&2; \
-              echo \"Remove it manually: rm -rf \(p)\" >&2; fi; \
-          else ln -sfn \(mountPath) \(p); fi
+          if [ -L \(quotedPath) ]; then ln -sfn \(mountPath) \(quotedPath); \
+          elif [ -d \(quotedPath) ]; then \
+            if [ -z \"$(ls -A \(quotedPath) 2>/dev/null)\" ]; then rmdir \(quotedPath) && ln -sfn \(mountPath) \(quotedPath); \
+            else echo \"WARNING: \(quotedPath) is a non-empty directory, expected symlink.\" >&2; \
+              echo \"Remove it manually: rm -rf \(quotedPath)\" >&2; fi; \
+          else ln -sfn \(mountPath) \(quotedPath); fi
           """)
       } else {
-        let p = shellQuote(path.rawValue)
+        let quotedPath = shellQuote(path.rawValue)
         mountPathRaw = path.rawValue
-        setupLines.append("[ -L \(p) ] && rm -f \(p); mkdir -p \(p)")
+        setupLines.append("[ -L \(quotedPath) ] && rm -f \(quotedPath); mkdir -p \(quotedPath)")
       }
       let mountPath = shellQuote(mountPathRaw)
       let privateMountPathRaw =
@@ -817,7 +818,8 @@ struct Start: AsyncParsableCommand {
 
       // printf strips shell quoting, so the manifest contains bare unquoted values.
       let transport = shellQuote(mount.transport.rawValue)
-      let writeManifest = "printf '%s %s %s\\n' \(transport) \(t) \(mountPath) >> \(manifestPath)"
+      let writeManifest =
+        "printf '%s %s %s\\n' \(transport) \(quotedTag) \(mountPath) >> \(manifestPath)"
       let funcName = "mount_\(tag.rawValue.replacingOccurrences(of: "-", with: "_"))"
       let tagLogPath = shellQuote("/tmp/dvm-mount-logs/\(tag.rawValue).log")
       let displayPrefix = shellQuote(
@@ -998,20 +1000,20 @@ struct Start: AsyncParsableCommand {
     }
 
     // Phase: running
-    controlSocket.update(.running, ip: ip)
-    DVMLog.log(phase: .running, "VM running at \(ip)")
+    controlSocket.update(.running, guestIP: guestIP)
+    DVMLog.log(phase: .running, "VM running at \(guestIP)")
 
     // Register credential loading handler for `dvm exec` credential push
     controlSocket.loadCredentialsHandler = { [netstackSupervisor] projectName, secretDicts in
       do {
         var secrets: [ResolvedSecret] = []
-        for (i, dict) in secretDicts.enumerated() {
+        for (index, dict) in secretDicts.enumerated() {
           guard let name = dict["name"] as? String,
             let placeholder = dict["placeholder"] as? String,
             let value = dict["value"] as? String,
             let hosts = dict["hosts"] as? [String]
           else {
-            return "loadCredentials: secret at index \(i) has missing or invalid fields"
+            return "loadCredentials: secret at index \(index) has missing or invalid fields"
           }
           secrets.append(
             ResolvedSecret(
@@ -1329,9 +1331,9 @@ struct Status: AsyncParsableCommand {
     case .success(.status(let payload)):
       result["running"] = payload.running
       if let phase = payload.phase { result["phase"] = phase }
-      if let ip = payload.ip { result["ip"] = ip }
+      if let ipAddress = payload.ipAddress { result["ip"] = ipAddress }
       if let runId = payload.runId { result["run_id"] = runId }
-      if let err = payload.phaseError { result["error"] = err }
+      if let phaseError = payload.phaseError { result["error"] = phaseError }
 
       if payload.running && payload.phase == VMPhase.running.rawValue {
         if case .success(.guestHealth(let health)) = ControlSocket.send(.guestHealth, timeout: 5) {
@@ -1373,8 +1375,8 @@ struct Status: AsyncParsableCommand {
         elapsed = formatElapsed(Date().timeIntervalSince1970 - enteredAt)
       }
 
-      if let ip = payload.ip {
-        print("VM running at \(ip) (phase: \(phase), \(elapsed))")
+      if let ipAddress = payload.ipAddress {
+        print("VM running at \(ipAddress) (phase: \(phase), \(elapsed))")
       } else {
         print("VM starting (phase: \(phase), \(elapsed) elapsed)")
       }
