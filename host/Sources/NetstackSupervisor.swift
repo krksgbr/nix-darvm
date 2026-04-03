@@ -97,7 +97,7 @@ final class NetstackSupervisor: @unchecked Sendable {
         process.executableURL = URL(fileURLWithPath: binaryPath)
         process.arguments = [
             "--frame-fd", "0",  // stdin = the socketpair
-            "--control-sock", controlPath,
+            "--control-sock", controlPath
         ]
         process.standardInput = FileHandle(fileDescriptor: sidecarFD, closeOnDealloc: false)
 
@@ -106,7 +106,7 @@ final class NetstackSupervisor: @unchecked Sendable {
         // Real credentials are delivered via the control socket, never via env.
         let safeKeys: Set<String> = [
             "PATH", "HOME", "USER", "SHELL", "TERM", "LANG", "LC_ALL",
-            "TMPDIR", "XDG_RUNTIME_DIR",
+            "TMPDIR", "XDG_RUNTIME_DIR"
         ]
         process.environment = ProcessInfo.processInfo.environment
             .filter { safeKeys.contains($0.key) }
@@ -217,7 +217,7 @@ final class NetstackSupervisor: @unchecked Sendable {
         let msg: [String: Any] = [
             "type": "load",
             "project_name": projectName,
-            "secrets": secrets.map { encodeSecret($0) },
+            "secrets": secrets.map { encodeSecret($0) }
         ]
         let response = try sendControlMessage(msg)
         guard response["type"] as? String == "ok" else {
@@ -233,7 +233,7 @@ final class NetstackSupervisor: @unchecked Sendable {
             "name": secret.name,
             "placeholder": secret.placeholder,
             "value": secret.value,
-            "hosts": secret.hosts,
+            "hosts": secret.hosts
         ]
     }
 
@@ -248,8 +248,8 @@ final class NetstackSupervisor: @unchecked Sendable {
                 "dns_servers": config.dnsServers,
                 "ca_cert_pem": config.caCertPEM,
                 "ca_key_pem": config.caKeyPEM,
-                "secrets": [] as [[String: Any]],
-            ] as [String: Any],
+                "secrets": [] as [[String: Any]]
+            ] as [String: Any]
         ]
     }
 

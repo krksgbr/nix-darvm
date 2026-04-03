@@ -527,7 +527,7 @@ final class ManifestResolveTests: XCTestCase {
             project: "test",
             secrets: [
                 SecretDecl(envVar: var1, mode: .proxy, hosts: ["a.com"]),
-                SecretDecl(envVar: var2, mode: .proxy, hosts: ["b.com"]),
+                SecretDecl(envVar: var2, mode: .proxy, hosts: ["b.com"])
             ]
         )
 
@@ -548,7 +548,7 @@ final class ManifestResolveTests: XCTestCase {
             project: "test",
             secrets: [
                 SecretDecl(envVar: proxyVar, mode: .proxy, hosts: ["a.com"]),
-                SecretDecl(envVar: ptVar, mode: .passthrough, hosts: []),
+                SecretDecl(envVar: ptVar, mode: .passthrough, hosts: [])
             ]
         )
 

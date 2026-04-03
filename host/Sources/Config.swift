@@ -76,12 +76,10 @@ struct DVMConfig: Codable {
 
                 init(from decoder: Decoder) throws {
                     let container = try decoder.container(keyedBy: CodingKeys.self)
-                    for key in container.allKeys {
-                        if !DVMConfig.knownMirror.contains(key.stringValue) {
-                            throw ConfigError.unknownKey(
-                                key: key.stringValue, section: "mounts.mirror",
-                                known: DVMConfig.knownMirror.sorted())
-                        }
+                    for key in container.allKeys where !DVMConfig.knownMirror.contains(key.stringValue) {
+                        throw ConfigError.unknownKey(
+                            key: key.stringValue, section: "mounts.mirror",
+                            known: DVMConfig.knownMirror.sorted())
                     }
                     dirs = try container.decode([String].self,
                         forKey: CodingKeys(stringValue: "dirs")!)
@@ -102,12 +100,10 @@ struct DVMConfig: Codable {
 
                 init(from decoder: Decoder) throws {
                     let container = try decoder.container(keyedBy: CodingKeys.self)
-                    for key in container.allKeys {
-                        if !DVMConfig.knownHome.contains(key.stringValue) {
-                            throw ConfigError.unknownKey(
-                                key: key.stringValue, section: "mounts.home",
-                                known: DVMConfig.knownHome.sorted())
-                        }
+                    for key in container.allKeys where !DVMConfig.knownHome.contains(key.stringValue) {
+                        throw ConfigError.unknownKey(
+                            key: key.stringValue, section: "mounts.home",
+                            known: DVMConfig.knownHome.sorted())
                     }
                     dirs = try container.decode([String].self,
                         forKey: CodingKeys(stringValue: "dirs")!)
@@ -128,12 +124,10 @@ struct DVMConfig: Codable {
 
                 init(from decoder: Decoder) throws {
                     let container = try decoder.container(keyedBy: CodingKeys.self)
-                    for key in container.allKeys {
-                        if !DVMConfig.knownMounts.contains(key.stringValue) {
-                            throw ConfigError.unknownKey(
-                                key: key.stringValue, section: "mounts",
-                                known: DVMConfig.knownMounts.sorted())
-                        }
+                    for key in container.allKeys where !DVMConfig.knownMounts.contains(key.stringValue) {
+                        throw ConfigError.unknownKey(
+                            key: key.stringValue, section: "mounts",
+                            known: DVMConfig.knownMounts.sorted())
                     }
                     mirror = try container.decodeIfPresent(RawMirrorMounts.self,
                         forKey: CodingKeys(stringValue: "mirror")!)
@@ -154,12 +148,10 @@ struct DVMConfig: Codable {
 
             init(from decoder: Decoder) throws {
                 let container = try decoder.container(keyedBy: CodingKeys.self)
-                for key in container.allKeys {
-                    if !DVMConfig.knownTopLevel.contains(key.stringValue) {
-                        throw ConfigError.unknownKey(
-                            key: key.stringValue, section: "top level",
-                            known: DVMConfig.knownTopLevel.sorted())
-                    }
+                for key in container.allKeys where !DVMConfig.knownTopLevel.contains(key.stringValue) {
+                    throw ConfigError.unknownKey(
+                        key: key.stringValue, section: "top level",
+                        known: DVMConfig.knownTopLevel.sorted())
                 }
                 mounts = try container.decodeIfPresent(RawMounts.self,
                     forKey: CodingKeys(stringValue: "mounts")!)

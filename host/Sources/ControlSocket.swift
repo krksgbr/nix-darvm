@@ -417,13 +417,13 @@ final class ControlSocket: @unchecked Sendable {
                 "name": s.name,
                 "placeholder": s.placeholder,
                 "value": s.value,
-                "hosts": s.hosts,
+                "hosts": s.hosts
             ] as [String: Any]
         }
         let payload: [String: Any] = [
             "cmd": "loadCredentials",
             "project_name": projectName,
-            "secrets": secretDicts,
+            "secrets": secretDicts
         ]
         guard let requestData = try? JSONSerialization.data(
             withJSONObject: payload, options: [.sortedKeys]) else {

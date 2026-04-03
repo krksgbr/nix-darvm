@@ -46,7 +46,7 @@ struct DVMLog {
             "t": String(format: "%.3f", elapsed),
             "level": level,
             "msg": msg,
-            "run_id": runId,
+            "run_id": runId
         ]
         if let phase { entry["phase"] = phase.rawValue }
 
@@ -135,7 +135,7 @@ func buildMounts(
                hostPath: try AbsolutePath("\(hostHome)/.cache/nix"),
                guestPath: try AbsolutePath("\(guestHome)/.cache/nix"),
                access: .readWrite,
-               transport: .virtiofs),
+               transport: .virtiofs)
     ]
 
     let resolvedMirrorTransport: MountTransport
@@ -729,7 +729,7 @@ struct Start: AsyncParsableCommand {
             "mkdir -p \(shellQuote(dvmMountsDir))",
             "> \(manifestPath)",
             "rm -rf \(mountLogDir)",
-            "mkdir -p \(mountLogDir)",
+            "mkdir -p \(mountLogDir)"
         ]
         var mountFunctions: [String] = []
         var mountCalls: [String] = []
@@ -842,7 +842,7 @@ struct Start: AsyncParsableCommand {
 
         let waitBlock = [
             "FAIL=0",
-            "for pid in $PIDS; do wait $pid || FAIL=1; done",
+            "for pid in $PIDS; do wait $pid || FAIL=1; done"
         ]
         var scriptParts: [String] = setupLines
         scriptParts.append("PIDS=\"\"")

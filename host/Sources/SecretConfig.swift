@@ -269,10 +269,8 @@ extension CredentialManifest {
             guard !entry.hosts.isEmpty else {
                 throw SecretConfigError.emptyHosts(secret: envVar)
             }
-            for host in entry.hosts {
-                if host.contains("*") {
-                    throw SecretConfigError.wildcardHost(secret: envVar, host: host)
-                }
+            for host in entry.hosts where host.contains("*") {
+                throw SecretConfigError.wildcardHost(secret: envVar, host: host)
             }
             return SecretDecl(
                 envVar: envVar,

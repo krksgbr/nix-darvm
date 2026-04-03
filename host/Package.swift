@@ -14,7 +14,7 @@ let package = Package(
         .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.0.0"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.28.0"),
-        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0")
     ],
     targets: [
         .executableTarget(
@@ -27,25 +27,25 @@ let package = Package(
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "NIOCore", package: "swift-nio"),
-                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio")
             ],
             path: "Sources",
             swiftSettings: [
-                .interoperabilityMode(.Cxx),
+                .interoperabilityMode(.Cxx)
             ],
             plugins: [
-                .plugin(name: "GRPCProtobufGenerator", package: "grpc-swift-protobuf"),
+                .plugin(name: "GRPCProtobufGenerator", package: "grpc-swift-protobuf")
             ]
         ),
         .testTarget(
             name: "dvm-core-tests",
             dependencies: [
-                .target(name: "dvm-core"),
+                .target(name: "dvm-core")
             ],
             path: "Tests",
             swiftSettings: [
-                .interoperabilityMode(.Cxx),
+                .interoperabilityMode(.Cxx)
             ]
-        ),
+        )
     ]
 )
