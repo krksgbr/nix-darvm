@@ -3,6 +3,16 @@ version: "2"
 linters:
   default: none
   enable:
+    - copyloopvar
+    - errorlint
     - govet
+    - ineffassign
+    - intrange
+    - makezero
+    - misspell
+    - prealloc
     - staticcheck
+    - unconvert
+    - unparam
     - unused
+    - wastedassign

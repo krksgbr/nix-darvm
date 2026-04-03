@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"os"
@@ -73,7 +74,7 @@ func main() {
 		return ctx.Err()
 	})
 
-	if err := group.Wait(); err != nil && err != context.Canceled {
+	if err := group.Wait(); err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("darvm-agent exiting: %v", err)
 		os.Exit(1)
 	}
