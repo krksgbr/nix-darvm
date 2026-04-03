@@ -130,7 +130,38 @@ func buildMounts(
   homeDirs: [String],
   systemDirs: [String] = []
 ) throws -> [MountConfig] {
-  var mounts: [MountConfig] = [
+  var mounts = try defaultMounts(hostHome: hostHome)
+  let resolvedMirrorTransport = try resolveMirrorTransport(
+    mirrorDirs: mirrorDirs,
+    mirrorTransport: mirrorTransport
+  )
+
+  for (index, directory) in mirrorDirs.enumerated() {
+    mounts.append(
+      try makeMirrorMount(
+        index: index,
+        directory: directory,
+        transport: resolvedMirrorTransport
+      )
+    )
+  }
+
+  for (index, directory) in homeDirs.enumerated() {
+    mounts.append(try makeHomeMount(index: index, directory: directory, hostHome: hostHome))
+  }
+
+  // System dirs: same absolute path in guest, read-only.
+  // Used for host toolchains (Xcode, developer tools) that should be
+  // shared immutably — enforced at the VirtioFS device level (EROFS).
+  for (index, directory) in systemDirs.enumerated() {
+    mounts.append(try makeSystemMount(index: index, directory: directory))
+  }
+
+  return mounts
+}
+
+private func defaultMounts(hostHome: String) throws -> [MountConfig] {
+  [
     .exact(
       tag: try MountTag("nix-store"),
       hostPath: try AbsolutePath("/nix/store"),
@@ -144,72 +175,122 @@ func buildMounts(
       access: .readWrite,
       transport: .virtiofs)
   ]
+}
 
-  let resolvedMirrorTransport: MountTransport
+private func resolveMirrorTransport(
+  mirrorDirs: [String],
+  mirrorTransport: MountTransport?
+) throws -> MountTransport {
   if mirrorDirs.isEmpty {
-    resolvedMirrorTransport = .nfs
+    return .nfs
+  }
+  guard let mirrorTransport else {
+    throw ConfigError.missingKey(key: "transport", section: "mounts.mirror")
+  }
+  return mirrorTransport
+}
+
+private func makeMirrorMount(
+  index: Int,
+  directory: String,
+  transport: MountTransport
+) throws -> MountConfig {
+  let resolved = URL(
+    fileURLWithPath: (directory as NSString).expandingTildeInPath
+  ).standardizedFileURL.path
+  return .exact(
+    tag: try MountTag("mirror-\(index)"),
+    hostPath: try AbsolutePath(resolved),
+    guestPath: try AbsolutePath(resolved),
+    access: .readWrite,
+    transport: transport
+  )
+}
+
+private func makeHomeMount(index: Int, directory: String, hostHome: String) throws -> MountConfig {
+  let hostPath = URL(
+    fileURLWithPath: (directory as NSString).expandingTildeInPath
+  ).standardizedFileURL.path
+  let guestPath: String
+  if hostPath.hasPrefix(hostHome) {
+    guestPath = guestHome + hostPath.dropFirst(hostHome.count)
   } else {
-    guard let mirrorTransport else {
-      throw ConfigError.missingKey(key: "transport", section: "mounts.mirror")
+    guestPath = hostPath
+  }
+  return .exact(
+    tag: try MountTag("home-\(index)"),
+    hostPath: try AbsolutePath(hostPath),
+    guestPath: try AbsolutePath(guestPath),
+    access: .readWrite,
+    transport: .virtiofs
+  )
+}
+
+private func makeSystemMount(index: Int, directory: String) throws -> MountConfig {
+  let resolved = URL(fileURLWithPath: directory).standardizedFileURL.path
+  return .exact(
+    tag: try MountTag("system-\(index)"),
+    hostPath: try AbsolutePath(resolved),
+    guestPath: try AbsolutePath(resolved),
+    access: .readOnly,
+    transport: .virtiofs
+  )
+}
+
+private func printStoppedStatus(_ payload: ControlSocket.StatusPayload) throws {
+  if let error = payload.phaseError {
+    let phase = payload.phase ?? "unknown"
+    print("VM not running (phase: \(phase), error: \(error))")
+  } else {
+    print("VM not running")
+  }
+  throw ExitCode(1)
+}
+
+private func statusSummaryLine(_ payload: ControlSocket.StatusPayload) -> String {
+  let phase = payload.phase ?? "unknown"
+  let elapsed =
+    payload.phaseEnteredAt.map { formatElapsed(Date().timeIntervalSince1970 - $0) } ?? ""
+
+  if let ipAddress = payload.ipAddress {
+    return "VM running at \(ipAddress) (phase: \(phase), \(elapsed))"
+  }
+  return "VM starting (phase: \(phase), \(elapsed) elapsed)"
+}
+
+private func printGuestHealthSummary() {
+  switch ControlSocket.send(.guestHealth, timeout: 5) {
+  case .success(.guestHealth(let health)):
+    print("  Mounts:     \(health.mounts.count) virtiofs")
+    print("  Activation: \(health.activation)")
+    if !health.services.isEmpty {
+      let serviceSummary = health.services
+        .sorted(by: { $0.key < $1.key })
+        .map { "\($0.key)=\($0.value)" }
+        .joined(separator: ", ")
+      print("  Services:   \(serviceSummary)")
     }
-    resolvedMirrorTransport = mirrorTransport
+  case .success(.error(let message)):
+    print("  Guest:      unavailable (\(message))")
+  default:
+    print("  Guest:      unavailable")
   }
+}
 
-  for (index, directory) in mirrorDirs.enumerated() {
-    let resolved = URL(
-      fileURLWithPath: (directory as NSString).expandingTildeInPath
-    ).standardizedFileURL.path
-    mounts.append(
-      .exact(
-        tag: try MountTag("mirror-\(index)"),
-        hostPath: try AbsolutePath(resolved),
-        guestPath: try AbsolutePath(resolved),
-        access: .readWrite,
-        transport: resolvedMirrorTransport
-      ))
+private func throwStatusFailure(_ result: Result<ControlSocket.Response, ControlSocket.ClientError>) throws -> Never {
+  switch result {
+  case .success(.error(let message)):
+    print("VM not running (server error: \(message))")
+  case .success(.guestHealth):
+    print("VM not running (unexpected response)")
+  case .failure(.socketNotFound):
+    print("VM not running")
+  case .failure(let error):
+    print("VM not running (\(error))")
+  case .success(.status):
+    fatalError("throwStatusFailure should not be called with a status response")
   }
-
-  for (index, directory) in homeDirs.enumerated() {
-    // Resolve host path (expand ~)
-    let hostPath = URL(
-      fileURLWithPath: (directory as NSString).expandingTildeInPath
-    ).standardizedFileURL.path
-
-    // Guest path: replace host home prefix with guest home
-    let guestPath: String
-    if hostPath.hasPrefix(hostHome) {
-      guestPath = guestHome + hostPath.dropFirst(hostHome.count)
-    } else {
-      // Not under host home — mount at same path
-      guestPath = hostPath
-    }
-
-    mounts.append(
-      .exact(
-        tag: try MountTag("home-\(index)"),
-        hostPath: try AbsolutePath(hostPath),
-        guestPath: try AbsolutePath(guestPath),
-        access: .readWrite,
-        transport: .virtiofs
-      ))
-  }
-
-  // System dirs: same absolute path in guest, read-only.
-  // Used for host toolchains (Xcode, developer tools) that should be
-  // shared immutably — enforced at the VirtioFS device level (EROFS).
-  for (index, directory) in systemDirs.enumerated() {
-    let resolved = URL(fileURLWithPath: directory).standardizedFileURL.path
-    mounts.append(
-      .exact(
-        tag: try MountTag("system-\(index)"),
-        hostPath: try AbsolutePath(resolved),
-        guestPath: try AbsolutePath(resolved),
-        access: .readOnly,
-        transport: .virtiofs
-      ))
-  }
-
-  return mounts
+  throw ExitCode(1)
 }
 
 /// A validated Nix store path (starts with `/nix/store/`).
@@ -1358,64 +1439,20 @@ struct Status: AsyncParsableCommand {
   }
 
   private func outputHuman() throws {
-    switch ControlSocket.send(.status) {
+    let statusResult = ControlSocket.send(.status)
+    switch statusResult {
     case .success(.status(let payload)):
-      if !payload.running {
-        if let err = payload.phaseError {
-          let phase = payload.phase ?? "unknown"
-          print("VM not running (phase: \(phase), error: \(err))")
-        } else {
-          print("VM not running")
-        }
-        throw ExitCode(1)
-      }
-
-      let phase = payload.phase ?? "unknown"
-      var elapsed = ""
-      if let enteredAt = payload.phaseEnteredAt {
-        elapsed = formatElapsed(Date().timeIntervalSince1970 - enteredAt)
-      }
-
-      if let ipAddress = payload.ipAddress {
-        print("VM running at \(ipAddress) (phase: \(phase), \(elapsed))")
-      } else {
-        print("VM starting (phase: \(phase), \(elapsed) elapsed)")
-      }
+      guard payload.running else { try printStoppedStatus(payload) }
+      print(statusSummaryLine(payload))
       if let runId = payload.runId {
         print("  Run:        \(runId)")
       }
 
       if payload.phase == VMPhase.running.rawValue {
-        switch ControlSocket.send(.guestHealth, timeout: 5) {
-        case .success(.guestHealth(let health)):
-          print("  Mounts:     \(health.mounts.count) virtiofs")
-          print("  Activation: \(health.activation)")
-          if !health.services.isEmpty {
-            let svcStr = health.services
-              .sorted(by: { $0.key < $1.key })
-              .map { "\($0.key)=\($0.value)" }
-              .joined(separator: ", ")
-            print("  Services:   \(svcStr)")
-          }
-        case .success(.error(let msg)):
-          print("  Guest:      unavailable (\(msg))")
-        default:
-          print("  Guest:      unavailable")
-        }
+        printGuestHealthSummary()
       }
-
-    case .success(.error(let message)):
-      print("VM not running (server error: \(message))")
-      throw ExitCode(1)
-    case .success(.guestHealth):
-      print("VM not running (unexpected response)")
-      throw ExitCode(1)
-    case .failure(.socketNotFound):
-      print("VM not running")
-      throw ExitCode(1)
-    case .failure(let error):
-      print("VM not running (\(error))")
-      throw ExitCode(1)
+    default:
+      try throwStatusFailure(statusResult)
     }
   }
 }
