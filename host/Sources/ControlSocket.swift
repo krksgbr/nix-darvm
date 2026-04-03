@@ -9,7 +9,7 @@ enum VMPhase: String, Codable, Sendable {
 /// Snapshot of VM status at a point in time.
 struct VMStatus: Codable, Sendable {
   let phase: VMPhase
-  let ip: String?
+  let ipAddress: String?
   let phaseEnteredAt: TimeInterval  // Unix timestamp (seconds since epoch)
   let runId: String
   let error: String?
@@ -32,7 +32,7 @@ final class ControlSocket: @unchecked Sendable {
   private var acceptSource: DispatchSourceRead?
   private let queue = DispatchQueue(label: "dvm.control")
   private var status = VMStatus(
-    phase: .stopped, ip: nil,
+    phase: .stopped, ipAddress: nil,
     phaseEnteredAt: Date().timeIntervalSince1970,
     runId: "", error: nil
   )
@@ -60,12 +60,18 @@ final class ControlSocket: @unchecked Sendable {
 
   struct StatusPayload: Codable {
     let running: Bool
-    let ip: String?
+    let ipAddress: String?
     // New observability fields (optional for backward compat)
     let phase: String?
     let runId: String?
     let phaseEnteredAt: Double?
     let phaseError: String?
+
+    enum CodingKeys: String, CodingKey {
+      case running
+      case ipAddress = "ip"
+      case phase, runId, phaseEnteredAt, phaseError
+    }
   }
 
   enum Response: Codable {
@@ -74,7 +80,9 @@ final class ControlSocket: @unchecked Sendable {
     case error(message: String)
 
     enum CodingKeys: String, CodingKey {
-      case running, ip, error, phase, runId, phaseEnteredAt, phaseError
+      case running
+      case ipAddress = "ip"
+      case error, phase, runId, phaseEnteredAt, phaseError
       case type, mounts, activation, services
     }
 
@@ -83,7 +91,7 @@ final class ControlSocket: @unchecked Sendable {
       switch self {
       case .status(let payload):
         try container.encode(payload.running, forKey: .running)
-        try container.encodeIfPresent(payload.ip, forKey: .ip)
+        try container.encodeIfPresent(payload.ipAddress, forKey: .ipAddress)
         try container.encodeIfPresent(payload.phase, forKey: .phase)
         try container.encodeIfPresent(payload.runId, forKey: .runId)
         try container.encodeIfPresent(payload.phaseEnteredAt, forKey: .phaseEnteredAt)
@@ -114,14 +122,14 @@ final class ControlSocket: @unchecked Sendable {
           ))
       } else {
         let running = try container.decode(Bool.self, forKey: .running)
-        let ip = try container.decodeIfPresent(String.self, forKey: .ip)
+        let ipAddress = try container.decodeIfPresent(String.self, forKey: .ipAddress)
         let phase = try container.decodeIfPresent(String.self, forKey: .phase)
         let runId = try container.decodeIfPresent(String.self, forKey: .runId)
         let phaseEnteredAt = try container.decodeIfPresent(Double.self, forKey: .phaseEnteredAt)
         let phaseError = try container.decodeIfPresent(String.self, forKey: .phaseError)
         self = .status(
           StatusPayload(
-            running: running, ip: ip, phase: phase, runId: runId,
+            running: running, ipAddress: ipAddress, phase: phase, runId: runId,
             phaseEnteredAt: phaseEnteredAt, phaseError: phaseError
           ))
       }
@@ -133,8 +141,8 @@ final class ControlSocket: @unchecked Sendable {
   func listen() throws {
     cleanup()
 
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fd >= 0 else {
+    let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fileDescriptor >= 0 else {
       throw ControlSocketError.socketCreationFailed
     }
 
@@ -142,50 +150,50 @@ final class ControlSocket: @unchecked Sendable {
     addr.sun_family = sa_family_t(AF_UNIX)
     let pathBytes = Self.path.utf8CString
     guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
-      close(fd)
+      close(fileDescriptor)
       throw ControlSocketError.pathTooLong
     }
     withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
       ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
-        for (i, byte) in pathBytes.enumerated() {
-          dest[i] = byte
+        for (index, byte) in pathBytes.enumerated() {
+          dest[index] = byte
         }
       }
     }
 
     let bindResult = withUnsafePointer(to: &addr) { ptr in
       ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-        bind(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+        bind(fileDescriptor, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
       }
     }
     guard bindResult == 0 else {
-      close(fd)
+      close(fileDescriptor)
       throw ControlSocketError.bindFailed
     }
 
-    guard Darwin.listen(fd, 5) == 0 else {
-      close(fd)
+    guard Darwin.listen(fileDescriptor, 5) == 0 else {
+      close(fileDescriptor)
       throw ControlSocketError.listenFailed
     }
 
-    listenerFD = fd
+    listenerFD = fileDescriptor
 
-    let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
+    let source = DispatchSource.makeReadSource(fileDescriptor: fileDescriptor, queue: queue)
     source.setEventHandler { [weak self] in
       self?.acceptConnection()
     }
     source.setCancelHandler {
-      close(fd)
+      close(fileDescriptor)
     }
     source.resume()
     acceptSource = source
   }
 
-  func update(_ phase: VMPhase, ip: GuestIP? = nil, error: String? = nil) {
+  func update(_ phase: VMPhase, guestIP: GuestIP? = nil, error: String? = nil) {
     queue.sync {
       status = VMStatus(
         phase: phase,
-        ip: ip?.rawValue ?? status.ip,
+        ipAddress: guestIP?.rawValue ?? status.ipAddress,
         phaseEnteredAt: Date().timeIntervalSince1970,
         runId: DVMLog.runId,
         error: error
@@ -212,11 +220,11 @@ final class ControlSocket: @unchecked Sendable {
     var requestData = Data()
     var buf = [UInt8](repeating: 0, count: 4096)
     while true {
-      let n = read(clientFD, &buf, buf.count)
-      if n <= 0 { break }
-      requestData.append(buf, count: n)
+      let bytesRead = read(clientFD, &buf, buf.count)
+      if bytesRead <= 0 { break }
+      requestData.append(buf, count: bytesRead)
       // Newline terminates the request
-      if buf[..<n].contains(0x0A) { break }
+      if buf[..<bytesRead].contains(0x0A) { break }
     }
 
     let response = handleRequest(requestData.isEmpty ? nil : requestData)
@@ -243,16 +251,16 @@ final class ControlSocket: @unchecked Sendable {
 
     switch command {
     case .status:
-      let s = status
-      let running = s.phase != .stopped && s.phase != .failed
+      let currentStatus = status
+      let running = currentStatus.phase != .stopped && currentStatus.phase != .failed
       return .status(
         StatusPayload(
           running: running,
-          ip: s.ip,
-          phase: s.phase.rawValue,
-          runId: s.runId,
-          phaseEnteredAt: s.phaseEnteredAt,
-          phaseError: s.error
+          ipAddress: currentStatus.ipAddress,
+          phase: currentStatus.phase.rawValue,
+          runId: currentStatus.runId,
+          phaseEnteredAt: currentStatus.phaseEnteredAt,
+          phaseError: currentStatus.error
         ))
     case .guestHealth:
       guard let handler = guestHealthHandler else {
@@ -325,26 +333,26 @@ final class ControlSocket: @unchecked Sendable {
       return .failure(.socketNotFound)
     }
 
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fd >= 0 else {
+    let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fileDescriptor >= 0 else {
       return .failure(.connectFailed(String(cString: strerror(errno))))
     }
-    defer { close(fd) }
+    defer { close(fileDescriptor) }
 
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
     let pathBytes = Self.path.utf8CString
     withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
       ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
-        for (i, byte) in pathBytes.enumerated() {
-          dest[i] = byte
+        for (index, byte) in pathBytes.enumerated() {
+          dest[index] = byte
         }
       }
     }
 
     let connectResult = withUnsafePointer(to: &addr) { ptr in
       ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-        connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+        connect(fileDescriptor, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
       }
     }
     guard connectResult == 0 else {
@@ -357,19 +365,25 @@ final class ControlSocket: @unchecked Sendable {
     }
     requestData.append(0x0A)  // newline
     _ = requestData.withUnsafeBytes { ptr in
-      write(fd, ptr.baseAddress!, requestData.count)
+      write(fileDescriptor, ptr.baseAddress!, requestData.count)
     }
 
     // Set read timeout
-    var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    var timeoutValue = timeval(tv_sec: Int(timeout), tv_usec: 0)
+    setsockopt(
+      fileDescriptor,
+      SOL_SOCKET,
+      SO_RCVTIMEO,
+      &timeoutValue,
+      socklen_t(MemoryLayout<timeval>.size)
+    )
 
     var buf = [UInt8](repeating: 0, count: 4096)
-    let n = read(fd, &buf, buf.count)
-    guard n > 0 else { return .failure(.readTimeout) }
+    let bytesRead = read(fileDescriptor, &buf, buf.count)
+    guard bytesRead > 0 else { return .failure(.readTimeout) }
 
-    let trimmed = Data(buf[..<n]).withUnsafeBytes { rawBuf in
-      var end = n
+    let trimmed = Data(buf[..<bytesRead]).withUnsafeBytes { rawBuf in
+      var end = bytesRead
       while end > 0
         && (rawBuf[end - 1] == 0x0A || rawBuf[end - 1] == 0x0D || rawBuf[end - 1] == 0x20)
       {
@@ -394,26 +408,26 @@ final class ControlSocket: @unchecked Sendable {
       return "VM not running (control socket not found)"
     }
 
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fd >= 0 else {
+    let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fileDescriptor >= 0 else {
       return "Failed to create socket: \(String(cString: strerror(errno)))"
     }
-    defer { close(fd) }
+    defer { close(fileDescriptor) }
 
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
     let pathBytes = Self.path.utf8CString
     withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
       ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
-        for (i, byte) in pathBytes.enumerated() {
-          dest[i] = byte
+        for (index, byte) in pathBytes.enumerated() {
+          dest[index] = byte
         }
       }
     }
 
     let connectResult = withUnsafePointer(to: &addr) { ptr in
       ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-        connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+        connect(fileDescriptor, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
       }
     }
     guard connectResult == 0 else {
@@ -421,12 +435,12 @@ final class ControlSocket: @unchecked Sendable {
     }
 
     // Build the JSON payload with embedded secrets
-    let secretDicts: [[String: Any]] = secrets.map { s in
+    let secretDicts: [[String: Any]] = secrets.map { secret in
       [
-        "name": s.name,
-        "placeholder": s.placeholder,
-        "value": s.value,
-        "hosts": s.hosts
+        "name": secret.name,
+        "placeholder": secret.placeholder,
+        "value": secret.value,
+        "hosts": secret.hosts
       ] as [String: Any]
     }
     let payload: [String: Any] = [
@@ -444,19 +458,25 @@ final class ControlSocket: @unchecked Sendable {
     var data = requestData
     data.append(0x0A)
     _ = data.withUnsafeBytes { ptr in
-      write(fd, ptr.baseAddress!, data.count)
+      write(fileDescriptor, ptr.baseAddress!, data.count)
     }
 
     // Set read timeout
-    var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    var timeoutValue = timeval(tv_sec: Int(timeout), tv_usec: 0)
+    setsockopt(
+      fileDescriptor,
+      SOL_SOCKET,
+      SO_RCVTIMEO,
+      &timeoutValue,
+      socklen_t(MemoryLayout<timeval>.size)
+    )
 
     var buf = [UInt8](repeating: 0, count: 4096)
-    let n = read(fd, &buf, buf.count)
-    guard n > 0 else { return "Control socket read timed out" }
+    let bytesRead = read(fileDescriptor, &buf, buf.count)
+    guard bytesRead > 0 else { return "Control socket read timed out" }
 
     // Parse response and verify success positively
-    let responseData = Data(buf[..<n])
+    let responseData = Data(buf[..<bytesRead])
     guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
       return "Control socket returned invalid JSON"
     }
@@ -477,26 +497,26 @@ final class ControlSocket: @unchecked Sendable {
       return "VM not running (control socket not found)"
     }
 
-    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fd >= 0 else {
+    let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fileDescriptor >= 0 else {
       return "Failed to create socket: \(String(cString: strerror(errno)))"
     }
-    defer { close(fd) }
+    defer { close(fileDescriptor) }
 
     var addr = sockaddr_un()
     addr.sun_family = sa_family_t(AF_UNIX)
     let pathBytes = Self.path.utf8CString
     withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
       ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
-        for (i, byte) in pathBytes.enumerated() {
-          dest[i] = byte
+        for (index, byte) in pathBytes.enumerated() {
+          dest[index] = byte
         }
       }
     }
 
     let connectResult = withUnsafePointer(to: &addr) { ptr in
       ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-        connect(fd, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+        connect(fileDescriptor, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
       }
     }
     guard connectResult == 0 else {
@@ -514,17 +534,23 @@ final class ControlSocket: @unchecked Sendable {
     var data = requestData
     data.append(0x0A)
     _ = data.withUnsafeBytes { ptr in
-      write(fd, ptr.baseAddress!, data.count)
+      write(fileDescriptor, ptr.baseAddress!, data.count)
     }
 
-    var tv = timeval(tv_sec: 5, tv_usec: 0)
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+    var timeoutValue = timeval(tv_sec: 5, tv_usec: 0)
+    setsockopt(
+      fileDescriptor,
+      SOL_SOCKET,
+      SO_RCVTIMEO,
+      &timeoutValue,
+      socklen_t(MemoryLayout<timeval>.size)
+    )
 
     var buf = [UInt8](repeating: 0, count: 4096)
-    let n = read(fd, &buf, buf.count)
-    guard n > 0 else { return "Control socket read timed out" }
+    let bytesRead = read(fileDescriptor, &buf, buf.count)
+    guard bytesRead > 0 else { return "Control socket read timed out" }
 
-    let responseData = Data(buf[..<n])
+    let responseData = Data(buf[..<bytesRead])
     guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
       return "Control socket returned invalid JSON"
     }
