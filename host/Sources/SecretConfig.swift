@@ -134,13 +134,13 @@ func normalizeProjectName(_ name: String) -> String {
 
 /// Slugify a string for display in placeholders.
 /// Lowercase, non-alphanumeric → hyphen, collapse runs, strip leading/trailing hyphens.
-func slugify(_ s: String) -> String {
-  let lowered = s.lowercased()
+func slugify(_ string: String) -> String {
+  let lowered = string.lowercased()
   var result = ""
   var lastWasHyphen = false
-  for c in lowered {
-    if c.isLetter || c.isNumber {
-      result.append(c)
+  for character in lowered {
+    if character.isLetter || character.isNumber {
+      result.append(character)
       lastWasHyphen = false
     } else if !lastWasHyphen {
       result.append("-")
@@ -154,11 +154,11 @@ func slugify(_ s: String) -> String {
 /// Normalize a hostname for matching: lowercase, strip trailing dots.
 /// Matches the Go sidecar's `normalizeHost()`.
 func normalizeHost(_ host: String) -> String {
-  var h = host.lowercased()
-  while h.hasSuffix(".") {
-    h.removeLast()
+  var normalizedHost = host.lowercased()
+  while normalizedHost.hasSuffix(".") {
+    normalizedHost.removeLast()
   }
-  return h
+  return normalizedHost
 }
 
 // MARK: - TOML Parsing (v2 format)
@@ -205,28 +205,28 @@ enum SecretConfigError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
-    case .unsupportedVersion(let v):
-      return "Unsupported credentials.toml version: \(v) (expected 1)"
+    case .unsupportedVersion(let version):
+      return "Unsupported credentials.toml version: \(version) (expected 1)"
     case .missingProjectName:
       return "credentials.toml missing required 'project' field"
-    case .duplicateSecret(let s):
-      return "Secret '\(s)' appears in both [proxy] and [passthrough] tables"
-    case .emptyHosts(let s):
-      return "Secret '\(s)' has empty hosts list"
-    case .wildcardHost(let s, let h):
-      return "Secret '\(s)': wildcard hosts not supported: \(h)"
-    case .envVarNotSet(let s, let v):
-      return "Secret '\(s)': environment variable '\(v)' is not set"
-    case .envVarEmpty(let s, let v):
-      return "Secret '\(s)': environment variable '\(v)' is set but empty"
-    case .manifestNotFound(let p):
-      return "Credential manifest not found: \(p)"
-    case .manifestUnreadable(let p, let e):
-      return "Failed to read credential manifest at \(p): \(e)"
-    case .invalidHostKey(let p, let n):
-      return "Host key at \(p) has wrong size (\(n) bytes, expected 32)"
-    case .hostKeyGenerationFailed(let s):
-      return "Failed to generate host key: SecRandomCopyBytes status \(s)"
+    case .duplicateSecret(let secret):
+      return "Secret '\(secret)' appears in both [proxy] and [passthrough] tables"
+    case .emptyHosts(let secret):
+      return "Secret '\(secret)' has empty hosts list"
+    case .wildcardHost(let secret, let host):
+      return "Secret '\(secret)': wildcard hosts not supported: \(host)"
+    case .envVarNotSet(let secret, let envVar):
+      return "Secret '\(secret)': environment variable '\(envVar)' is not set"
+    case .envVarEmpty(let secret, let envVar):
+      return "Secret '\(secret)': environment variable '\(envVar)' is set but empty"
+    case .manifestNotFound(let path):
+      return "Credential manifest not found: \(path)"
+    case .manifestUnreadable(let path, let error):
+      return "Failed to read credential manifest at \(path): \(error)"
+    case .invalidHostKey(let path, let byteCount):
+      return "Host key at \(path) has wrong size (\(byteCount) bytes, expected 32)"
+    case .hostKeyGenerationFailed(let status):
+      return "Failed to generate host key: SecRandomCopyBytes status \(status)"
     }
   }
 }

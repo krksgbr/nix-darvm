@@ -11,48 +11,52 @@ final class PlaceholderDerivationTests: XCTestCase {
   let testKey = HostKey(bytes: Array(repeating: 0x42, count: 32))
 
   func testFormat() {
-    let p = derivePlaceholder(project: "My Project", envVar: "API_KEY", hostKey: testKey)
-    XCTAssertTrue(p.hasPrefix("SANDBOX_CRED_"))
+    let placeholder = derivePlaceholder(project: "My Project", envVar: "API_KEY", hostKey: testKey)
+    XCTAssertTrue(placeholder.hasPrefix("SANDBOX_CRED_"))
     // Should contain slugified project and secret
-    XCTAssertTrue(p.contains("my-project"), "Expected slugified project in: \(p)")
-    XCTAssertTrue(p.contains("api-key"), "Expected slugified secret in: \(p)")
+    XCTAssertTrue(placeholder.contains("my-project"), "Expected slugified project in: \(placeholder)")
+    XCTAssertTrue(placeholder.contains("api-key"), "Expected slugified secret in: \(placeholder)")
     // HMAC suffix: 16 hex chars
-    let parts = p.split(separator: "_")
+    let parts = placeholder.split(separator: "_")
     let hmacSuffix = String(parts.last!)
     XCTAssertEqual(hmacSuffix.count, 16)
     XCTAssertTrue(hmacSuffix.allSatisfy { $0.isHexDigit })
   }
 
   func testDeterministic() {
-    let p1 = derivePlaceholder(project: "proj", envVar: "KEY", hostKey: testKey)
-    let p2 = derivePlaceholder(project: "proj", envVar: "KEY", hostKey: testKey)
-    XCTAssertEqual(p1, p2)
+    let firstPlaceholder = derivePlaceholder(project: "proj", envVar: "KEY", hostKey: testKey)
+    let secondPlaceholder = derivePlaceholder(project: "proj", envVar: "KEY", hostKey: testKey)
+    XCTAssertEqual(firstPlaceholder, secondPlaceholder)
   }
 
   func testDifferentProjectsDifferentPlaceholders() {
-    let p1 = derivePlaceholder(project: "proj-a", envVar: "KEY", hostKey: testKey)
-    let p2 = derivePlaceholder(project: "proj-b", envVar: "KEY", hostKey: testKey)
-    XCTAssertNotEqual(p1, p2)
+    let firstPlaceholder = derivePlaceholder(project: "proj-a", envVar: "KEY", hostKey: testKey)
+    let secondPlaceholder = derivePlaceholder(project: "proj-b", envVar: "KEY", hostKey: testKey)
+    XCTAssertNotEqual(firstPlaceholder, secondPlaceholder)
   }
 
   func testDifferentSecretsDifferentPlaceholders() {
-    let p1 = derivePlaceholder(project: "proj", envVar: "KEY_A", hostKey: testKey)
-    let p2 = derivePlaceholder(project: "proj", envVar: "KEY_B", hostKey: testKey)
-    XCTAssertNotEqual(p1, p2)
+    let firstPlaceholder = derivePlaceholder(project: "proj", envVar: "KEY_A", hostKey: testKey)
+    let secondPlaceholder = derivePlaceholder(project: "proj", envVar: "KEY_B", hostKey: testKey)
+    XCTAssertNotEqual(firstPlaceholder, secondPlaceholder)
   }
 
   func testDifferentKeysDifferentPlaceholders() {
     let key2 = HostKey(bytes: Array(repeating: 0x43, count: 32))
-    let p1 = derivePlaceholder(project: "proj", envVar: "KEY", hostKey: testKey)
-    let p2 = derivePlaceholder(project: "proj", envVar: "KEY", hostKey: key2)
-    XCTAssertNotEqual(p1, p2)
+    let firstPlaceholder = derivePlaceholder(project: "proj", envVar: "KEY", hostKey: testKey)
+    let secondPlaceholder = derivePlaceholder(project: "proj", envVar: "KEY", hostKey: key2)
+    XCTAssertNotEqual(firstPlaceholder, secondPlaceholder)
   }
 
   func testProjectNormalization() {
     // "My Project" and "  my project  " should produce the same placeholder
-    let p1 = derivePlaceholder(project: "My Project", envVar: "KEY", hostKey: testKey)
-    let p2 = derivePlaceholder(project: "  my project  ", envVar: "KEY", hostKey: testKey)
-    XCTAssertEqual(p1, p2)
+    let firstPlaceholder = derivePlaceholder(project: "My Project", envVar: "KEY", hostKey: testKey)
+    let secondPlaceholder = derivePlaceholder(
+      project: "  my project  ",
+      envVar: "KEY",
+      hostKey: testKey
+    )
+    XCTAssertEqual(firstPlaceholder, secondPlaceholder)
   }
 }
 
@@ -157,10 +161,10 @@ final class ManifestLoadTests: XCTestCase {
 
   func testMissingFile() {
     XCTAssertThrowsError(try CredentialManifest.load(from: "/nonexistent/path.toml")) { error in
-      guard let e = error as? SecretConfigError else {
+      guard let secretConfigError = error as? SecretConfigError else {
         return XCTFail("Expected SecretConfigError, got \(error)")
       }
-      XCTAssertTrue(String(describing: e).contains("not found"))
+      XCTAssertTrue(String(describing: secretConfigError).contains("not found"))
     }
   }
 
@@ -611,10 +615,10 @@ final class HostKeyTests: XCTestCase {
     try! Data(repeating: 0x00, count: 16).write(to: URL(fileURLWithPath: path))
 
     XCTAssertThrowsError(try HostKey.loadOrCreate(at: path)) { error in
-      let desc = String(describing: error)
+      let description = String(describing: error)
       XCTAssertTrue(
-        desc.contains("wrong size") || desc.contains("32"),
-        "Error should mention expected size: \(desc)")
+        description.contains("wrong size") || description.contains("32"),
+        "Error should mention expected size: \(description)")
     }
   }
 
