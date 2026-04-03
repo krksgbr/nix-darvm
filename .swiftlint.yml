@@ -9,6 +9,7 @@ excluded:
 
 only_rules:
   - for_where
+  - identifier_name
   - line_length
   - statement_position
   - unused_optional_binding

@@ -800,7 +800,8 @@ struct Start: AsyncParsableCommand {
           """
           if [ -L \(quotedPath) ]; then ln -sfn \(mountPath) \(quotedPath); \
           elif [ -d \(quotedPath) ]; then \
-            if [ -z \"$(ls -A \(quotedPath) 2>/dev/null)\" ]; then rmdir \(quotedPath) && ln -sfn \(mountPath) \(quotedPath); \
+            if [ -z \"$(ls -A \(quotedPath) 2>/dev/null)\" ]; then \
+              rmdir \(quotedPath) && ln -sfn \(mountPath) \(quotedPath); \
             else echo \"WARNING: \(quotedPath) is a non-empty directory, expected symlink.\" >&2; \
               echo \"Remove it manually: rm -rf \(quotedPath)\" >&2; fi; \
           else ln -sfn \(mountPath) \(quotedPath); fi
