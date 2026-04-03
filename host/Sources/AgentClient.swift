@@ -120,58 +120,24 @@ struct AgentClient: Sendable {
     return try await withAgentClient(allowRetry: true) { agent in
       // Use a task group so we can cancel the request producer
       // when the response handler receives the exit code.
+      let commandRequest = try Self.makeInteractiveCommand(
+        name: cmdName,
+        args: cmdArgs,
+        workingDirectory: workDir,
+        tty: useTTY,
+        env: env
+      )
       try await withThrowingTaskGroup(of: Int32.self) { outerGroup in
         outerGroup.addTask {
           try await agent.exec(
             requestProducer: { writer in
-              var cmd = Darvm_Command()
-              cmd.name = cmdName
-              cmd.args = cmdArgs
-              cmd.interactive = true
-              cmd.tty = useTTY
-              if let workDir { cmd.workingDirectory = workDir }
-              cmd.environment = env.map { key, value in
-                var envVar = Darvm_EnvVar()
-                envVar.name = key
-                envVar.value = value
-                return envVar
-              }
-              if useTTY {
-                let (width, height) = try Term.getSize()
-                var size = Darvm_TerminalSize()
-                size.cols = UInt32(width)
-                size.rows = UInt32(height)
-                cmd.terminalSize = size
-              }
-
-              var req = Darvm_ExecRequest()
-              req.type = .command(cmd)
-              try await writer.write(req)
-
-              // Stream stdin and terminal resize events concurrently
-              try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                  try await Self.streamStdin(to: writer)
-                }
-
-                if useTTY {
-                  group.addTask {
-                    try await Self.streamTerminalResizes(to: writer)
-                  }
-                }
-
-                try await group.next()
-                group.cancelAll()
-              }
+              try await Self.runInteractiveRequestProducer(
+                writer: writer,
+                commandRequest: commandRequest,
+                tty: useTTY
+              )
             },
-            onResponse: { response in
-              switch response.accepted {
-              case .success(let contents):
-                return try await Self.processExecStream(contents.bodyParts)
-              case .failure(let error):
-                throw error
-              }
-            }
+            onResponse: Self.processExecResponse
           )
         }
 
@@ -184,6 +150,71 @@ struct AgentClient: Sendable {
   }
 
   // MARK: - Private
+
+  private static func makeInteractiveCommand(
+    name: String,
+    args: [String],
+    workingDirectory: String?,
+    tty: Bool,
+    env: [String: String]
+  ) throws -> Darvm_Command {
+    var command = Darvm_Command()
+    command.name = name
+    command.args = args
+    command.interactive = true
+    command.tty = tty
+    if let workingDirectory { command.workingDirectory = workingDirectory }
+    command.environment = env.map { key, value in
+      var envVar = Darvm_EnvVar()
+      envVar.name = key
+      envVar.value = value
+      return envVar
+    }
+    if tty {
+      let (width, height) = try Term.getSize()
+      var size = Darvm_TerminalSize()
+      size.cols = UInt32(width)
+      size.rows = UInt32(height)
+      command.terminalSize = size
+    }
+    return command
+  }
+
+  private static func runInteractiveRequestProducer(
+    writer: RPCWriter<Darvm_ExecRequest>,
+    commandRequest: Darvm_Command,
+    tty: Bool
+  ) async throws {
+    var request = Darvm_ExecRequest()
+    request.type = .command(commandRequest)
+    try await writer.write(request)
+
+    try await withThrowingTaskGroup(of: Void.self) { group in
+      group.addTask {
+        try await Self.streamStdin(to: writer)
+      }
+
+      if tty {
+        group.addTask {
+          try await Self.streamTerminalResizes(to: writer)
+        }
+      }
+
+      try await group.next()
+      group.cancelAll()
+    }
+  }
+
+  private static func processExecResponse(
+    _ response: StreamingClientResponse<Darvm_ExecResponse>
+  ) async throws -> Int32 {
+    switch response.accepted {
+    case .success(let contents):
+      return try await Self.processExecStream(contents.bodyParts)
+    case .failure(let error):
+      throw error
+    }
+  }
 
   private func withAgentClient<T: Sendable>(
     allowRetry: Bool = true,
