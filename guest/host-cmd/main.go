@@ -5,8 +5,10 @@
 // action: dvm-host-cmd notify "message".
 //
 // Protocol: action_name\npayload over vsock to host port 6176.
-//   Action name on first line, remaining args as NUL-separated payload.
-//   Guest shuts down write end to signal EOF.
+//
+//	Action name on first line, remaining args as NUL-separated payload.
+//	Guest shuts down write end to signal EOF.
+//
 // Response: "<exit_code>\n" or "<exit_code>\x00<error>\n".
 package main
 

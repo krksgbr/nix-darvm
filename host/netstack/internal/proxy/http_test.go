@@ -3,8 +3,8 @@ package proxy
 import (
 	"net"
 	"net/http"
-	"net/http/httptrace"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strconv"
 	"sync/atomic"
 	"testing"

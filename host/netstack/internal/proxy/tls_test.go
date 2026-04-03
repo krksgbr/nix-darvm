@@ -113,4 +113,3 @@ func TestPeekSNI_DoesNotConsume(t *testing.T) {
 		t.Fatal("peekSNI consumed or corrupted bytes in the reader")
 	}
 }
-

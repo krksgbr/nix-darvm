@@ -336,7 +336,7 @@ func peekSNI(br *bufio.Reader) string {
 // sniConn is a minimal net.Conn fed to tls.Server for ClientHello parsing.
 // Only Read is functional; Write returns EOF to abort the handshake.
 type sniConn struct {
-	r io.Reader
+	r        io.Reader
 	net.Conn // nil; satisfies interface without a real connection
 }
 

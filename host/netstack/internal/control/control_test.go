@@ -90,7 +90,7 @@ type fakeStack struct {
 	secrets []SecretRule
 }
 
-func (f *fakeStack) SecretCount() int            { return len(f.secrets) }
+func (f *fakeStack) SecretCount() int             { return len(f.secrets) }
 func (f *fakeStack) UpdateSecrets(s []SecretRule) { f.secrets = s }
 
 func TestLoad_SameProjectOverwrites(t *testing.T) {

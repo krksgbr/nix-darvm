@@ -1,6 +1,11 @@
 # Sensible defaults for sandbox VMs.
 # Imported by default; consumers can override or omit.
-{ lib, pkgs, username ? "admin", ... }:
+{
+  lib,
+  pkgs,
+  username ? "admin",
+  ...
+}:
 {
   # -- Zsh --
   programs.zsh = {
@@ -30,7 +35,10 @@
   };
 
   # -- Starship --
-  environment.systemPackages = with pkgs; [ starship coreutils ];
+  environment.systemPackages = with pkgs; [
+    starship
+    coreutils
+  ];
 
   # -- User-level config (via hjem) --
   users.users.${username}.home = "/Users/${username}";

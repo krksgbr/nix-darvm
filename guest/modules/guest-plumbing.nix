@@ -1,4 +1,13 @@
-{ pkgs, lib, config, username ? "admin", darvm-agent, dvm-host-cmd, determinate-nix, ... }:
+{
+  pkgs,
+  lib,
+  config,
+  username ? "admin",
+  darvm-agent,
+  dvm-host-cmd,
+  determinate-nix,
+  ...
+}:
 
 let
   daemonSock = "/tmp/nix-daemon.sock";
@@ -8,7 +17,7 @@ in
   # Materialized as JSON in the closure so the wrapper can read it at runtime.
   options.dvm.mounts.home = lib.mkOption {
     type = lib.types.listOf lib.types.str;
-    default = [];
+    default = [ ];
     description = "Home-relative directories to VirtioFS-mount from the host";
   };
 
@@ -17,7 +26,7 @@ in
   # immutably — the guest gets the host's installation without modification.
   options.dvm.mounts.system = lib.mkOption {
     type = lib.types.listOf lib.types.str;
-    default = [];
+    default = [ ];
     description = "Absolute paths to VirtioFS-mount read-only from the host (same path in guest)";
   };
 
@@ -27,7 +36,7 @@ in
   # Handlers receive payload on stdin and run with a scrubbed environment.
   options.dvm.capabilities = lib.mkOption {
     type = lib.types.attrsOf lib.types.path;
-    default = {};
+    default = { };
     description = "Host actions: name → handler script. Handlers receive payload on stdin.";
   };
 
@@ -46,8 +55,7 @@ in
     '';
 
     # Materialize home mounts list for the wrapper to read from the closure
-    environment.etc."dvm/home-mounts.json".text =
-      builtins.toJSON config.dvm.mounts.home;
+    environment.etc."dvm/home-mounts.json".text = builtins.toJSON config.dvm.mounts.home;
 
     # Agent LaunchDaemons — managed by nix-darwin, NOT baked into the image.
     # This is safe because activation is driven by the WatchPaths activator
@@ -62,7 +70,8 @@ in
       serviceConfig = {
         Label = "com.darvm.agent-rpc";
         ProgramArguments = [
-          "/bin/sh" "-c"
+          "/bin/sh"
+          "-c"
           "while [ ! -x '${darvm-agent}/bin/darvm-agent' ]; do sleep 1; done; exec '${darvm-agent}/bin/darvm-agent' '--run-rpc'"
         ];
         RunAtLoad = true;
@@ -76,7 +85,8 @@ in
       serviceConfig = {
         Label = "com.darvm.agent-bridge";
         ProgramArguments = [
-          "/bin/sh" "-c"
+          "/bin/sh"
+          "-c"
           "while [ ! -x '${darvm-agent}/bin/darvm-agent' ]; do sleep 1; done; exec '${darvm-agent}/bin/darvm-agent' '--run-bridge'"
         ];
         RunAtLoad = true;
@@ -120,12 +130,10 @@ in
     '';
 
     # Materialize system mounts list for the wrapper to read from the closure
-    environment.etc."dvm/system-mounts.json".text =
-      builtins.toJSON config.dvm.mounts.system;
+    environment.etc."dvm/system-mounts.json".text = builtins.toJSON config.dvm.mounts.system;
 
     # Materialize capabilities manifest for the host bridge
-    environment.etc."dvm/capabilities.json".text =
-      builtins.toJSON config.dvm.capabilities;
+    environment.etc."dvm/capabilities.json".text = builtins.toJSON config.dvm.capabilities;
 
     environment.systemPackages = [
       determinate-nix
@@ -234,14 +242,17 @@ in
           *) echo "Unknown command: ''${1:-}" >&2; usage >&2; exit 1 ;;
         esac
       '')
-    ] ++ lib.optional (config.dvm.capabilities != {}) (
+    ]
+    ++ lib.optional (config.dvm.capabilities != { }) (
       # Create bin/<name> → dvm-host-cmd symlinks for each capability
-      pkgs.runCommand "dvm-capability-symlinks" {} (
-        let names = builtins.attrNames config.dvm.capabilities; in
+      pkgs.runCommand "dvm-capability-symlinks" { } (
+        let
+          names = builtins.attrNames config.dvm.capabilities;
+        in
         ''
           mkdir -p $out/bin
-          ${lib.concatMapStringsSep "\n" (name:
-            "ln -s ${dvm-host-cmd}/bin/dvm-host-cmd $out/bin/${name}"
+          ${lib.concatMapStringsSep "\n" (
+            name: "ln -s ${dvm-host-cmd}/bin/dvm-host-cmd $out/bin/${name}"
           ) names}
         ''
       )

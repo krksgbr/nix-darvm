@@ -8,6 +8,10 @@ build config="debug":
     cd host && swift build -c {{config}} --scratch-path ../build/swift {{swift_sandbox_flag}}
     codesign --force --sign - --entitlements {{entitlements}} build/swift/{{config}}/dvm-core
 
+# Run configured formatters through the flake formatter.
+fmt:
+    nix fmt
+
 # Run language linters for Swift, Go, and Nix.
 lint:
     nix build \

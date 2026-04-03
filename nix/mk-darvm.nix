@@ -4,9 +4,19 @@
 # this into dvmConfigurations.<name> in their flake. The wrapper is built
 # separately by mk-dvm-wrapper.nix.
 
-{ nix-darwin, determinate, hjem, system ? "aarch64-darwin" }:
+{
+  nix-darwin,
+  determinate,
+  hjem,
+  system ? "aarch64-darwin",
+}:
 
-{ modules ? [], username ? "admin", darvm-agent, dvm-host-cmd }:
+{
+  modules ? [ ],
+  username ? "admin",
+  darvm-agent,
+  dvm-host-cmd,
+}:
 
 nix-darwin.lib.darwinSystem {
   inherit system;
@@ -18,7 +28,8 @@ nix-darwin.lib.darwinSystem {
     ../guest/modules/direnv.nix
     ../guest/modules/agents.nix
     ../guest/modules/xcode.nix
-  ] ++ modules;
+  ]
+  ++ modules;
   specialArgs = {
     inherit username darvm-agent dvm-host-cmd;
     determinate-nix = determinate.inputs.nix.packages.${system}.default;

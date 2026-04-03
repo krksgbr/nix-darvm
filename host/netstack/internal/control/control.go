@@ -79,7 +79,7 @@ type Server struct {
 	mu        sync.Mutex
 	stack     StackInfo
 	projects  map[string][]SecretRule // project_name -> secrets
-	caCertPEM string                 // set by SendReady, returned in ready response
+	caCertPEM string                  // set by SendReady, returned in ready response
 }
 
 // NewServer creates a control socket server at the given path.

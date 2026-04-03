@@ -6,6 +6,7 @@
     nix-darwin.url = "github:LnL7/nix-darwin";
     nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
     llm-agents.url = "github:numtide/llm-agents.nix";
+    treefmt-nix.url = "github:numtide/treefmt-nix";
     determinate.url = "https://flakehub.com/f/DeterminateSystems/determinate/3";
     hjem = {
       url = "github:feel-co/hjem";
@@ -14,13 +15,30 @@
     };
   };
 
-  outputs = { self, nixpkgs, nix-darwin, llm-agents, determinate, hjem }:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      nix-darwin,
+      llm-agents,
+      treefmt-nix,
+      determinate,
+      hjem,
+    }:
     let
       system = "aarch64-darwin";
       pkgs = nixpkgs.legacyPackages.${system};
       llmPkgs = llm-agents.packages.${system};
+      treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
 
-      mkDarvm = import ./nix/mk-darvm.nix { inherit nixpkgs nix-darwin determinate hjem system; };
+      mkDarvm = import ./nix/mk-darvm.nix {
+        inherit
+          nix-darwin
+          determinate
+          hjem
+          system
+          ;
+      };
       mkDvmWrapper = import ./nix/mk-dvm-wrapper.nix { inherit nixpkgs system; };
       mkCreateBaseVm = import ./nix/create-base-vm.nix { inherit nixpkgs system; };
 
@@ -29,17 +47,19 @@
       # TODO: nixpkgs ships Swift 5.10.1 but we need 6.0+, so we can't build
       # Swift inside a pure Nix derivation yet. Revisit when nixpkgs catches up.
       # Tracking: https://github.com/NixOS/nixpkgs/issues/343210
-      dvm-core = let
-        config = if builtins.getEnv "CONFIG" != "" then builtins.getEnv "CONFIG" else "debug";
-        bin = builtins.path {
-          path = /. + (builtins.getEnv "PWD") + "/build/swift/${config}/dvm-core";
-          name = "dvm-core-bin";
-        };
-      in pkgs.runCommand "dvm-core" {} ''
-        mkdir -p $out/bin
-        cp ${bin} $out/bin/dvm-core
-        chmod +x $out/bin/dvm-core
-      '';
+      dvm-core =
+        let
+          config = if builtins.getEnv "CONFIG" != "" then builtins.getEnv "CONFIG" else "debug";
+          bin = builtins.path {
+            path = /. + (builtins.getEnv "PWD") + "/build/swift/${config}/dvm-core";
+            name = "dvm-core-bin";
+          };
+        in
+        pkgs.runCommand "dvm-core" { } ''
+          mkdir -p $out/bin
+          cp ${bin} $out/bin/dvm-core
+          chmod +x $out/bin/dvm-core
+        '';
 
       darvm-agent = pkgs.buildGoModule {
         pname = "darvm-agent";
@@ -67,7 +87,7 @@
         postInstall = "mv $out/bin/cmd $out/bin/dvm-netstack";
       };
 
-      createBaseVm = mkCreateBaseVm {};
+      createBaseVm = mkCreateBaseVm { };
 
       wrapper = mkDvmWrapper {
         inherit dvm-core dvm-netstack;
@@ -84,21 +104,23 @@
       dvmConfigurations = {
         minimal = mkDarvm {
           inherit darvm-agent dvm-host-cmd;
-          modules = [];
+          modules = [ ];
         };
 
         default = mkDarvm {
           inherit darvm-agent dvm-host-cmd;
-          modules = [{
-            dvm = {
-              agents.claude.enable = true;
-              agents.claude.package = llmPkgs.claude-code;
-              # agents.codex.enable = true;
-              # agents.codex.package = llmPkgs.codex;
-              integrations.direnv.enable = true;
-              xcode.enable = true;
-            };
-          }];
+          modules = [
+            {
+              dvm = {
+                agents.claude.enable = true;
+                agents.claude.package = llmPkgs.claude-code;
+                # agents.codex.enable = true;
+                # agents.codex.package = llmPkgs.codex;
+                integrations.direnv.enable = true;
+                xcode.enable = true;
+              };
+            }
+          ];
         };
       };
 
@@ -115,56 +137,86 @@
       packages.${system} = {
         default = wrapper;
         dvm = wrapper;
-        inherit dvm-core darvm-agent dvm-host-cmd dvm-netstack;
+        inherit
+          dvm-core
+          darvm-agent
+          dvm-host-cmd
+          dvm-netstack
+          ;
       };
 
+      formatter.${system} = treefmtEval.config.build.wrapper;
+
       checks.${system} = {
-        swift-lint = pkgs.runCommand "swift-lint" {
-          nativeBuildInputs = [ pkgs.swiftlint ];
-          src = self;
-        } ''
-          export HOME="$TMPDIR"
-          export XDG_CACHE_HOME="$TMPDIR/cache"
-          cd "$src"
-          swiftlint lint --strict --quiet --no-cache --config .swiftlint.yml
-          touch "$out"
-        '';
+        formatting = treefmtEval.config.build.check self;
 
-        go-lint-agent = pkgs.runCommand "go-lint-agent" {
-          nativeBuildInputs = [ pkgs.go pkgs.golangci-lint ];
-          src = self;
-        } ''
-          export HOME="$TMPDIR"
-          export XDG_CACHE_HOME="$TMPDIR/cache"
-          export GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint-cache"
-          cd "$src/guest/agent"
-          golangci-lint run ./...
-          touch "$out"
-        '';
+        swift-lint =
+          pkgs.runCommand "swift-lint"
+            {
+              nativeBuildInputs = [ pkgs.swiftlint ];
+              src = self;
+            }
+            ''
+              export HOME="$TMPDIR"
+              export XDG_CACHE_HOME="$TMPDIR/cache"
+              cd "$src"
+              swiftlint lint --strict --quiet --no-cache --config .swiftlint.yml
+              touch "$out"
+            '';
 
-        go-lint-netstack = pkgs.runCommand "go-lint-netstack" {
-          nativeBuildInputs = [ pkgs.go pkgs.golangci-lint ];
-          src = self;
-        } ''
-          export HOME="$TMPDIR"
-          export XDG_CACHE_HOME="$TMPDIR/cache"
-          export GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint-cache"
-          cd "$src/host/netstack"
-          golangci-lint run ./...
-          touch "$out"
-        '';
+        go-lint-agent =
+          pkgs.runCommand "go-lint-agent"
+            {
+              nativeBuildInputs = [
+                pkgs.go
+                pkgs.golangci-lint
+              ];
+              src = self;
+            }
+            ''
+              export HOME="$TMPDIR"
+              export XDG_CACHE_HOME="$TMPDIR/cache"
+              export GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint-cache"
+              cd "$src/guest/agent"
+              golangci-lint run ./...
+              touch "$out"
+            '';
 
-        nix-lint = pkgs.runCommand "nix-lint" {
-          nativeBuildInputs = [ pkgs.deadnix pkgs.statix ];
-          src = self;
-        } ''
-          cd "$src"
-          deadnix flake.nix guest/modules nix
-          statix check flake.nix
-          statix check guest/modules
-          statix check nix
-          touch "$out"
-        '';
+        go-lint-netstack =
+          pkgs.runCommand "go-lint-netstack"
+            {
+              nativeBuildInputs = [
+                pkgs.go
+                pkgs.golangci-lint
+              ];
+              src = self;
+            }
+            ''
+              export HOME="$TMPDIR"
+              export XDG_CACHE_HOME="$TMPDIR/cache"
+              export GOLANGCI_LINT_CACHE="$TMPDIR/golangci-lint-cache"
+              cd "$src/host/netstack"
+              golangci-lint run ./...
+              touch "$out"
+            '';
+
+        nix-lint =
+          pkgs.runCommand "nix-lint"
+            {
+              nativeBuildInputs = [
+                pkgs.deadnix
+                pkgs.statix
+              ];
+              src = self;
+            }
+            ''
+              cd "$src"
+              deadnix flake.nix guest/modules nix
+              statix check flake.nix
+              statix check guest/modules
+              statix check nix
+              touch "$out"
+            '';
       };
 
       devShells.${system}.default = pkgs.mkShellNoCC {
@@ -180,6 +232,7 @@
           protoc-gen-go-grpc
           statix
           swiftlint
+          treefmtEval.config.build.wrapper
         ];
         shellHook = ''
           # Make DVM_CORE overridable from local build

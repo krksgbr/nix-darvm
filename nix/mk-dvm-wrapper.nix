@@ -4,13 +4,16 @@
 # the system closure, and orchestrates dvm-core. It carries no baked-in
 # closure — just the dvm-core binary, create-vm script, and flake resolution logic.
 
-{ nixpkgs, system ? "aarch64-darwin" }:
+{
+  nixpkgs,
+  system ? "aarch64-darwin",
+}:
 
 {
   dvm-core,
   dvm-netstack,
   dvm-create-vm,
-  dvmFlakeRef,  # self.outPath — used for minimal config fallback
+  dvmFlakeRef, # self.outPath — used for minimal config fallback
 }:
 
 let
@@ -18,8 +21,7 @@ let
   inherit (pkgs) lib;
   inherit (lib) escapeShellArg;
 
-  imageInputsHash = builtins.substring 0 8 (builtins.hashString "sha256"
-    "${../guest/image-minimal}");
+  imageInputsHash = builtins.substring 0 8 (builtins.hashString "sha256" "${../guest/image-minimal}");
   vmName = "darvm-${imageInputsHash}";
 in
 pkgs.writeShellApplication {

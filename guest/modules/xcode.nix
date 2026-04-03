@@ -36,8 +36,7 @@ in
     ];
 
     # Set DEVELOPER_DIR globally — xcrun needs this to find SDKs.
-    environment.variables.DEVELOPER_DIR =
-      "/Applications/Xcode.app/Contents/Developer";
+    environment.variables.DEVELOPER_DIR = "/Applications/Xcode.app/Contents/Developer";
 
     # Activation-time setup: xcode-select, license acceptance, permissions fix.
     # Runs on every activation (idempotent). Appended after guest-plumbing's
