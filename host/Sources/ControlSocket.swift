@@ -239,71 +239,23 @@ final class ControlSocket: @unchecked Sendable {
   }
 
   private func handleRequest(_ data: Data?) -> Response {
-    guard let data,
-      let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-      let cmdStr = decoded["cmd"] as? String
-    else {
+    guard let decoded = decodeRequest(data) else {
       return .error(message: "invalid request: expected JSON with \"cmd\" field")
     }
-    guard let command = Command(rawValue: cmdStr) else {
-      return .error(message: "unknown command: \(cmdStr)")
+    guard let command = parseCommand(from: decoded) else {
+      let commandString = decoded["cmd"] as? String ?? ""
+      return .error(message: "unknown command: \(commandString)")
     }
 
     switch command {
     case .status:
-      let currentStatus = status
-      let running = currentStatus.phase != .stopped && currentStatus.phase != .failed
-      return .status(
-        StatusPayload(
-          running: running,
-          ipAddress: currentStatus.ipAddress,
-          phase: currentStatus.phase.rawValue,
-          runId: currentStatus.runId,
-          phaseEnteredAt: currentStatus.phaseEnteredAt,
-          phaseError: currentStatus.error
-        ))
+      return statusResponse()
     case .guestHealth:
-      guard let handler = guestHealthHandler else {
-        return .error(message: "guest health not available (VM not fully started)")
-      }
-      if let health = handler() {
-        return .guestHealth(health)
-      } else {
-        return .error(message: "guest health query failed")
-      }
+      return guestHealthResponse()
     case .loadCredentials:
-      guard let handler = loadCredentialsHandler else {
-        return .error(message: "credential proxy not available (sidecar not running)")
-      }
-      guard let projectName = decoded["project_name"] as? String, !projectName.isEmpty else {
-        return .error(message: "loadCredentials: missing project_name")
-      }
-      guard let secrets = decoded["secrets"] as? [[String: Any]] else {
-        return .error(message: "loadCredentials: missing or invalid secrets array")
-      }
-      if let errMsg = handler(projectName, secrets) {
-        return .error(message: errMsg)
-      }
-      return .status(
-        StatusPayload(
-          running: true, ip: nil, phase: nil, runId: nil,
-          phaseEnteredAt: nil, phaseError: nil
-        ))
+      return loadCredentialsResponse(decoded)
     case .reloadCapabilities:
-      guard let handler = reloadCapabilitiesHandler else {
-        return .error(message: "host action bridge not available")
-      }
-      guard let path = decoded["path"] as? String, !path.isEmpty else {
-        return .error(message: "reloadCapabilities: missing path")
-      }
-      if let errMsg = handler(path) {
-        return .error(message: errMsg)
-      }
-      return .status(
-        StatusPayload(
-          running: true, ip: nil, phase: nil, runId: nil,
-          phaseEnteredAt: nil, phaseError: nil
-        ))
+      return reloadCapabilitiesResponse(decoded)
     }
   }
 
@@ -333,63 +285,12 @@ final class ControlSocket: @unchecked Sendable {
       return .failure(.socketNotFound)
     }
 
-    let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fileDescriptor >= 0 else {
-      return .failure(.connectFailed(String(cString: strerror(errno))))
-    }
-    defer { close(fileDescriptor) }
-
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    let pathBytes = Self.path.utf8CString
-    withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-      ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
-        for (index, byte) in pathBytes.enumerated() {
-          dest[index] = byte
-        }
-      }
-    }
-
-    let connectResult = withUnsafePointer(to: &addr) { ptr in
-      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-        connect(fileDescriptor, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-      }
-    }
-    guard connectResult == 0 else {
-      return .failure(.connectFailed(String(cString: strerror(errno))))
-    }
-
-    // Send command as JSON
-    guard var requestData = try? JSONEncoder().encode(["cmd": command.rawValue]) else {
+    let payload = ["cmd": command.rawValue]
+    guard let requestData = try? JSONEncoder().encode(payload) else {
       return .failure(.sendFailed)
     }
-    requestData.append(0x0A)  // newline
-    _ = requestData.withUnsafeBytes { ptr in
-      write(fileDescriptor, ptr.baseAddress!, requestData.count)
-    }
-
-    // Set read timeout
-    var timeoutValue = timeval(tv_sec: Int(timeout), tv_usec: 0)
-    setsockopt(
-      fileDescriptor,
-      SOL_SOCKET,
-      SO_RCVTIMEO,
-      &timeoutValue,
-      socklen_t(MemoryLayout<timeval>.size)
-    )
-
-    var buf = [UInt8](repeating: 0, count: 4096)
-    let bytesRead = read(fileDescriptor, &buf, buf.count)
-    guard bytesRead > 0 else { return .failure(.readTimeout) }
-
-    let trimmed = Data(buf[..<bytesRead]).withUnsafeBytes { rawBuf in
-      var end = bytesRead
-      while end > 0
-        && (rawBuf[end - 1] == 0x0A || rawBuf[end - 1] == 0x0D || rawBuf[end - 1] == 0x20)
-      {
-        end -= 1
-      }
-      return Data(rawBuf.prefix(end))
+    guard let trimmed = performClientRequest(requestData, timeout: timeout) else {
+      return .failure(.readTimeout)
     }
     guard let response = try? JSONDecoder().decode(Response.self, from: trimmed) else {
       return .failure(.decodeFailed)
@@ -408,86 +309,18 @@ final class ControlSocket: @unchecked Sendable {
       return "VM not running (control socket not found)"
     }
 
-    let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fileDescriptor >= 0 else {
-      return "Failed to create socket: \(String(cString: strerror(errno)))"
-    }
-    defer { close(fileDescriptor) }
-
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    let pathBytes = Self.path.utf8CString
-    withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-      ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
-        for (index, byte) in pathBytes.enumerated() {
-          dest[index] = byte
-        }
-      }
-    }
-
-    let connectResult = withUnsafePointer(to: &addr) { ptr in
-      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-        connect(fileDescriptor, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-      }
-    }
-    guard connectResult == 0 else {
-      return "Failed to connect to control socket: \(String(cString: strerror(errno)))"
-    }
-
-    // Build the JSON payload with embedded secrets
-    let secretDicts: [[String: Any]] = secrets.map { secret in
-      [
-        "name": secret.name,
-        "placeholder": secret.placeholder,
-        "value": secret.value,
-        "hosts": secret.hosts
-      ] as [String: Any]
-    }
-    let payload: [String: Any] = [
-      "cmd": "loadCredentials",
-      "project_name": projectName,
-      "secrets": secretDicts
-    ]
     guard
-      let requestData = try? JSONSerialization.data(
-        withJSONObject: payload, options: [.sortedKeys])
+      let requestData = encodeLoadCredentialsRequest(
+        projectName: projectName,
+        secrets: secrets
+      )
     else {
       return "Failed to encode loadCredentials request"
     }
-
-    var data = requestData
-    data.append(0x0A)
-    _ = data.withUnsafeBytes { ptr in
-      write(fileDescriptor, ptr.baseAddress!, data.count)
+    guard let response = performClientRequest(requestData, timeout: timeout) else {
+      return "Control socket read timed out"
     }
-
-    // Set read timeout
-    var timeoutValue = timeval(tv_sec: Int(timeout), tv_usec: 0)
-    setsockopt(
-      fileDescriptor,
-      SOL_SOCKET,
-      SO_RCVTIMEO,
-      &timeoutValue,
-      socklen_t(MemoryLayout<timeval>.size)
-    )
-
-    var buf = [UInt8](repeating: 0, count: 4096)
-    let bytesRead = read(fileDescriptor, &buf, buf.count)
-    guard bytesRead > 0 else { return "Control socket read timed out" }
-
-    // Parse response and verify success positively
-    let responseData = Data(buf[..<bytesRead])
-    guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
-      return "Control socket returned invalid JSON"
-    }
-    if let error = json["error"] as? String {
-      return error
-    }
-    // Verify we got a valid response (not truncated/garbled)
-    guard json["running"] != nil || json["type"] != nil else {
-      return "Control socket returned unexpected response: \(json)"
-    }
-    return nil  // success
+    return decodeStatusOnlyResponse(response)
   }
 
   /// Tell the running VM to reload its capabilities manifest.
@@ -497,32 +330,6 @@ final class ControlSocket: @unchecked Sendable {
       return "VM not running (control socket not found)"
     }
 
-    let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard fileDescriptor >= 0 else {
-      return "Failed to create socket: \(String(cString: strerror(errno)))"
-    }
-    defer { close(fileDescriptor) }
-
-    var addr = sockaddr_un()
-    addr.sun_family = sa_family_t(AF_UNIX)
-    let pathBytes = Self.path.utf8CString
-    withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
-      ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
-        for (index, byte) in pathBytes.enumerated() {
-          dest[index] = byte
-        }
-      }
-    }
-
-    let connectResult = withUnsafePointer(to: &addr) { ptr in
-      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
-        connect(fileDescriptor, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-      }
-    }
-    guard connectResult == 0 else {
-      return "Failed to connect to control socket: \(String(cString: strerror(errno)))"
-    }
-
     let payload: [String: Any] = ["cmd": "reloadCapabilities", "path": path]
     guard
       let requestData = try? JSONSerialization.data(
@@ -530,34 +337,10 @@ final class ControlSocket: @unchecked Sendable {
     else {
       return "Failed to encode reloadCapabilities request"
     }
-
-    var data = requestData
-    data.append(0x0A)
-    _ = data.withUnsafeBytes { ptr in
-      write(fileDescriptor, ptr.baseAddress!, data.count)
+    guard let response = performClientRequest(requestData, timeout: 5) else {
+      return "Control socket read timed out"
     }
-
-    var timeoutValue = timeval(tv_sec: 5, tv_usec: 0)
-    setsockopt(
-      fileDescriptor,
-      SOL_SOCKET,
-      SO_RCVTIMEO,
-      &timeoutValue,
-      socklen_t(MemoryLayout<timeval>.size)
-    )
-
-    var buf = [UInt8](repeating: 0, count: 4096)
-    let bytesRead = read(fileDescriptor, &buf, buf.count)
-    guard bytesRead > 0 else { return "Control socket read timed out" }
-
-    let responseData = Data(buf[..<bytesRead])
-    guard let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any] else {
-      return "Control socket returned invalid JSON"
-    }
-    if let error = json["error"] as? String {
-      return error
-    }
-    return nil
+    return decodeSimpleResponse(response)
   }
 
   /// Quick check: is the VM running?
@@ -566,6 +349,188 @@ final class ControlSocket: @unchecked Sendable {
       return false
     }
     return payload.running
+  }
+
+  private func decodeRequest(_ data: Data?) -> [String: Any]? {
+    guard let data else { return nil }
+    return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+  }
+
+  private func parseCommand(from decoded: [String: Any]) -> Command? {
+    guard let commandString = decoded["cmd"] as? String else { return nil }
+    return Command(rawValue: commandString)
+  }
+
+  private func statusResponse() -> Response {
+    let currentStatus = status
+    let running = currentStatus.phase != .stopped && currentStatus.phase != .failed
+    return .status(
+      StatusPayload(
+        running: running,
+        ipAddress: currentStatus.ipAddress,
+        phase: currentStatus.phase.rawValue,
+        runId: currentStatus.runId,
+        phaseEnteredAt: currentStatus.phaseEnteredAt,
+        phaseError: currentStatus.error
+      ))
+  }
+
+  private func guestHealthResponse() -> Response {
+    guard let handler = guestHealthHandler else {
+      return .error(message: "guest health not available (VM not fully started)")
+    }
+    guard let health = handler() else {
+      return .error(message: "guest health query failed")
+    }
+    return .guestHealth(health)
+  }
+
+  private func loadCredentialsResponse(_ decoded: [String: Any]) -> Response {
+    guard let handler = loadCredentialsHandler else {
+      return .error(message: "credential proxy not available (sidecar not running)")
+    }
+    guard let projectName = decoded["project_name"] as? String, !projectName.isEmpty else {
+      return .error(message: "loadCredentials: missing project_name")
+    }
+    guard let secrets = decoded["secrets"] as? [[String: Any]] else {
+      return .error(message: "loadCredentials: missing or invalid secrets array")
+    }
+    if let errorMessage = handler(projectName, secrets) {
+      return .error(message: errorMessage)
+    }
+    return successStatusResponse()
+  }
+
+  private func reloadCapabilitiesResponse(_ decoded: [String: Any]) -> Response {
+    guard let handler = reloadCapabilitiesHandler else {
+      return .error(message: "host action bridge not available")
+    }
+    guard let path = decoded["path"] as? String, !path.isEmpty else {
+      return .error(message: "reloadCapabilities: missing path")
+    }
+    if let errorMessage = handler(path) {
+      return .error(message: errorMessage)
+    }
+    return successStatusResponse()
+  }
+
+  private func successStatusResponse() -> Response {
+    .status(
+      StatusPayload(
+        running: true,
+        ipAddress: nil,
+        phase: nil,
+        runId: nil,
+        phaseEnteredAt: nil,
+        phaseError: nil
+      ))
+  }
+
+  private static func openClientSocket() -> Int32? {
+    let fileDescriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fileDescriptor >= 0 else { return nil }
+
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    let pathBytes = Self.path.utf8CString
+    withUnsafeMutablePointer(to: &address.sun_path) { ptr in
+      ptr.withMemoryRebound(to: CChar.self, capacity: pathBytes.count) { dest in
+        for (index, byte) in pathBytes.enumerated() {
+          dest[index] = byte
+        }
+      }
+    }
+
+    let connectResult = withUnsafePointer(to: &address) { ptr in
+      ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockPtr in
+        connect(fileDescriptor, sockPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+      }
+    }
+    guard connectResult == 0 else {
+      close(fileDescriptor)
+      return nil
+    }
+
+    return fileDescriptor
+  }
+
+  private static func performClientRequest(_ requestData: Data, timeout: TimeInterval) -> Data? {
+    guard let fileDescriptor = openClientSocket() else { return nil }
+    defer { close(fileDescriptor) }
+
+    var data = requestData
+    data.append(0x0A)
+    _ = data.withUnsafeBytes { ptr in
+      write(fileDescriptor, ptr.baseAddress!, data.count)
+    }
+
+    var timeoutValue = timeval(tv_sec: Int(timeout), tv_usec: 0)
+    setsockopt(
+      fileDescriptor,
+      SOL_SOCKET,
+      SO_RCVTIMEO,
+      &timeoutValue,
+      socklen_t(MemoryLayout<timeval>.size)
+    )
+
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    let bytesRead = read(fileDescriptor, &buffer, buffer.count)
+    guard bytesRead > 0 else { return nil }
+
+    let responseData = Data(buffer[..<bytesRead])
+    return trimTrailingWhitespace(responseData)
+  }
+
+  private static func trimTrailingWhitespace(_ data: Data) -> Data {
+    data.withUnsafeBytes { rawBuffer in
+      var end = rawBuffer.count
+      while end > 0
+        && (rawBuffer[end - 1] == 0x0A || rawBuffer[end - 1] == 0x0D || rawBuffer[end - 1] == 0x20)
+      {
+        end -= 1
+      }
+      return Data(rawBuffer.prefix(end))
+    }
+  }
+
+  private static func encodeLoadCredentialsRequest(
+    projectName: String,
+    secrets: [ResolvedSecret]
+  ) -> Data? {
+    let secretDicts: [[String: Any]] = secrets.map { secret in
+      [
+        "name": secret.name,
+        "placeholder": secret.placeholder,
+        "value": secret.value,
+        "hosts": secret.hosts
+      ]
+    }
+    let payload: [String: Any] = [
+      "cmd": "loadCredentials",
+      "project_name": projectName,
+      "secrets": secretDicts
+    ]
+    return try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+  }
+
+  private static func decodeStatusOnlyResponse(_ response: Data) -> String? {
+    guard let json = try? JSONSerialization.jsonObject(with: response) as? [String: Any] else {
+      return "Control socket returned invalid JSON"
+    }
+    if let error = json["error"] as? String {
+      return error
+    }
+    guard json["running"] != nil || json["type"] != nil else {
+      return "Control socket returned unexpected response: \(json)"
+    }
+    return nil
+  }
+
+  private static func decodeSimpleResponse(_ response: Data) -> String? {
+    guard let json = try? JSONSerialization.jsonObject(with: response) as? [String: Any] else {
+      return "Control socket returned invalid JSON"
+    }
+    return json["error"] as? String
   }
 }
 
