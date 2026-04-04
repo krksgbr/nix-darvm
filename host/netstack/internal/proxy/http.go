@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -103,7 +104,11 @@ func (i *Interceptor) IsInterceptedHost(host string) bool {
 // ReverseProxy — secrets are applied when rules match, otherwise the
 // request passes through unmodified. Keep-alive is handled by http.Server.
 func (i *Interceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort int) {
-	defer guestConn.Close()
+	defer func() {
+		if err := guestConn.Close(); err != nil {
+			log.Printf("http: close guest conn: %v", err)
+		}
+	}()
 	i.serveConn(guestConn, "http", dstIP, dstPort, false)
 }
 
@@ -113,7 +118,11 @@ func (i *Interceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort int) 
 // via ALPN, and requests routed through the ReverseProxy for credential
 // injection. Non-matching hosts get pure TCP passthrough.
 func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int) {
-	defer guestConn.Close()
+	defer func() {
+		if err := guestConn.Close(); err != nil {
+			log.Printf("https: close guest conn: %v", err)
+		}
+	}()
 
 	if i.caPool == nil {
 		// No CA — can't MITM. TCP passthrough.
@@ -150,7 +159,9 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 		},
 		NextProtos: []string{"h2", "http/1.1"},
 	})
-	if err := tlsConn.Handshake(); err != nil {
+	handshakeCtx, cancelHandshake := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelHandshake()
+	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
 		log.Printf("https: TLS handshake failed: %v", err)
 		return
 	}
@@ -198,18 +209,27 @@ func (i *Interceptor) replaceSecrets(req *http.Request, secrets []control.Secret
 // tcpPassthrough does a bidirectional byte relay without any inspection.
 func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort int) {
 	target := net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort))
-	realConn, err := net.DialTimeout("tcp", target, 30*time.Second)
+	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	realConn, err := dialer.DialContext(context.Background(), "tcp", target)
 	if err != nil {
 		return
 	}
-	defer realConn.Close()
+	defer func() {
+		if err := realConn.Close(); err != nil {
+			log.Printf("tcp passthrough: close upstream conn: %v", err)
+		}
+	}()
 
 	done := make(chan struct{})
 	go func() {
-		io.Copy(realConn, guestConn)
+		if _, err := io.Copy(realConn, guestConn); err != nil {
+			log.Printf("tcp passthrough: guest to upstream copy: %v", err)
+		}
 		close(done)
 	}()
-	io.Copy(guestConn, realConn)
+	if _, err := io.Copy(guestConn, realConn); err != nil {
+		log.Printf("tcp passthrough: upstream to guest copy: %v", err)
+	}
 	<-done
 }
 
@@ -246,10 +266,15 @@ func (i *Interceptor) serveConn(conn net.Conn, scheme, dstIP string, dstPort int
 	}
 
 	if enableH2 {
-		http2.ConfigureServer(srv, nil)
+		if err := http2.ConfigureServer(srv, nil); err != nil {
+			log.Printf("proxy: configure http2: %v", err)
+			return
+		}
 	}
 
-	srv.Serve(ln)
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, net.ErrClosed) {
+		log.Printf("proxy: serve conn: %v", err)
+	}
 }
 
 // rewriteRequest is the httputil.ReverseProxy Rewrite callback. It sets the
@@ -329,7 +354,9 @@ func peekSNI(br *bufio.Reader) string {
 			return nil, fmt.Errorf("sni extracted")
 		},
 	})
-	srv.Handshake() // expected to fail after capturing SNI
+	if err := srv.HandshakeContext(context.Background()); err == nil {
+		return sni
+	}
 	return sni
 }
 

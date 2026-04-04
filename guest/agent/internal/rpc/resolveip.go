@@ -12,7 +12,7 @@ import (
 
 func (rpc *RPC) ResolveIP(ctx context.Context, _ *pb.ResolveIPRequest) (*pb.ResolveIPResponse, error) {
 	defaultGateways := map[string]struct{}{}
-	if out, err := exec.Command("netstat", "-rn", "-f", "inet").Output(); err == nil {
+	if out, err := exec.CommandContext(ctx, "netstat", "-rn", "-f", "inet").Output(); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 && fields[0] == "default" {

@@ -12,14 +12,14 @@ import (
 
 func (rpc *RPC) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResponse, error) {
 	return &pb.StatusResponse{
-		Mounts:     gatherMounts(),
+		Mounts:     gatherMounts(ctx),
 		Activation: gatherActivation(),
-		Services:   gatherServices(),
+		Services:   gatherServices(ctx),
 	}, nil
 }
 
-func gatherMounts() []string {
-	out, err := exec.Command("/sbin/mount").Output()
+func gatherMounts(ctx context.Context) []string {
+	out, err := exec.CommandContext(ctx, "/sbin/mount").Output()
 	if err != nil {
 		log.Printf("status: mount: %v", err)
 		return nil
@@ -49,8 +49,8 @@ func gatherActivation() string {
 	return target
 }
 
-func gatherServices() map[string]string {
-	out, err := exec.Command("launchctl", "list").Output()
+func gatherServices(ctx context.Context) map[string]string {
+	out, err := exec.CommandContext(ctx, "launchctl", "list").Output()
 	if err != nil {
 		log.Printf("status: launchctl: %v", err)
 		return nil

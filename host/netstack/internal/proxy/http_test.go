@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -30,7 +31,9 @@ func TestHTTPNoReplacement_PlaceholderPassesThrough(t *testing.T) {
 			t.Errorf("expected placeholder to pass through, got Authorization %q", auth)
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		if _, err := w.Write([]byte("ok")); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	t.Cleanup(upstream.Close)
 
@@ -41,13 +44,17 @@ func TestHTTPNoReplacement_PlaceholderPassesThrough(t *testing.T) {
 	proxyAddr := startProxyListener(t, interceptor, "http", upHost, upPort)
 	client := newProxyHTTPClient(t, proxyAddr)
 
-	req, _ := http.NewRequest("GET", "http://localhost/path", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/path", nil)
 	req.Header.Set("Authorization", "Bearer PLACEHOLDER_TOKEN")
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
@@ -82,13 +89,17 @@ func TestHTTPNonInterceptedHost_Unchanged(t *testing.T) {
 	proxyAddr := startProxyListener(t, interceptor, "http", upHost, upPort)
 	client := newProxyHTTPClient(t, proxyAddr)
 
-	req, _ := http.NewRequest("GET", "http://localhost/path", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/path", nil)
 	req.Header.Set("X-Custom", "preserved")
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("close response body: %v", err)
+		}
+	}()
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", resp.StatusCode)
@@ -120,11 +131,14 @@ func TestHTTPKeepAlive(t *testing.T) {
 	client := newProxyHTTPClient(t, proxyAddr)
 
 	// First request.
-	resp1, err := client.Get("http://localhost/first")
+	req1, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/first", nil)
+	resp1, err := client.Do(req1)
 	if err != nil {
 		t.Fatalf("first GET failed: %v", err)
 	}
-	resp1.Body.Close()
+	if err := resp1.Body.Close(); err != nil {
+		t.Fatalf("close first response body: %v", err)
+	}
 
 	// Second request — verify the connection is actually reused via httptrace.
 	var reused bool
@@ -133,13 +147,15 @@ func TestHTTPKeepAlive(t *testing.T) {
 			reused = info.Reused
 		},
 	}
-	req, _ := http.NewRequest("GET", "http://localhost/second", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/second", nil)
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 	resp2, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("second GET failed: %v", err)
 	}
-	resp2.Body.Close()
+	if err := resp2.Body.Close(); err != nil {
+		t.Fatalf("close second response body: %v", err)
+	}
 
 	if !reused {
 		t.Fatal("second request did not reuse the keep-alive connection")

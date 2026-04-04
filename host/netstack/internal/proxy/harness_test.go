@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"io"
 	"net"
 	"net/http"
 	"testing"
@@ -11,6 +12,15 @@ import (
 
 	"github.com/unbody/darvm/netstack/internal/control"
 )
+
+func cleanupClose(t *testing.T, name string, closer io.Closer) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := closer.Close(); err != nil {
+			t.Errorf("%s close: %v", name, err)
+		}
+	})
+}
 
 // newTestCA generates a fresh ECDSA CA and returns both the CAPool (for the
 // interceptor) and an x509.CertPool (for client trust).
@@ -41,11 +51,11 @@ func newTestInterceptor(t *testing.T, secrets []control.SecretRule, caPool *CAPo
 func startProxyListener(t *testing.T, interceptor *Interceptor, mode string, dstIP string, dstPort int) string {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	cleanupClose(t, "proxy listener", ln)
 
 	go func() {
 		for {

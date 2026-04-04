@@ -44,7 +44,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to wrap frame FD as net.Conn: %v", err)
 	}
-	frameFile.Close() // FileConn dups internally
+	if err := frameFile.Close(); err != nil { // FileConn dups internally
+		log.Fatalf("failed to close duplicated frame file: %v", err)
+	}
 
 	// Create the control server. Config (secrets, CA, subnet) arrives
 	// over this socket after startup — never via argv or env.
@@ -52,7 +54,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("control socket: %v", err)
 	}
-	defer ctrl.Close()
+	defer func() {
+		if err := ctrl.Close(); err != nil {
+			log.Printf("control socket shutdown: %v", err)
+		}
+	}()
 
 	// Wait for initial config before starting the network stack.
 	log.Println("waiting for config on control socket...")
@@ -76,7 +82,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("network stack: %v", err)
 	}
-	defer ns.Close()
+	defer func() {
+		if err := ns.Close(); err != nil {
+			log.Printf("network stack shutdown: %v", err)
+		}
+	}()
 
 	// Tell dvm-core we're ready (includes the CA cert PEM for guest trust store).
 	ctrl.SetStack(ns)

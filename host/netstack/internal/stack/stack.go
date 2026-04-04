@@ -5,7 +5,9 @@ package stack
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -257,7 +259,9 @@ func (ns *Stack) Close() error {
 	}
 	ns.closed = true
 	ns.cancelSwitch()
-	ns.frameConn.Close()
+	if err := ns.frameConn.Close(); err != nil {
+		return err
+	}
 	ns.gstack.Close()
 	return nil
 }
@@ -287,14 +291,22 @@ func (ns *Stack) handleTCPConnection(r *tcp.ForwarderRequest) {
 }
 
 func (ns *Stack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int) {
-	defer guestConn.Close()
+	defer func() {
+		if err := guestConn.Close(); err != nil {
+			log.Printf("passthrough: close guest conn: %v", err)
+		}
+	}()
 	target := net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort))
-	realConn, err := net.Dial("tcp", target)
+	realConn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", target)
 	if err != nil {
 		log.Printf("passthrough: dial %s: %v", target, err)
 		return
 	}
-	defer realConn.Close()
+	defer func() {
+		if err := realConn.Close(); err != nil {
+			log.Printf("passthrough: close upstream conn: %v", err)
+		}
+	}()
 
 	done := make(chan struct{})
 	go func() {
@@ -302,9 +314,15 @@ func (ns *Stack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int
 		for {
 			n, err := realConn.Read(buf)
 			if n > 0 {
-				guestConn.Write(buf[:n])
+				if _, writeErr := guestConn.Write(buf[:n]); writeErr != nil {
+					log.Printf("passthrough: write to guest: %v", writeErr)
+					break
+				}
 			}
 			if err != nil {
+				if !errors.Is(err, io.EOF) {
+					log.Printf("passthrough: read from upstream: %v", err)
+				}
 				break
 			}
 		}
@@ -314,9 +332,15 @@ func (ns *Stack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int
 	for {
 		n, err := guestConn.Read(buf)
 		if n > 0 {
-			realConn.Write(buf[:n])
+			if _, writeErr := realConn.Write(buf[:n]); writeErr != nil {
+				log.Printf("passthrough: write to upstream: %v", writeErr)
+				break
+			}
 		}
 		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				log.Printf("passthrough: read from guest: %v", err)
+			}
 			break
 		}
 	}

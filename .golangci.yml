@@ -4,12 +4,14 @@ linters:
   default: none
   enable:
     - copyloopvar
+    - errcheck
     - errorlint
     - govet
     - ineffassign
     - intrange
     - makezero
     - misspell
+    - noctx
     - prealloc
     - staticcheck
     - unconvert

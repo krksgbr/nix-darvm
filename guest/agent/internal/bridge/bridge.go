@@ -40,7 +40,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 		return fmt.Errorf("remove stale bridge socket: %w", err)
 	}
 
-	ln, err := net.Listen("unix", b.ListenPath)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "unix", b.ListenPath)
 	if err != nil {
 		return fmt.Errorf("bridge listen: %w", err)
 	}

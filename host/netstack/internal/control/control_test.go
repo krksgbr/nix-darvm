@@ -1,6 +1,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"os"
@@ -11,11 +12,15 @@ import (
 // dial connects to the control socket and returns a JSON encoder/decoder pair.
 func dial(t *testing.T, sockPath string) (*json.Encoder, *json.Decoder) {
 	t.Helper()
-	conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "unix", sockPath)
 	if err != nil {
 		t.Fatalf("dial control socket: %v", err)
 	}
-	t.Cleanup(func() { conn.Close() })
+	t.Cleanup(func() {
+		if err := conn.Close(); err != nil {
+			t.Errorf("close control conn: %v", err)
+		}
+	})
 	return json.NewEncoder(conn), json.NewDecoder(conn)
 }
 
@@ -28,9 +33,17 @@ func shortSockPath(t *testing.T) string {
 		t.Fatalf("create temp: %v", err)
 	}
 	path := f.Name()
-	f.Close()
-	os.Remove(path)
-	t.Cleanup(func() { os.Remove(path) })
+	if err := f.Close(); err != nil {
+		t.Fatalf("close temp socket placeholder: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove temp socket placeholder: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			t.Errorf("remove temp socket path: %v", err)
+		}
+	})
 	return path
 }
 
@@ -43,7 +56,11 @@ func initServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	t.Cleanup(func() { srv.Close() })
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	})
 
 	// The stack must be set and ready before load commands work.
 	srv.SetStack(&fakeStack{})

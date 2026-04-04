@@ -3,7 +3,9 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -85,9 +87,11 @@ type Server struct {
 // NewServer creates a control socket server at the given path.
 func NewServer(sockPath string) (*Server, error) {
 	// Remove stale socket.
-	os.Remove(sockPath)
+	if err := os.Remove(sockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("remove stale socket %s: %w", sockPath, err)
+	}
 
-	ln, err := net.Listen("unix", sockPath)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", sockPath, err)
 	}
@@ -133,9 +137,14 @@ func (s *Server) SendReady(caCertPEM string) {
 
 // Close shuts down the control socket.
 func (s *Server) Close() error {
-	s.listener.Close()
-	os.Remove(s.sockPath)
-	return nil
+	var errs []error
+	if err := s.listener.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := os.Remove(s.sockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // mergedSecrets returns the combined secret rules from all projects.
@@ -179,7 +188,11 @@ func (s *Server) acceptLoop() {
 }
 
 func (s *Server) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("control: close conn: %v", err)
+		}
+	}()
 
 	dec := json.NewDecoder(conn)
 	enc := json.NewEncoder(conn)
