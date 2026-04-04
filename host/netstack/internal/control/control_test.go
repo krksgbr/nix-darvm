@@ -79,8 +79,10 @@ func initServer(t *testing.T) *Server {
 	// Send load_config to unblock the server.
 	enc, dec := dial(t, sock)
 	if err := enc.Encode(Request{
-		Type:   "load_config",
-		Config: &NetConfig{GuestIP: "192.168.64.2"},
+		Type:        "load_config",
+		Config:      &NetConfig{Subnet: "", GatewayIP: "", GuestIP: "192.168.64.2", GuestMAC: "", DNSServers: nil, CACertPEM: "", CAKeyPEM: "", Secrets: nil},
+		ProjectName: "",
+		Secrets:     nil,
 	}); err != nil {
 		t.Fatalf("encode load_config: %v", err)
 	}
@@ -104,6 +106,7 @@ func sendLoad(t *testing.T, sockPath, project string, secrets []SecretRule) Resp
 	enc, dec := dial(t, sockPath)
 	if err := enc.Encode(Request{
 		Type:        "load",
+		Config:      nil,
 		ProjectName: project,
 		Secrets:     secrets,
 	}); err != nil {

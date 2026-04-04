@@ -8,6 +8,7 @@ linters:
     - copyloopvar
     - errcheck
     - errorlint
+    - exhaustruct
     - exhaustive
     - gosec
     - govet
@@ -26,3 +27,7 @@ linters:
     - unused
     - wastedassign
     - wrapcheck
+  settings:
+    exhaustruct:
+      include:
+        - github.com/unbody/darvm/netstack/internal/control\.(Request|NetConfig|StatusInfo)

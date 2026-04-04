@@ -290,7 +290,10 @@ func (s *Server) handleRequest(req *Request) *Response {
 		st := s.stack
 		s.mu.Unlock()
 
-		info := &StatusInfo{Healthy: st != nil}
+		info := &StatusInfo{
+			Healthy:     st != nil,
+			SecretCount: 0,
+		}
 		if st != nil {
 			info.SecretCount = st.SecretCount()
 		}
