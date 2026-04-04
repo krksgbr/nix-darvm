@@ -26,6 +26,7 @@ linters:
     - fatcontext
     - forbidigo
     - forcetypeassert
+    - funcorder
     - ginkgolinter
     - gocheckcompilerdirectives
     - gochecknoglobals
@@ -58,6 +59,7 @@ linters:
     - modernize
     - musttag
     - nakedret
+    - nonamedreturns
     - nilerr
     - nilnesserr
     - nilnil

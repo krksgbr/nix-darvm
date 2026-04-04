@@ -13,8 +13,8 @@ type conn struct {
 	remotePort uint32
 }
 
-func (conn *conn) Read(b []byte) (n int, err error) {
-	n, err = conn.file.Read(b)
+func (conn *conn) Read(b []byte) (int, error) {
+	n, err := conn.file.Read(b)
 	if err != nil {
 		return n, fmt.Errorf("read vsock port %d: %w", conn.localPort, err)
 	}
@@ -22,8 +22,8 @@ func (conn *conn) Read(b []byte) (n int, err error) {
 	return n, nil
 }
 
-func (conn *conn) Write(b []byte) (n int, err error) {
-	n, err = conn.file.Write(b)
+func (conn *conn) Write(b []byte) (int, error) {
+	n, err := conn.file.Write(b)
 	if err != nil {
 		return n, fmt.Errorf("write vsock port %d: %w", conn.remotePort, err)
 	}

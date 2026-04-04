@@ -77,21 +77,6 @@ func (i *Interceptor) UpdateSecrets(secrets []control.SecretRule) {
 	i.mu.Unlock()
 }
 
-// secretsForHost returns the secret rules applicable to a host. Returns nil
-// if the host is not in any secret's scope.
-func (i *Interceptor) secretsForHost(host string) []control.SecretRule {
-	// Strip port if present.
-	h := host
-	if idx := strings.LastIndex(h, ":"); idx != -1 {
-		h = h[:idx]
-	}
-
-	i.mu.RLock()
-	defer i.mu.RUnlock()
-
-	return i.hostIndex[normalizeHost(h)]
-}
-
 // normalizeHost lowercases and strips trailing dots for consistent matching.
 func normalizeHost(h string) string {
 	h = strings.ToLower(h)
@@ -180,6 +165,21 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 
 	// http.Server manages the connection lifecycle (keep-alive, HTTP/2, close).
 	i.serveConn(tlsConn, "https", dstIP, dstPort, true)
+}
+
+// secretsForHost returns the secret rules applicable to a host. Returns nil
+// if the host is not in any secret's scope.
+func (i *Interceptor) secretsForHost(host string) []control.SecretRule {
+	// Strip port if present.
+	h := host
+	if idx := strings.LastIndex(h, ":"); idx != -1 {
+		h = h[:idx]
+	}
+
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	return i.hostIndex[normalizeHost(h)]
 }
 
 // replaceSecrets performs single-pass placeholder → real value substitution in

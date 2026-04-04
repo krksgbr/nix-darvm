@@ -266,13 +266,6 @@ func (ns *Stack) UpdateSecrets(secrets []control.SecretRule) {
 	ns.interceptor.UpdateSecrets(secrets)
 }
 
-func (ns *Stack) isClosed() bool {
-	ns.mu.Lock()
-	defer ns.mu.Unlock()
-
-	return ns.closed
-}
-
 // Close tears down the network stack.
 func (ns *Stack) Close() error {
 	ns.mu.Lock()
@@ -292,6 +285,13 @@ func (ns *Stack) Close() error {
 	ns.gstack.Close()
 
 	return nil
+}
+
+func (ns *Stack) isClosed() bool {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+
+	return ns.closed
 }
 
 func (ns *Stack) handleTCPConnection(r *tcp.ForwarderRequest) {
