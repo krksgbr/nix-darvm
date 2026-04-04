@@ -66,6 +66,7 @@ only_rules:
   - explicit_self
   - fatal_error_message
   - file_length
+  - file_types_order
   - file_name
   - file_header
   - file_name_no_space
@@ -184,6 +185,7 @@ only_rules:
   - superfluous_disable_command
   - superfluous_else
   - switch_case_alignment
+  - switch_case_on_newline
   - syntactic_sugar
   - test_case_accessibility
   - todo
@@ -194,6 +196,7 @@ only_rules:
   - trailing_whitespace
   - toggle_bool
   - type_body_length
+  - type_contents_order
   - type_name
   - typesafe_array_init
   - unavailable_condition
@@ -233,3 +236,15 @@ line_length:
 opening_brace:
   ignore_multiline_statement_conditions: true
   ignore_multiline_function_signatures: true
+
+file_types_order:
+  order:
+    - [main_type, supporting_type]
+    - [extension, preview_provider, library_content_provider]
+
+type_contents_order:
+  order:
+    - [case]
+    - [type_alias, associated_type, subtype, type_property, instance_property, ib_inspectable, ib_outlet, initializer, type_method]
+    - [view_life_cycle_method, ib_action, ib_segue_action, other_method, subscript]
+    - [deinitializer]

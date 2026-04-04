@@ -16,6 +16,16 @@ enum MountTransport: String, Codable {
 struct AbsolutePath: CustomStringConvertible {
   let rawValue: String
 
+  var description: String { rawValue }
+
+  /// Parent directory.
+  var deletingLastComponent: Self {
+    Self(
+      trusted:
+        URL(fileURLWithPath: rawValue).deletingLastPathComponent().path
+    )
+  }
+
   init(_ path: String) throws {
     guard !path.isEmpty, path.hasPrefix("/") else {
       throw MountConfigError.relativePath(path)
@@ -27,16 +37,6 @@ struct AbsolutePath: CustomStringConvertible {
   private init(trusted: String) {
     self.rawValue = trusted
   }
-
-  var description: String { rawValue }
-
-  /// Parent directory.
-  var deletingLastComponent: Self {
-    Self(
-      trusted:
-        URL(fileURLWithPath: rawValue).deletingLastPathComponent().path
-    )
-  }
 }
 
 /// A VirtioFS device tag. Must be non-empty and not collide with the macOS
@@ -46,14 +46,14 @@ struct MountTag: CustomStringConvertible {
 
   let rawValue: String
 
+  var description: String { rawValue }
+
   init(_ tag: String) throws {
     guard !tag.isEmpty, tag != Self.macOSAutomount else {
       throw MountConfigError.invalidTag(tag)
     }
     self.rawValue = tag
   }
-
-  var description: String { rawValue }
 }
 
 /// Configuration for a host↔guest mount.
@@ -113,8 +113,11 @@ enum MountConfigError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
-    case .relativePath(let path): return "Path must be absolute: \(path)"
-    case .invalidTag(let tag): return "Invalid mount tag: \(tag)"
+    case .relativePath(let path):
+      return "Path must be absolute: \(path)"
+
+    case .invalidTag(let tag):
+      return "Invalid mount tag: \(tag)"
     }
   }
 }

@@ -61,7 +61,8 @@ enum RunnerError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
-    case .vmNotRunning: return "VM is not running"
+    case .vmNotRunning:
+      return "VM is not running"
     }
   }
 }

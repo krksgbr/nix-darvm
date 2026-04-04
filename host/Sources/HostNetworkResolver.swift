@@ -27,6 +27,41 @@ enum HostNetworkResolver {
     }
   }
 
+  private struct IPv4: Equatable {
+    let rawValue: UInt32
+
+    init(_ string: String) throws {
+      var addr = in_addr()
+      guard inet_pton(AF_INET, string, &addr) == 1 else {
+        throw Error.noMatchingInterface(string)
+      }
+      rawValue = UInt32(bigEndian: addr.s_addr)
+    }
+
+    init(sockaddrIn: sockaddr_in) {
+      rawValue = UInt32(bigEndian: sockaddrIn.sin_addr.s_addr)
+    }
+
+    var string: String {
+      "\( (rawValue >> 24) & 0xff ).\( (rawValue >> 16) & 0xff ).\( (rawValue >> 8) & 0xff ).\( rawValue & 0xff )"
+    }
+
+    var isGlobalUnicast: Bool {
+      let firstOctet = (rawValue >> 24) & 0xff
+      if firstOctet == 127 || firstOctet == 0 {
+        return false
+      }
+      if (rawValue & 0xffff_0000) == 0xa9fe_0000 {
+        return false  // 169.254.0.0/16
+      }
+      return true
+    }
+
+    func networkAddress(mask: Self) -> UInt32 {
+      rawValue & mask.rawValue
+    }
+  }
+
   static func resolve(reachableFrom guestIP: GuestIP) throws -> Resolution {
     var ifaddrPtr: UnsafeMutablePointer<ifaddrs>?
     guard getifaddrs(&ifaddrPtr) == 0, let first = ifaddrPtr else {
@@ -74,40 +109,5 @@ enum HostNetworkResolver {
     }
 
     throw Error.noMatchingInterface(guestIP.rawValue)
-  }
-
-  private struct IPv4: Equatable {
-    let rawValue: UInt32
-
-    init(_ string: String) throws {
-      var addr = in_addr()
-      guard inet_pton(AF_INET, string, &addr) == 1 else {
-        throw Error.noMatchingInterface(string)
-      }
-      rawValue = UInt32(bigEndian: addr.s_addr)
-    }
-
-    init(sockaddrIn: sockaddr_in) {
-      rawValue = UInt32(bigEndian: sockaddrIn.sin_addr.s_addr)
-    }
-
-    var isGlobalUnicast: Bool {
-      let firstOctet = (rawValue >> 24) & 0xff
-      if firstOctet == 127 || firstOctet == 0 {
-        return false
-      }
-      if (rawValue & 0xffff_0000) == 0xa9fe_0000 {
-        return false  // 169.254.0.0/16
-      }
-      return true
-    }
-
-    func networkAddress(mask: Self) -> UInt32 {
-      rawValue & mask.rawValue
-    }
-
-    var string: String {
-      "\( (rawValue >> 24) & 0xff ).\( (rawValue >> 16) & 0xff ).\( (rawValue >> 8) & 0xff ).\( rawValue & 0xff )"
-    }
   }
 }

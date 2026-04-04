@@ -44,28 +44,6 @@ enum ControlSocketResponse: Codable {
     case services = "services"
   }
 
-  func encode(to encoder: Encoder) throws {
-    var container = encoder.container(keyedBy: CodingKeys.self)
-    switch self {
-    case .status(let payload):
-      try container.encode(payload.running, forKey: .running)
-      try container.encodeIfPresent(payload.ipAddress, forKey: .ipAddress)
-      try container.encodeIfPresent(payload.phase, forKey: .phase)
-      try container.encodeIfPresent(payload.runId, forKey: .runId)
-      try container.encodeIfPresent(payload.phaseEnteredAt, forKey: .phaseEnteredAt)
-      try container.encodeIfPresent(payload.phaseError, forKey: .phaseError)
-
-    case .guestHealth(let payload):
-      try container.encode("guestHealth", forKey: .type)
-      try container.encode(payload.mounts, forKey: .mounts)
-      try container.encode(payload.activation, forKey: .activation)
-      try container.encode(payload.services, forKey: .services)
-
-    case .error(let message):
-      try container.encode(message, forKey: .error)
-    }
-  }
-
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     if let error = try container.decodeIfPresent(String.self, forKey: .error) {
@@ -102,6 +80,28 @@ enum ControlSocketResponse: Codable {
       )
     }
   }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    switch self {
+    case .status(let payload):
+      try container.encode(payload.running, forKey: .running)
+      try container.encodeIfPresent(payload.ipAddress, forKey: .ipAddress)
+      try container.encodeIfPresent(payload.phase, forKey: .phase)
+      try container.encodeIfPresent(payload.runId, forKey: .runId)
+      try container.encodeIfPresent(payload.phaseEnteredAt, forKey: .phaseEnteredAt)
+      try container.encodeIfPresent(payload.phaseError, forKey: .phaseError)
+
+    case .guestHealth(let payload):
+      try container.encode("guestHealth", forKey: .type)
+      try container.encode(payload.mounts, forKey: .mounts)
+      try container.encode(payload.activation, forKey: .activation)
+      try container.encode(payload.services, forKey: .services)
+
+    case .error(let message):
+      try container.encode(message, forKey: .error)
+    }
+  }
 }
 
 enum ControlSocketClientError: Error, CustomStringConvertible {
@@ -113,11 +113,20 @@ enum ControlSocketClientError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
-    case .socketNotFound: return "Control socket not found (VM not running?)"
-    case .connectFailed(let reason): return "Control socket connect failed: \(reason)"
-    case .sendFailed: return "Failed to send command to control socket"
-    case .readTimeout: return "Control socket read timed out"
-    case .decodeFailed: return "Failed to decode control socket response"
+    case .socketNotFound:
+      return "Control socket not found (VM not running?)"
+
+    case .connectFailed(let reason):
+      return "Control socket connect failed: \(reason)"
+
+    case .sendFailed:
+      return "Failed to send command to control socket"
+
+    case .readTimeout:
+      return "Control socket read timed out"
+
+    case .decodeFailed:
+      return "Failed to decode control socket response"
     }
   }
 }
@@ -130,10 +139,17 @@ enum ControlSocketError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
-    case .socketCreationFailed: return "Failed to create control socket"
-    case .pathTooLong: return "Control socket path too long"
-    case .bindFailed: return "Failed to bind control socket"
-    case .listenFailed: return "Failed to listen on control socket"
+    case .socketCreationFailed:
+      return "Failed to create control socket"
+
+    case .pathTooLong:
+      return "Control socket path too long"
+
+    case .bindFailed:
+      return "Failed to bind control socket"
+
+    case .listenFailed:
+      return "Failed to listen on control socket"
     }
   }
 }

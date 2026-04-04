@@ -22,6 +22,14 @@ final class AgentProxy {
   private let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
   private var serverTask: Task<Void, Error>?
 
+  /// Holds a vsock connection and its raw fd together.
+  /// The connection object MUST be retained for the session duration —
+  /// VZVirtioSocketConnection tears down the channel on dealloc.
+  struct VsockHandle: @unchecked Sendable {
+    let connection: VZVirtioSocketConnection
+    let fileDescriptor: Int32
+  }
+
   init(
     virtualMachine: VZVirtualMachine,
     socketPath: String = defaultPath,
@@ -49,14 +57,6 @@ final class AgentProxy {
 
   func cleanup() {
     unlink(socketPath)
-  }
-
-  /// Holds a vsock connection and its raw fd together.
-  /// The connection object MUST be retained for the session duration —
-  /// VZVirtioSocketConnection tears down the channel on dealloc.
-  struct VsockHandle: @unchecked Sendable {
-    let connection: VZVirtioSocketConnection
-    let fileDescriptor: Int32
   }
 
   /// Connect to the VM vsock device.

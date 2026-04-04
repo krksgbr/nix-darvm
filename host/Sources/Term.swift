@@ -54,7 +54,8 @@ enum TermError: Error, CustomStringConvertible {
 
   var description: String {
     switch self {
-    case .operationFailed(let msg): return msg
+    case .operationFailed(let msg):
+      return msg
     }
   }
 }

@@ -13,6 +13,7 @@ final class VsockDaemonBridge {
   let socketDevice: VZVirtioSocketDevice
   let listenPort: UInt32
   let daemonSocketPath: String
+  private var listenerDelegate: ListenerDelegate?
 
   init(
     virtualMachine: VZVirtualMachine,
@@ -37,8 +38,6 @@ final class VsockDaemonBridge {
     print("Nix daemon bridge listening on vsock port \(listenPort)")
     fflush(stdout)
   }
-
-  private var listenerDelegate: ListenerDelegate?
 
   /// Handle an incoming vsock connection from the guest.
   /// Blocks until the proxy session ends — must be called from a background thread.
@@ -155,6 +154,17 @@ final class VsockDaemonBridge {
   }
 }
 
+enum BridgeError: Error, CustomStringConvertible {
+  case noSocketDevice
+
+  var description: String {
+    switch self {
+    case .noSocketDevice:
+      return "No VZVirtioSocketDevice found on the VM"
+    }
+  }
+}
+
 // MARK: - VZVirtioSocketListenerDelegate
 
 extension VsockDaemonBridge {
@@ -175,16 +185,6 @@ extension VsockDaemonBridge {
         self.bridge.handleConnection(conn)
       }
       return true
-    }
-  }
-}
-
-enum BridgeError: Error, CustomStringConvertible {
-  case noSocketDevice
-
-  var description: String {
-    switch self {
-    case .noSocketDevice: return "No VZVirtioSocketDevice found on the VM"
     }
   }
 }

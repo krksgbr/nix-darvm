@@ -70,61 +70,6 @@ extension AgentClient {
     }
   }
 
-  func execCaptureOutput(command: [String], cwd: String? = nil) async throws -> String? {
-    let cmdName = command[0]
-    let cmdArgs = Array(command.dropFirst())
-    let workDir = cwd
-
-    return try await withAgentClient { agent in
-      try await agent.exec(
-        requestProducer: { writer in
-          var cmd = Darvm_Command()
-          cmd.name = cmdName
-          cmd.args = cmdArgs
-          cmd.interactive = false
-          cmd.tty = false
-          if let workDir { cmd.workingDirectory = workDir }
-
-          var req = Darvm_ExecRequest()
-          req.type = .command(cmd)
-          try await writer.write(req)
-        },
-        onResponse: { response in
-          switch response.accepted {
-          case .success(let contents):
-            var output = Data()
-            for try await part in contents.bodyParts {
-              switch part {
-              case .message(let msg):
-                switch msg.type {
-                case .standardOutput(let chunk):
-                  output.append(chunk.data)
-
-                case .exit(let exit):
-                  guard exit.code == 0 else {
-                    return nil
-                  }
-                  return String(data: output, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-
-                default:
-                  break
-                }
-
-              case .trailingMetadata:
-                break
-              }
-            }
-            return nil
-
-          case .failure:
-            return nil
-          }
-        }
-      )
-    }
-  }
-
   static func processExecStream(
     _ bodyParts: RPCAsyncSequence<
       StreamingClientResponse<Darvm_ExecResponse>.Contents.BodyPart, any Error
@@ -218,6 +163,61 @@ extension AgentClient {
       var req = Darvm_ExecRequest()
       req.type = .terminalResize(size)
       try await writer.write(req)
+    }
+  }
+
+  func execCaptureOutput(command: [String], cwd: String? = nil) async throws -> String? {
+    let cmdName = command[0]
+    let cmdArgs = Array(command.dropFirst())
+    let workDir = cwd
+
+    return try await withAgentClient { agent in
+      try await agent.exec(
+        requestProducer: { writer in
+          var cmd = Darvm_Command()
+          cmd.name = cmdName
+          cmd.args = cmdArgs
+          cmd.interactive = false
+          cmd.tty = false
+          if let workDir { cmd.workingDirectory = workDir }
+
+          var req = Darvm_ExecRequest()
+          req.type = .command(cmd)
+          try await writer.write(req)
+        },
+        onResponse: { response in
+          switch response.accepted {
+          case .success(let contents):
+            var output = Data()
+            for try await part in contents.bodyParts {
+              switch part {
+              case .message(let msg):
+                switch msg.type {
+                case .standardOutput(let chunk):
+                  output.append(chunk.data)
+
+                case .exit(let exit):
+                  guard exit.code == 0 else {
+                    return nil
+                  }
+                  return String(data: output, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                default:
+                  break
+                }
+
+              case .trailingMetadata:
+                break
+              }
+            }
+            return nil
+
+          case .failure:
+            return nil
+          }
+        }
+      )
     }
   }
 }

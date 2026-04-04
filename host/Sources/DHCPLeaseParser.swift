@@ -5,6 +5,11 @@ import Foundation
 enum DHCPLeaseParser {
   private static let leasePath = "/var/db/dhcpd_leases"
 
+  private struct Lease {
+    let mac: String
+    let ipAddress: String
+  }
+
   static func getIPAddress(forMAC macAddress: String) -> GuestIP? {
     let normalized = normalize(mac: macAddress)
 
@@ -20,11 +25,6 @@ enum DHCPLeaseParser {
 
     // Fall back to ARP table (bridged mode)
     return getIPFromARP(forMAC: normalized)
-  }
-
-  private struct Lease {
-    let mac: String
-    let ipAddress: String
   }
 
   private static func parseDHCPLeases(_ contents: String) -> [Lease] {
