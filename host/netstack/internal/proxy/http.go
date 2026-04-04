@@ -27,6 +27,15 @@ import (
 
 type connInfoKey struct{}
 
+const (
+	tlsRecordHeaderLength   = 5
+	maxTLSRecordBodyLength  = 16384
+	handshakeTimeout        = 30 * time.Second
+	passthroughDialTimeout  = 30 * time.Second
+	serverReadHeaderTimeout = 10 * time.Second
+	tlsRecordLengthShift    = 8
+)
+
 var errSNIExtracted = errors.New("sni extracted")
 
 type connInfo struct {
@@ -124,7 +133,7 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 
 	// Peek at the ClientHello to extract SNI before deciding whether to MITM.
 	// Max TLS record body is 16384 bytes; +5 for the record header.
-	br := bufio.NewReaderSize(guestConn, 16384+5)
+	br := bufio.NewReaderSize(guestConn, maxTLSRecordBodyLength+tlsRecordHeaderLength)
 	serverName := peekSNI(br)
 
 	// Wrap so peeked bytes are replayed transparently to downstream consumers.
@@ -154,7 +163,7 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 		NextProtos: []string{"h2", "http/1.1"},
 	})
 
-	handshakeCtx, cancelHandshake := context.WithTimeout(context.Background(), 30*time.Second)
+	handshakeCtx, cancelHandshake := context.WithTimeout(context.Background(), handshakeTimeout)
 	defer cancelHandshake()
 
 	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
@@ -222,7 +231,7 @@ func (i *Interceptor) replaceSecrets(req *http.Request, secrets []control.Secret
 // tcpPassthrough does a bidirectional byte relay without any inspection.
 func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort int) {
 	target := net.JoinHostPort(dstIP, strconv.Itoa(dstPort))
-	dialer := &net.Dialer{Timeout: 30 * time.Second}
+	dialer := &net.Dialer{Timeout: passthroughDialTimeout}
 
 	realConn, err := dialer.DialContext(context.Background(), "tcp", target)
 	if err != nil {
@@ -271,7 +280,7 @@ func (i *Interceptor) serveConn(conn net.Conn, scheme, dstIP string, dstPort int
 
 	srv := &http.Server{
 		Handler:           i.proxy,
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			if state == http.StateClosed {
 				doneOnce.Do(func() { close(done) })
@@ -361,18 +370,18 @@ func (l *singleConnListener) Addr() net.Addr { return l.conn.LocalAddr() }
 // data isn't a TLS handshake, the ClientHello is malformed, or has no SNI.
 func peekSNI(br *bufio.Reader) string {
 	// Peek at TLS record header: 1 byte type + 2 bytes version + 2 bytes length.
-	hdr, err := br.Peek(5)
+	hdr, err := br.Peek(tlsRecordHeaderLength)
 	if err != nil || hdr[0] != 0x16 { // 0x16 = TLS Handshake
 		return ""
 	}
 
-	recordLen := int(hdr[3])<<8 | int(hdr[4])
-	if recordLen > 16384 {
+	recordLen := int(hdr[3])<<tlsRecordLengthShift | int(hdr[4])
+	if recordLen > maxTLSRecordBodyLength {
 		return ""
 	}
 
 	// Peek full TLS record (header + body) without consuming.
-	record, err := br.Peek(5 + recordLen)
+	record, err := br.Peek(tlsRecordHeaderLength + recordLen)
 	if err != nil {
 		return ""
 	}

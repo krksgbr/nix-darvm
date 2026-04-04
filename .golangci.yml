@@ -59,6 +59,7 @@ linters:
     - mirror
     - misspell
     - modernize
+    - mnd
     - musttag
     - nestif
     - nakedret

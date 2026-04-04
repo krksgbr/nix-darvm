@@ -16,6 +16,11 @@ import (
 	"time"
 )
 
+const (
+	certificateSerialBits = 62
+	leafCertificateTTL    = 24 * time.Hour
+)
+
 var (
 	errMissingCAPEM      = errors.New("missing CA cert or key PEM")
 	errDecodeCACertPEM   = errors.New("failed to decode CA cert PEM")
@@ -45,7 +50,7 @@ func GenerateCA() (*CAPool, string, error) {
 		return nil, "", fmt.Errorf("generate CA key: %w", err)
 	}
 
-	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<certificateSerialBits))
 	template := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "DVM Sandbox CA"},
@@ -143,9 +148,9 @@ func (p *CAPool) generateLeafCert(serverName string) (*tls.Certificate, time.Tim
 		return nil, time.Time{}, fmt.Errorf("generate leaf key: %w", err)
 	}
 
-	serialNumber, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+	serialNumber, _ := rand.Int(rand.Reader, big.NewInt(1<<certificateSerialBits))
 
-	notAfter := time.Now().Add(24 * time.Hour)
+	notAfter := time.Now().Add(leafCertificateTTL)
 	template := &x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{

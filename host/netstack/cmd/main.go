@@ -18,6 +18,8 @@ import (
 	"github.com/unbody/darvm/netstack/internal/stack"
 )
 
+const defaultMTU = 1500
+
 func main() {
 	frameFD := flag.Int("frame-fd", -1, "file descriptor for the socketpair carrying raw Ethernet frames")
 	controlSock := flag.String("control-sock", "", "path to the Unix domain control socket")
@@ -85,7 +87,7 @@ func main() {
 		GatewayIP:  cfg.GatewayIP,
 		GuestIP:    cfg.GuestIP,
 		GuestMAC:   cfg.GuestMAC,
-		MTU:        1500,
+		MTU:        defaultMTU,
 		DNSServers: cfg.DNSServers,
 		Secrets:    cfg.Secrets,
 		CACertPEM:  cfg.CACertPEM,

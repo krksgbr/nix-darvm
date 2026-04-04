@@ -10,6 +10,11 @@ import (
 	pb "github.com/unbody/darvm/agent/gen"
 )
 
+const (
+	mountSplitParts   = 2
+	serviceFieldCount = 3
+)
+
 func (rpc *RPC) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResponse, error) {
 	return &pb.StatusResponse{
 		Mounts:     gatherMounts(ctx),
@@ -33,8 +38,8 @@ func gatherMounts(ctx context.Context) []string {
 			continue
 		}
 
-		parts := strings.SplitN(line, " on ", 2)
-		if len(parts) < 2 {
+		parts := strings.SplitN(line, " on ", mountSplitParts)
+		if len(parts) < mountSplitParts {
 			continue
 		}
 
@@ -72,7 +77,7 @@ func gatherServices(ctx context.Context) map[string]string {
 		}
 
 		fields := strings.Fields(line)
-		if len(fields) < 3 {
+		if len(fields) < serviceFieldCount {
 			continue
 		}
 

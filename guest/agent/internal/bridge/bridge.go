@@ -18,10 +18,12 @@ import (
 )
 
 const (
-	defaultListenPath = "/tmp/nix-daemon.sock"
-	defaultVsockPort  = 6174
-	hostCID           = 2 // VMADDR_CID_HOST
-	bufSize           = 32768
+	defaultListenPath      = "/tmp/nix-daemon.sock"
+	defaultVsockPort       = 6174
+	hostCID                = 2 // VMADDR_CID_HOST
+	bufSize                = 32768
+	bridgeSocketPermission = 0o666
+	copyDirectionCount     = 2
 )
 
 type Bridge struct {
@@ -47,7 +49,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 	}
 	defer closeListener(ln)
 
-	if err := os.Chmod(b.ListenPath, 0666); err != nil { //nolint:gosec // Guest user processes must reach the bridge socket without elevating to root.
+	if err := os.Chmod(b.ListenPath, bridgeSocketPermission); err != nil {
 		return fmt.Errorf("chmod bridge socket: %w", err)
 	}
 
@@ -101,7 +103,7 @@ func (b *Bridge) handleConn(local net.Conn) {
 	defer closeFile(remote)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(copyDirectionCount)
 
 	// local → remote. When this direction closes, close remote to unblock
 	// the remote → local goroutine (which may be blocked on remote.Read).

@@ -32,6 +32,14 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
+const (
+	tcpForwarderMaxInFlight = 65535
+	httpPort                = 80
+	httpsPort               = 443
+	dnsPort                 = 53
+	passthroughBufferSize   = 32 * 1024
+)
+
 var (
 	errCreateNIC  = errors.New("create NIC")
 	errAddAddress = errors.New("add protocol address")
@@ -185,7 +193,7 @@ func New(cfg *Config) (*Stack, error) {
 	}
 
 	// TCP forwarder: intercept credentialed hosts, passthrough everything else
-	tcpForwarder := tcp.NewForwarder(s, 0, 65535, ns.handleTCPConnection)
+	tcpForwarder := tcp.NewForwarder(s, 0, tcpForwarderMaxInFlight, ns.handleTCPConnection)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 
 	// No UDP forwarder — DNS and DHCP are handled by their own bound endpoints
@@ -267,9 +275,9 @@ func (ns *Stack) handleTCPConnection(r *tcp.ForwarderRequest) {
 	guestConn := gonet.NewTCPConn(&wq, ep)
 
 	switch dstPort {
-	case 80:
+	case httpPort:
 		go ns.interceptor.HandleHTTP(guestConn, dstIP, int(dstPort))
-	case 443:
+	case httpsPort:
 		go ns.interceptor.HandleHTTPS(guestConn, dstIP, int(dstPort))
 	default:
 		go ns.handlePassthrough(guestConn, dstIP, int(dstPort))
@@ -298,12 +306,12 @@ func (ns *Stack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int
 }
 
 func startDNSServer(s *gstack.Stack, gatewayAddr tcpip.Address, zones []types.Zone) error {
-	udpConn, err := gonet.DialUDP(s, &tcpip.FullAddress{NIC: 1, Addr: gatewayAddr, Port: 53}, nil, ipv4.ProtocolNumber)
+	udpConn, err := gonet.DialUDP(s, &tcpip.FullAddress{NIC: 1, Addr: gatewayAddr, Port: dnsPort}, nil, ipv4.ProtocolNumber)
 	if err != nil {
 		return fmt.Errorf("dns udp bind: %w", err)
 	}
 
-	tcpLn, err := gonet.ListenTCP(s, tcpip.FullAddress{NIC: 1, Addr: gatewayAddr, Port: 53}, ipv4.ProtocolNumber)
+	tcpLn, err := gonet.ListenTCP(s, tcpip.FullAddress{NIC: 1, Addr: gatewayAddr, Port: dnsPort}, ipv4.ProtocolNumber)
 	if err != nil {
 		return fmt.Errorf("dns tcp bind: %w", err)
 	}
@@ -345,7 +353,7 @@ func closeWithLog(operation string, closer io.Closer) {
 }
 
 func proxyPassthroughStream(srcName string, src io.Reader, dstName string, dst io.Writer) {
-	buf := make([]byte, 32*1024)
+	buf := make([]byte, passthroughBufferSize)
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
