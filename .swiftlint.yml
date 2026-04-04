@@ -59,12 +59,14 @@ only_rules:
   - empty_parameters
   - empty_string
   - empty_xctest_method
+  - extension_access_modifier
   - expiring_todo
   - explicit_init
   - explicit_enum_raw_value
   - explicit_self
   - fatal_error_message
   - file_length
+  - file_name
   - file_header
   - file_name_no_space
   - final_test_case
@@ -174,6 +176,7 @@ only_rules:
   - shorthand_operator
   - sorted_first_last
   - statement_position
+  - strict_fileprivate
   - sorted_imports
   - static_operator
   - static_over_final_class
@@ -226,3 +229,7 @@ only_rules:
 line_length:
   warning: 120
   error: 120
+
+opening_brace:
+  ignore_multiline_statement_conditions: true
+  ignore_multiline_function_signatures: true
