@@ -167,7 +167,6 @@ func fileDescriptorInt(file *os.File) (int, error) {
 		return 0, fmt.Errorf("file descriptor %d exceeds int range", fd)
 	}
 
-	//nolint:gosec // The upper-bound check above ensures the conversion is safe.
 	return int(fd), nil
 }
 
@@ -180,6 +179,5 @@ func nonNegativeIntToUintptr(v int) (uintptr, error) {
 		return 0, fmt.Errorf("value %d exceeds uintptr range", v)
 	}
 
-	//nolint:gosec // The range checks above ensure the conversion is safe.
 	return uintptr(v), nil
 }

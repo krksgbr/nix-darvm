@@ -3,29 +3,93 @@ version: "2"
 linters:
   default: none
   enable:
+    - asasalint
+    - asciicheck
+    - bidichk
     - bodyclose
+    - canonicalheader
+    - containedctx
     - contextcheck
     - copyloopvar
+    - decorder
+    - dogsled
+    - dupl
+    - dupword
+    - durationcheck
     - errcheck
+    - errchkjson
+    - errname
     - errorlint
     - exhaustruct
     - exhaustive
+    - exptostd
+    - fatcontext
+    - forbidigo
+    - forcetypeassert
+    - ginkgolinter
+    - gocheckcompilerdirectives
+    - gochecknoglobals
+    - gochecknoinits
+    - gochecksumtype
+    - goconst
+    - godoclint
+    - godot
+    - godox
+    - goheader
+    - gomoddirectives
+    - gomodguard
+    - goprintffuncname
     - gosec
+    - gosmopolitan
     - govet
+    - grouper
+    - iface
+    - importas
+    - inamedparam
     - ineffassign
+    - interfacebloat
     - intrange
+    - iotamixing
+    - ireturn
+    - loggercheck
     - makezero
+    - mirror
     - misspell
     - modernize
+    - musttag
+    - nakedret
+    - nilerr
+    - nilnesserr
     - nilnil
     - noctx
+    - nolintlint
+    - nosprintfhostport
+    - paralleltest
+    - perfsprint
     - prealloc
+    - predeclared
+    - promlinter
     - protogetter
+    - reassign
+    - recvcheck
+    - rowserrcheck
+    - sloglint
+    - spancheck
+    - sqlclosecheck
     - staticcheck
+    - tagalign
+    - testableexamples
+    - testifylint
+    - thelper
+    - tparallel
     - unconvert
     - unparam
+    - unqueryvet
     - unused
+    - usestdlibvars
+    - usetesting
     - wastedassign
+    - whitespace
     - wrapcheck
   settings:
     exhaustruct:

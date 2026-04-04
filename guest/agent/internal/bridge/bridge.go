@@ -160,7 +160,6 @@ func nonNegativeIntToUintptr(v int) (uintptr, error) {
 		return 0, fmt.Errorf("value %d exceeds uintptr range", v)
 	}
 
-	//nolint:gosec // The range checks above ensure the conversion is safe.
 	return uintptr(v), nil
 }
 

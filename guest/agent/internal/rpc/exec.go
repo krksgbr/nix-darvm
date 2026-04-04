@@ -361,7 +361,6 @@ func uint32ToUint16(v uint32, field string) (uint16, error) {
 		return 0, fmt.Errorf("%s %d exceeds uint16 range", field, v)
 	}
 
-	//nolint:gosec // The upper-bound check above ensures the conversion is safe.
 	return uint16(v), nil
 }
 
@@ -370,6 +369,5 @@ func intToInt32(v int, field string) (int32, error) {
 		return 0, fmt.Errorf("%s %d exceeds int32 range", field, v)
 	}
 
-	//nolint:gosec // The range checks above ensure the conversion is safe.
 	return int32(v), nil
 }
