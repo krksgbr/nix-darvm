@@ -70,3 +70,16 @@ private struct RunningStartContext {
     let guestIP: GuestIP
     let nfsExportManager: NFSExportManager?
 }
+
+func expandTilde(in path: String) -> String {
+    guard path == "~" || path.hasPrefix("~/") else {
+        return path
+    }
+
+    let homeDirectory = FileManager.default.homeDirectoryForCurrentUser.path
+    guard path.count > 1 else {
+        return homeDirectory
+    }
+
+    return homeDirectory + path.dropFirst(1)
+}

@@ -77,7 +77,7 @@ struct HostKey: Sendable {
         }
 
         // Ensure parent directory exists
-        let dir = (path as NSString).deletingLastPathComponent
+        let dir = URL(fileURLWithPath: path).deletingLastPathComponent().path
         try FileManager.default.createDirectory(
             atPath: dir, withIntermediateDirectories: true)
 

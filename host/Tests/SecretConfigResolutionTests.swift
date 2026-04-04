@@ -193,7 +193,9 @@ final class ManifestResolveTests: XCTestCase {
 
 final class HostKeyTests: XCTestCase {
     func testLoadOrCreate_generatesNewKey() throws {
-        let dir = NSTemporaryDirectory() + "dvm-hostkey-test-\(UUID().uuidString)"
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dvm-hostkey-test-\(UUID().uuidString)")
+            .path
         let path = dir + "/placeholder.key"
         defer { try? FileManager.default.removeItem(atPath: dir) }
 
@@ -242,7 +244,7 @@ final class HostKeyTests: XCTestCase {
         _ = try HostKey.loadOrCreate(at: path)
 
         let attrs = try FileManager.default.attributesOfItem(atPath: path)
-        let perms = try XCTUnwrap(attrs[.posixPermissions] as? NSNumber).intValue
+        let perms = try XCTUnwrap(attrs[.posixPermissions] as? Int)
         XCTAssertEqual(perms, 0o600, "Key file should be owner-only (0600)")
     }
 

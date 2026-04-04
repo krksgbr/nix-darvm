@@ -142,7 +142,7 @@ extension Start {
         }
         let mountPath = shellQuote(mountPathRaw)
         let quotedPath = shellQuote(guestPath)
-        let parentDir = shellQuote((guestPath as NSString).deletingLastPathComponent)
+        let parentDir = shellQuote(URL(fileURLWithPath: guestPath).deletingLastPathComponent().path)
         return [
             "mkdir -p \(mountPath)",
             "mkdir -p \(parentDir)",

@@ -149,7 +149,9 @@ final class AgentProxy {
                 }
 
                 // Prevent vsockHandle from being optimized away before session ends
-                withExtendedLifetime(vsockHandle) {}
+                withExtendedLifetime(vsockHandle) {
+                    // Keep the vsock handle alive until the proxy session finishes.
+                }
                 DVMLog.log(level: "debug", "proxy[\(connId)]: session complete")
             }
         } catch {

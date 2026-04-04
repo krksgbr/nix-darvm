@@ -105,7 +105,7 @@ func discoverManifestPath(
         return resolved
     }
     // CWD discovery — no walking, silent skip if not found
-    let cwdManifest = (cwd as NSString).appendingPathComponent(".dvm/credentials.toml")
+    let cwdManifest = URL(fileURLWithPath: cwd).appendingPathComponent(".dvm/credentials.toml").path
     return FileManager.default.fileExists(atPath: cwdManifest) ? cwdManifest : nil
 }
 

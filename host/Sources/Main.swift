@@ -195,22 +195,20 @@ private func makeMirrorMount(
     directory: String,
     transport: MountTransport
 ) throws -> MountConfig {
-    let resolved = URL(
-        fileURLWithPath: (directory as NSString).expandingTildeInPath
-    ).standardizedFileURL.path
+    let resolved = expandTilde(in: directory)
+    let standardizedPath = URL(fileURLWithPath: resolved).standardizedFileURL.path
     return .exact(
         tag: try MountTag("mirror-\(index)"),
-        hostPath: try AbsolutePath(resolved),
-        guestPath: try AbsolutePath(resolved),
+        hostPath: try AbsolutePath(standardizedPath),
+        guestPath: try AbsolutePath(standardizedPath),
         access: .readWrite,
         transport: transport
     )
 }
 
 private func makeHomeMount(index: Int, directory: String, hostHome: String) throws -> MountConfig {
-    let hostPath = URL(
-        fileURLWithPath: (directory as NSString).expandingTildeInPath
-    ).standardizedFileURL.path
+    let expandedDirectory = expandTilde(in: directory)
+    let hostPath = URL(fileURLWithPath: expandedDirectory).standardizedFileURL.path
     let guestPath: String
     if hostPath.hasPrefix(hostHome) {
         guestPath = guestHome + hostPath.dropFirst(hostHome.count)
@@ -378,8 +376,14 @@ struct Start: AsyncParsableCommand {
             runner: configured.runner
         )
 
-        withExtendedLifetime(running.signalSources) {}
-        withExtendedLifetime(running.services.vsockBridge) {}
-        withExtendedLifetime(running.services.hostCommandBridgeBox) {}
+        withExtendedLifetime(running.signalSources) {
+            // Keep signal sources alive until the running session is torn down.
+        }
+        withExtendedLifetime(running.services.vsockBridge) {
+            // Keep the bridge alive until teardown completes.
+        }
+        withExtendedLifetime(running.services.hostCommandBridgeBox) {
+            // Keep the command bridge alive until teardown completes.
+        }
     }
 }
