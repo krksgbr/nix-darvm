@@ -4,6 +4,7 @@ linters:
   default: none
   enable:
     - bodyclose
+    - contextcheck
     - copyloopvar
     - errcheck
     - errorlint

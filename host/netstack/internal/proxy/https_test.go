@@ -233,10 +233,10 @@ func TestHTTPSPassthrough_PreservesUpstreamCert(t *testing.T) {
 	proxyAddr := startProxyListener(t, interceptor, "https", upHost, upPort)
 
 	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, network, addr string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(context.Background(), "tcp", proxyAddr)
-			},
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "tcp", proxyAddr)
+				},
 			TLSClientConfig: &tls.Config{
 				RootCAs:    upstreamRoots,
 				ServerName: "example.com",
