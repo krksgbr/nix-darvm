@@ -304,7 +304,12 @@ func (i *Interceptor) serveConn(conn net.Conn, scheme, dstIP string, dstPort int
 // rewriteRequest is the httputil.ReverseProxy Rewrite callback. It sets the
 // target URL and applies credential injection for intercepted hosts.
 func (i *Interceptor) rewriteRequest(pr *httputil.ProxyRequest) {
-	info := pr.In.Context().Value(connInfoKey{}).(*connInfo)
+	infoValue := pr.In.Context().Value(connInfoKey{})
+	info, ok := infoValue.(*connInfo)
+	if !ok || info == nil {
+		log.Printf("proxy: missing conn info in request context")
+		return
+	}
 
 	host := pr.In.Host
 	if host == "" {

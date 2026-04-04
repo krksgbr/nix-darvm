@@ -27,7 +27,11 @@ import (
 func upstreamTransport(t *testing.T, upstream *httptest.Server) *http.Transport {
 	t.Helper()
 
-	tr := upstream.Client().Transport.(*http.Transport).Clone()
+	baseTransport, ok := upstream.Client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("unexpected upstream transport type %T", upstream.Client().Transport)
+	}
+	tr := baseTransport.Clone()
 	tr.TLSClientConfig.InsecureSkipVerify = true
 
 	return tr
@@ -82,7 +86,7 @@ func TestHTTPSNoCA_PassesThroughWithoutMITM(t *testing.T) {
 		},
 	}
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://example.com/test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.com/test", nil)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -146,7 +150,7 @@ func TestHTTPSIntercept_ReplacesPlaceholderInHeader(t *testing.T) {
 	proxyAddr := startProxyListener(t, interceptor, "https", upHost, upPort)
 	client := newProxyHTTPSClient(t, proxyAddr, mitmRoots, false)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://localhost/test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://localhost/test", nil)
 	req.Header.Set("Authorization", "Bearer SANDBOX_CRED_myproj_apikey_abc123")
 
 	resp, err := client.Do(req)
@@ -194,7 +198,7 @@ func TestHTTPSIntercept_HTTP2Negotiated(t *testing.T) {
 	proxyAddr := startProxyListener(t, interceptor, "https", upHost, upPort)
 	client := newProxyHTTPSClient(t, proxyAddr, mitmRoots, true)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://localhost/h2test", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://localhost/h2test", nil)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -258,7 +262,7 @@ func TestHTTPSPassthrough_PreservesUpstreamCert(t *testing.T) {
 		},
 	}
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://example.com/passthrough", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.com/passthrough", nil)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -413,7 +417,7 @@ func TestHTTPSIntercept_SSEStreaming(t *testing.T) {
 	proxyAddr := startProxyListener(t, interceptor, "https", upHost, upPort)
 	client := newProxyHTTPSClient(t, proxyAddr, mitmRoots, false)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://localhost/sse", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://localhost/sse", nil)
 
 	resp, err := client.Do(req)
 	if err != nil {

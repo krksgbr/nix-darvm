@@ -46,7 +46,7 @@ func TestHTTPNoReplacement_PlaceholderPassesThrough(t *testing.T) {
 	proxyAddr := startProxyListener(t, interceptor, "http", upHost, upPort)
 	client := newProxyHTTPClient(t, proxyAddr)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/path", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost/path", nil)
 	req.Header.Set("Authorization", "Bearer PLACEHOLDER_TOKEN")
 
 	resp, err := client.Do(req)
@@ -95,7 +95,7 @@ func TestHTTPNonInterceptedHost_Unchanged(t *testing.T) {
 	proxyAddr := startProxyListener(t, interceptor, "http", upHost, upPort)
 	client := newProxyHTTPClient(t, proxyAddr)
 
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/path", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost/path", nil)
 	req.Header.Set("X-Custom", "preserved")
 
 	resp, err := client.Do(req)
@@ -140,7 +140,7 @@ func TestHTTPKeepAlive(t *testing.T) {
 	client := newProxyHTTPClient(t, proxyAddr)
 
 	// First request.
-	req1, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/first", nil)
+	req1, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost/first", nil)
 
 	resp1, err := client.Do(req1)
 	if err != nil {
@@ -159,7 +159,7 @@ func TestHTTPKeepAlive(t *testing.T) {
 			reused = info.Reused
 		},
 	}
-	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/second", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://localhost/second", nil)
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 
 	resp2, err := client.Do(req)
