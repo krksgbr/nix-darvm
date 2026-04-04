@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"os"
 	"sync"
@@ -46,7 +47,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 	}
 	defer closeListener(ln)
 
-	if err := os.Chmod(b.ListenPath, 0666); err != nil {
+	if err := os.Chmod(b.ListenPath, 0666); err != nil { //nolint:gosec // Guest user processes must reach the bridge socket without elevating to root.
 		return fmt.Errorf("chmod bridge socket: %w", err)
 	}
 
@@ -85,7 +86,18 @@ func (b *Bridge) handleConn(local net.Conn) {
 		return
 	}
 
-	remote := os.NewFile(uintptr(remoteFD), "vsock")
+	remoteFDValue, err := nonNegativeIntToUintptr(remoteFD)
+	if err != nil {
+		log.Printf("bridge invalid vsock fd %d: %v", remoteFD, err)
+
+		if closeErr := unix.Close(remoteFD); closeErr != nil {
+			log.Printf("bridge close invalid vsock fd=%d: %v", remoteFD, closeErr)
+		}
+
+		return
+	}
+
+	remote := os.NewFile(remoteFDValue, "vsock")
 	defer closeFile(remote)
 
 	var wg sync.WaitGroup
@@ -137,6 +149,19 @@ func dialVsockHost(port uint32) (int, error) {
 	}
 
 	return fd, nil
+}
+
+func nonNegativeIntToUintptr(v int) (uintptr, error) {
+	if v < 0 {
+		return 0, fmt.Errorf("negative value %d", v)
+	}
+
+	if uint64(v) > math.MaxUint {
+		return 0, fmt.Errorf("value %d exceeds uintptr range", v)
+	}
+
+	//nolint:gosec // The range checks above ensure the conversion is safe.
+	return uintptr(v), nil
 }
 
 func closeListener(listener net.Listener) {

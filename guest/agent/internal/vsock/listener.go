@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"os"
 
@@ -31,9 +32,25 @@ func Listen(port uint32) (net.Listener, error) {
 		return nil, fmt.Errorf("set vsock listener nonblocking on port %d: %w", port, err)
 	}
 
-	file := os.NewFile(uintptr(fd), "vsock")
+	file, err := newFileFromFD(fd, "vsock")
+	if err != nil {
+		if closeErr := unix.Close(fd); closeErr != nil {
+			log.Printf("vsock: close listener fd=%d after invalid fd conversion: %v", fd, closeErr)
+		}
 
-	if err := unix.Bind(int(file.Fd()), &unix.SockaddrVM{
+		return nil, fmt.Errorf("wrap vsock listener on port %d: %w", port, err)
+	}
+
+	fileFD, err := fileDescriptorInt(file)
+	if err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Printf("vsock: close listener file after invalid fd conversion on port %d: %v", port, closeErr)
+		}
+
+		return nil, fmt.Errorf("resolve listener fd on port %d: %w", port, err)
+	}
+
+	if err := unix.Bind(fileFD, &unix.SockaddrVM{
 		CID:  unix.VMADDR_CID_ANY,
 		Port: port,
 	}); err != nil {
@@ -44,7 +61,7 @@ func Listen(port uint32) (net.Listener, error) {
 		return nil, fmt.Errorf("bind vsock listener on port %d: %w", port, err)
 	}
 
-	if err := unix.Listen(int(file.Fd()), unix.SOMAXCONN); err != nil {
+	if err := unix.Listen(fileFD, unix.SOMAXCONN); err != nil {
 		if closeErr := file.Close(); closeErr != nil {
 			log.Printf("vsock: close listener file after listen failure on port %d: %v", port, closeErr)
 		}
@@ -59,7 +76,12 @@ func Listen(port uint32) (net.Listener, error) {
 }
 
 func (listener *listener) Accept() (net.Conn, error) {
-	fd, _, err := unix.Accept(int(listener.file.Fd()))
+	listenerFD, err := fileDescriptorInt(listener.file)
+	if err != nil {
+		return nil, fmt.Errorf("resolve listener fd on port %d: %w", listener.port, err)
+	}
+
+	fd, _, err := unix.Accept(listenerFD)
 	if err != nil {
 		return nil, fmt.Errorf("accept vsock connection on port %d: %w", listener.port, err)
 	}
@@ -72,9 +94,25 @@ func (listener *listener) Accept() (net.Conn, error) {
 		return nil, fmt.Errorf("set accepted vsock connection nonblocking on port %d: %w", listener.port, err)
 	}
 
-	file := os.NewFile(uintptr(fd), "vsock")
+	file, err := newFileFromFD(fd, "vsock")
+	if err != nil {
+		if closeErr := unix.Close(fd); closeErr != nil {
+			log.Printf("vsock: close accepted fd=%d after invalid fd conversion: %v", fd, closeErr)
+		}
 
-	peerName, err := unix.Getpeername(int(file.Fd()))
+		return nil, fmt.Errorf("wrap accepted vsock connection on port %d: %w", listener.port, err)
+	}
+
+	fileFD, err := fileDescriptorInt(file)
+	if err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Printf("vsock: close accepted file after invalid fd conversion on port %d: %v", listener.port, closeErr)
+		}
+
+		return nil, fmt.Errorf("resolve accepted fd on port %d: %w", listener.port, err)
+	}
+
+	peerName, err := unix.Getpeername(fileFD)
 	if err != nil {
 		if closeErr := file.Close(); closeErr != nil {
 			log.Printf("vsock: close accepted file after Getpeername failure on port %d: %v", listener.port, closeErr)
@@ -112,4 +150,36 @@ func (listener *listener) Close() error {
 	}
 
 	return nil
+}
+
+func newFileFromFD(fd int, name string) (*os.File, error) {
+	fdValue, err := nonNegativeIntToUintptr(fd)
+	if err != nil {
+		return nil, err
+	}
+
+	return os.NewFile(fdValue, name), nil
+}
+
+func fileDescriptorInt(file *os.File) (int, error) {
+	fd := file.Fd()
+	if fd > math.MaxInt {
+		return 0, fmt.Errorf("file descriptor %d exceeds int range", fd)
+	}
+
+	//nolint:gosec // The upper-bound check above ensures the conversion is safe.
+	return int(fd), nil
+}
+
+func nonNegativeIntToUintptr(v int) (uintptr, error) {
+	if v < 0 {
+		return 0, fmt.Errorf("negative value %d", v)
+	}
+
+	if uint64(v) > math.MaxUint {
+		return 0, fmt.Errorf("value %d exceeds uintptr range", v)
+	}
+
+	//nolint:gosec // The range checks above ensure the conversion is safe.
+	return uintptr(v), nil
 }

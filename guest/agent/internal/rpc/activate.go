@@ -27,7 +27,7 @@ func (rpc *RPC) Activate(ctx context.Context, req *pb.ActivateRequest) (*pb.Acti
 		profilePath := "/nix/var/nix/profiles/system"
 		log.Printf("activate: updating profile symlink %s -> %s", profilePath, path)
 
-		cmd := exec.CommandContext(ctx, "sudo", "ln", "-sfn", path, profilePath)
+		cmd := exec.CommandContext(ctx, "sudo", "ln", "-sfn", path, profilePath) //nolint:gosec // Activation is intentionally restricted to validated /nix/store paths.
 		if err := cmd.Run(); err != nil {
 			log.Printf("activate: profile symlink failed: %v", err)
 
@@ -41,7 +41,7 @@ func (rpc *RPC) Activate(ctx context.Context, req *pb.ActivateRequest) (*pb.Acti
 	activateScript := path + "/activate"
 	log.Printf("activate: running %s", activateScript)
 
-	cmd := exec.CommandContext(ctx, "sudo", activateScript)
+	cmd := exec.CommandContext(ctx, "sudo", activateScript) //nolint:gosec // Activation is intentionally restricted to validated /nix/store closures.
 	cmd.Stdout = os.Stdout
 
 	cmd.Stderr = os.Stderr

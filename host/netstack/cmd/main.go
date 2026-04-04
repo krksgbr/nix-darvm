@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/signal"
@@ -38,7 +39,12 @@ func main() {
 
 	// Wrap the inherited FD into a net.Conn immediately to prevent the GC
 	// from finalizing the os.File and closing the FD before we use it.
-	frameFile := os.NewFile(uintptr(*frameFD), "frame-fd")
+	frameFDValue, err := nonNegativeIntToUintptr(*frameFD)
+	if err != nil {
+		log.Fatalf("invalid frame FD %d: %v", *frameFD, err)
+	}
+
+	frameFile := os.NewFile(frameFDValue, "frame-fd")
 	if frameFile == nil {
 		log.Fatal("failed to open frame FD")
 	}
@@ -110,4 +116,17 @@ func main() {
 	case <-ctrl.ShutdownCh():
 		log.Println("shutdown requested via control socket")
 	}
+}
+
+func nonNegativeIntToUintptr(v int) (uintptr, error) {
+	if v < 0 {
+		return 0, fmt.Errorf("negative value %d", v)
+	}
+
+	if uint64(v) > math.MaxUint {
+		return 0, fmt.Errorf("value %d exceeds uintptr range", v)
+	}
+
+	//nolint:gosec // The range checks above ensure the conversion is safe.
+	return uintptr(v), nil
 }

@@ -525,7 +525,7 @@ func tlsClientHelloBytes(t *testing.T, serverName string) []byte {
 
 	tlsClient := tls.Client(clientConn, &tls.Config{
 		ServerName:         serverName,
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, //nolint:gosec // This test intentionally captures a ClientHello without verifying the peer.
 	})
 	_ = tlsClient.HandshakeContext(context.Background()) // expected to fail; we only need the ClientHello bytes
 

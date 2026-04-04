@@ -51,13 +51,8 @@ func NewInterceptor(secrets []control.SecretRule, caPool *CAPool) *Interceptor {
 	i.proxy = &httputil.ReverseProxy{
 		Rewrite:       i.rewriteRequest,
 		FlushInterval: -1, // immediate flush — no buffering surprises for SSE/streaming
-		ErrorHandler: func(w http.ResponseWriter, req *http.Request, err error) {
-			host := req.Host
-			if host == "" {
-				host = req.URL.Host
-			}
-
-			log.Printf("proxy error: %s: %v", host, err)
+		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			log.Printf("proxy error forwarding request: %v", err)
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}
@@ -275,7 +270,8 @@ func (i *Interceptor) serveConn(conn net.Conn, scheme, dstIP string, dstPort int
 	ln := &singleConnListener{conn: conn, done: done}
 
 	srv := &http.Server{
-		Handler: i.proxy,
+		Handler:           i.proxy,
+		ReadHeaderTimeout: 10 * time.Second,
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			if state == http.StateClosed {
 				doneOnce.Do(func() { close(done) })

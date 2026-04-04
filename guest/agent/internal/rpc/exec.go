@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"os/user"
@@ -70,7 +71,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 
 	var cmd *exec.Cmd
 	if command.GetName() == "sudo" {
-		cmd = exec.CommandContext(stream.Context(), command.GetName(), command.GetArgs()...)
+		cmd = exec.CommandContext(stream.Context(), command.GetName(), command.GetArgs()...) //nolint:gosec // Exec is an explicit remote command execution API.
 		if command.GetWorkingDirectory() != "" {
 			cmd.Dir = command.GetWorkingDirectory()
 		}
@@ -97,10 +98,10 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 		}
 
 		args := []string{"-iu", execUser, "--", "sh", "-c", shellCmd}
-		cmd = exec.CommandContext(stream.Context(), "sudo", args...)
+		cmd = exec.CommandContext(stream.Context(), "sudo", args...) //nolint:gosec // Exec is an explicit remote command execution API.
 	} else {
 		args := append([]string{"-iu", execUser, "--", command.GetName()}, command.GetArgs()...)
-		cmd = exec.CommandContext(stream.Context(), "sudo", args...)
+		cmd = exec.CommandContext(stream.Context(), "sudo", args...) //nolint:gosec // Exec is an explicit remote command execution API.
 	}
 
 	var (
@@ -110,10 +111,23 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	)
 
 	if command.GetTty() {
+		rows, err := uint32ToUint16(command.GetTerminalSize().GetRows(), "initial terminal rows")
+		if err != nil {
+			return err
+		}
+
+		cols, err := uint32ToUint16(command.GetTerminalSize().GetCols(), "initial terminal cols")
+		if err != nil {
+			return err
+		}
+
 		ptmx, err = pty.StartWithSize(cmd, &pty.Winsize{
-			Rows: uint16(command.GetTerminalSize().GetRows()),
-			Cols: uint16(command.GetTerminalSize().GetCols()),
+			Rows: rows,
+			Cols: cols,
 		})
+		if err != nil {
+			return fmt.Errorf("start command %s: %w", formatCommandAndArgs(command.GetName(), command.GetArgs()), err)
+		}
 		if command.GetInteractive() {
 			stdin = ptmx
 		}
@@ -138,11 +152,9 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 			return fmt.Errorf("open stderr pipe: %w", err)
 		}
 
-		err = cmd.Start()
-	}
-
-	if err != nil {
-		return fmt.Errorf("start command %s: %w", formatCommandAndArgs(command.GetName(), command.GetArgs()), err)
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start command %s: %w", formatCommandAndArgs(command.GetName(), command.GetArgs()), err)
+		}
 	}
 
 	if ptmx != nil {
@@ -201,9 +213,23 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 					continue
 				}
 
+				rows, err := uint32ToUint16(typed.TerminalResize.GetRows(), "resize terminal rows")
+				if err != nil {
+					fromClientErrCh <- err
+
+					return
+				}
+
+				cols, err := uint32ToUint16(typed.TerminalResize.GetCols(), "resize terminal cols")
+				if err != nil {
+					fromClientErrCh <- err
+
+					return
+				}
+
 				if err := pty.Setsize(ptmx, &pty.Winsize{
-					Rows: uint16(typed.TerminalResize.GetRows()),
-					Cols: uint16(typed.TerminalResize.GetCols()),
+					Rows: rows,
+					Cols: cols,
 				}); err != nil {
 					fromClientErrCh <- fmt.Errorf("resize exec terminal: %w", err)
 
@@ -281,7 +307,10 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	if err := cmd.Wait(); err != nil {
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
-			exitCode = int32(exitError.ExitCode())
+			exitCode, err = intToInt32(exitError.ExitCode(), "command exit code")
+			if err != nil {
+				return err
+			}
 		} else {
 			return fmt.Errorf("wait for command %s: %w", formatCommandAndArgs(command.GetName(), command.GetArgs()), err)
 		}
@@ -325,4 +354,22 @@ func formatCommandAndArgs(name string, args []string) string {
 	}
 
 	return fmt.Sprintf("[%s]", strings.Join(quoted, ", "))
+}
+
+func uint32ToUint16(v uint32, field string) (uint16, error) {
+	if v > math.MaxUint16 {
+		return 0, fmt.Errorf("%s %d exceeds uint16 range", field, v)
+	}
+
+	//nolint:gosec // The upper-bound check above ensures the conversion is safe.
+	return uint16(v), nil
+}
+
+func intToInt32(v int, field string) (int32, error) {
+	if v < math.MinInt32 || v > math.MaxInt32 {
+		return 0, fmt.Errorf("%s %d exceeds int32 range", field, v)
+	}
+
+	//nolint:gosec // The range checks above ensure the conversion is safe.
+	return int32(v), nil
 }
