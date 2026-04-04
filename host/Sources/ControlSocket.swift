@@ -2,15 +2,15 @@ import Foundation
 
 /// Lifecycle phases matching the actual boot/activation cycle.
 enum VMPhase: String, Codable, Sendable {
-  case stopped = "stopped"
-  case configuring = "configuring"
-  case booting = "booting"
-  case waitingForAgent = "waitingForAgent"
-  case mounting = "mounting"
-  case activating = "activating"
-  case running = "running"
-  case stopping = "stopping"
-  case failed = "failed"
+  case stopped
+  case configuring
+  case booting
+  case waitingForAgent
+  case mounting
+  case activating
+  case running
+  case stopping
+  case failed
 }
 
 /// Snapshot of VM status at a point in time.

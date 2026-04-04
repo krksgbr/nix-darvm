@@ -9,8 +9,8 @@ import TOML
 /// - `proxy`: placeholder injected as env var, real value substituted by MITM proxy on matching hosts.
 /// - `passthrough`: real value injected directly as env var, no proxy interception.
 enum SecretMode: String, Sendable {
-  case proxy = "proxy"
-  case passthrough = "passthrough"
+  case proxy
+  case passthrough
 }
 
 /// A single secret declaration from `.dvm/credentials.toml`.

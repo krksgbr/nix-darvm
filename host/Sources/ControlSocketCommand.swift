@@ -1,10 +1,10 @@
 import Foundation
 
 enum ControlSocketCommand: String, Codable {
-  case status = "status"
-  case guestHealth = "guestHealth"
-  case loadCredentials = "loadCredentials"
-  case reloadCapabilities = "reloadCapabilities"
+  case status
+  case guestHealth
+  case loadCredentials
+  case reloadCapabilities
 }
 
 struct ControlSocketStatusPayload: Codable {

@@ -62,7 +62,6 @@ only_rules:
   - extension_access_modifier
   - expiring_todo
   - explicit_init
-  - explicit_enum_raw_value
   - explicit_self
   - fatal_error_message
   - file_length
@@ -158,9 +157,9 @@ only_rules:
   - quick_discouraged_call
   - quick_discouraged_focused_test
   - quick_discouraged_pending_test
-  - raw_value_for_camel_cased_codable_enum
   - reduce_boolean
   - reduce_into
+  - redundant_string_enum_value
   - redundant_discardable_let
   - redundant_nil_coalescing
   - implicit_optional_initialization
