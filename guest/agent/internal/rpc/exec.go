@@ -72,16 +72,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	var cmd *exec.Cmd
 	if command.GetName() == "sudo" {
 		cmd = exec.CommandContext(stream.Context(), command.GetName(), command.GetArgs()...) //nolint:gosec // Exec is an explicit remote command execution API.
-		if command.GetWorkingDirectory() != "" {
-			cmd.Dir = command.GetWorkingDirectory()
-		}
-		// For sudo commands, inject env vars directly into cmd.Env if present.
-		if len(command.GetEnvironment()) > 0 {
-			cmd.Env = os.Environ()
-			for _, ev := range command.GetEnvironment() {
-				cmd.Env = append(cmd.Env, ev.GetName()+"="+ev.GetValue())
-			}
-		}
+		configureDirectSudoCommand(cmd, command)
 	} else if command.GetWorkingDirectory() != "" || envPrefix != "" {
 		inner := shellQuote(command.GetName())
 		var innerSb81 strings.Builder
@@ -111,50 +102,12 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	)
 
 	if command.GetTty() {
-		rows, err := uint32ToUint16(command.GetTerminalSize().GetRows(), "initial terminal rows")
-		if err != nil {
-			return err
-		}
-
-		cols, err := uint32ToUint16(command.GetTerminalSize().GetCols(), "initial terminal cols")
-		if err != nil {
-			return err
-		}
-
-		ptmx, err = pty.StartWithSize(cmd, &pty.Winsize{
-			Rows: rows,
-			Cols: cols,
-		})
-		if err != nil {
-			return fmt.Errorf("start command %s: %w", formatCommandAndArgs(command.GetName(), command.GetArgs()), err)
-		}
-		if command.GetInteractive() {
-			stdin = ptmx
-		}
-
-		stdout = ptmx
-		stderr = ptmx
+		stdin, stdout, stderr, ptmx, err = startTTYCommand(cmd, command)
 	} else {
-		if command.GetInteractive() {
-			stdin, err = cmd.StdinPipe()
-			if err != nil {
-				return fmt.Errorf("open stdin pipe: %w", err)
-			}
-		}
-
-		stdout, err = cmd.StdoutPipe()
-		if err != nil {
-			return fmt.Errorf("open stdout pipe: %w", err)
-		}
-
-		stderr, err = cmd.StderrPipe()
-		if err != nil {
-			return fmt.Errorf("open stderr pipe: %w", err)
-		}
-
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("start command %s: %w", formatCommandAndArgs(command.GetName(), command.GetArgs()), err)
-		}
+		stdin, stdout, stderr, err = startPipeCommand(cmd, command)
+	}
+	if err != nil {
+		return err
 	}
 
 	if ptmx != nil {
@@ -332,6 +285,89 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 // resolveUID501User returns the username for UID 501.
 // This is the primary VM user — "admin" in the base image, potentially
 // renamed to the host username by dvm-core at startup.
+func configureDirectSudoCommand(cmd *exec.Cmd, command *pb.Command) {
+	if cwd := command.GetWorkingDirectory(); cwd != "" {
+		cmd.Dir = cwd
+	}
+
+	if len(command.GetEnvironment()) == 0 {
+		return
+	}
+
+	cmd.Env = os.Environ()
+	for _, ev := range command.GetEnvironment() {
+		cmd.Env = append(cmd.Env, ev.GetName()+"="+ev.GetValue())
+	}
+}
+
+func startTTYCommand(cmd *exec.Cmd, command *pb.Command) (
+	io.WriteCloser,
+	io.ReadCloser,
+	io.ReadCloser,
+	*os.File,
+	error,
+) {
+	rows, err := uint32ToUint16(command.GetTerminalSize().GetRows(), "initial terminal rows")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	cols, err := uint32ToUint16(command.GetTerminalSize().GetCols(), "initial terminal cols")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
+		Rows: rows,
+		Cols: cols,
+	})
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf(
+			"start command %s: %w",
+			formatCommandAndArgs(command.GetName(), command.GetArgs()),
+			err,
+		)
+	}
+
+	var stdin io.WriteCloser
+	if command.GetInteractive() {
+		stdin = ptmx
+	}
+
+	return stdin, ptmx, ptmx, ptmx, nil
+}
+
+func startPipeCommand(cmd *exec.Cmd, command *pb.Command) (io.WriteCloser, io.ReadCloser, io.ReadCloser, error) {
+	var stdin io.WriteCloser
+	var err error
+	if command.GetInteractive() {
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("open stdin pipe: %w", err)
+		}
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("open stdout pipe: %w", err)
+	}
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("open stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, nil, nil, fmt.Errorf(
+			"start command %s: %w",
+			formatCommandAndArgs(command.GetName(), command.GetArgs()),
+			err,
+		)
+	}
+
+	return stdin, stdout, stderr, nil
+}
+
 func resolveUID501User() string {
 	u, err := user.LookupId("501")
 	if err != nil {

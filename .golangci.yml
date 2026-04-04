@@ -58,6 +58,7 @@ linters:
     - misspell
     - modernize
     - musttag
+    - nestif
     - nakedret
     - nonamedreturns
     - nilerr
