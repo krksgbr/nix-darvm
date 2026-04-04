@@ -15,9 +15,11 @@ linters:
     - intrange
     - makezero
     - misspell
+    - modernize
     - nilnil
     - noctx
     - prealloc
+    - protogetter
     - staticcheck
     - unconvert
     - unparam
