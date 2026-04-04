@@ -9,7 +9,7 @@ import XCTest
 final class PlaceholderDerivationTests: XCTestCase {
   let testKey = HostKey(bytes: Array(repeating: 0x42, count: 32))
 
-  func testFormat() {
+  func testFormat() throws {
     let placeholder = derivePlaceholder(project: "My Project", envVar: "API_KEY", hostKey: testKey)
     XCTAssertTrue(placeholder.hasPrefix("SANDBOX_CRED_"))
     // Should contain slugified project and secret
@@ -17,7 +17,7 @@ final class PlaceholderDerivationTests: XCTestCase {
     XCTAssertTrue(placeholder.contains("api-key"), "Expected slugified secret in: \(placeholder)")
     // HMAC suffix: 16 hex chars
     let parts = placeholder.split(separator: "_")
-    let hmacSuffix = String(parts.last!)
+    let hmacSuffix = try XCTUnwrap(parts.last).description
     XCTAssertEqual(hmacSuffix.count, 16)
     XCTAssertTrue(hmacSuffix.allSatisfy(\.isHexDigit))
   }
@@ -141,7 +141,7 @@ final class ManifestLoadTests: XCTestCase {
       [proxy.OTHER_KEY]
       hosts = ["other.example.com", "api.example.com"]
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     let manifest = try CredentialManifest.load(from: path)
@@ -165,7 +165,7 @@ final class ManifestLoadTests: XCTestCase {
   }
 
   func testMalformedToml() {
-    let path = writeTempTOML("this is not valid toml {{{")
+    let path = try writeTempTOML("this is not valid toml {{{")
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     XCTAssertThrowsError(try CredentialManifest.load(from: path))
@@ -176,7 +176,7 @@ final class ManifestLoadTests: XCTestCase {
       version = 99
       project = "test"
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
@@ -189,7 +189,7 @@ final class ManifestLoadTests: XCTestCase {
       version = 1
       project = ""
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
@@ -202,7 +202,7 @@ final class ManifestLoadTests: XCTestCase {
     let toml = """
       version = 1
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     XCTAssertThrowsError(try CredentialManifest.load(from: path))
@@ -213,7 +213,7 @@ final class ManifestLoadTests: XCTestCase {
       version = 1
       project = "   "
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
@@ -229,7 +229,7 @@ final class ManifestLoadTests: XCTestCase {
       [proxy.KEY]
       hosts = []
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
@@ -245,7 +245,7 @@ final class ManifestLoadTests: XCTestCase {
       [proxy.KEY]
       hosts = ["*.example.com"]
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
@@ -261,7 +261,7 @@ final class ManifestLoadTests: XCTestCase {
       [proxy.KEY]
       hosts = ["API.Example.COM."]
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     let manifest = try CredentialManifest.load(from: path)
@@ -273,7 +273,7 @@ final class ManifestLoadTests: XCTestCase {
       version = 1
       project = "test"
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     let manifest = try CredentialManifest.load(from: path)
@@ -285,7 +285,7 @@ final class ManifestLoadTests: XCTestCase {
       version = 1
       project = "  MY PROJECT  "
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     let manifest = try CredentialManifest.load(from: path)
@@ -305,7 +305,7 @@ final class ManifestLoadTests: XCTestCase {
 
       [passthrough.MIDDLE]
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     let manifest = try CredentialManifest.load(from: path)
@@ -323,7 +323,7 @@ final class ManifestLoadTests: XCTestCase {
       [passthrough.DB_PASSWORD]
       [passthrough.AUTH_SECRET]
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     let manifest = try CredentialManifest.load(from: path)
@@ -344,7 +344,7 @@ final class ManifestLoadTests: XCTestCase {
 
       [passthrough.MY_KEY]
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
@@ -364,22 +364,22 @@ final class ManifestLoadTests: XCTestCase {
 
       [passthrough.DB_PASSWORD]
       """
-    let path = writeTempTOML(toml)
+    let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     let manifest = try CredentialManifest.load(from: path)
     XCTAssertEqual(manifest.secrets.count, 2)
-    let proxySecret = manifest.secrets.first { $0.envVar == "API_KEY" }!
-    let passthroughSecret = manifest.secrets.first { $0.envVar == "DB_PASSWORD" }!
+    let proxySecret = try XCTUnwrap(manifest.secrets.first { $0.envVar == "API_KEY" })
+    let passthroughSecret = try XCTUnwrap(manifest.secrets.first { $0.envVar == "DB_PASSWORD" })
     XCTAssertEqual(proxySecret.mode, .proxy)
     XCTAssertEqual(proxySecret.hosts, ["api.example.com"])
     XCTAssertEqual(passthroughSecret.mode, .passthrough)
     XCTAssertEqual(passthroughSecret.hosts, [])
   }
 
-  private func writeTempTOML(_ content: String) -> String {
+  private func writeTempTOML(_ content: String) throws -> String {
     let path = NSTemporaryDirectory() + "dvm-test-\(UUID().uuidString).toml"
-    try! content.write(toFile: path, atomically: true, encoding: .utf8)
+    try content.write(toFile: path, atomically: true, encoding: .utf8)
     return path
   }
 }

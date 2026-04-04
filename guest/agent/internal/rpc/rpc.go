@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 	"net"
 
 	pb "github.com/unbody/darvm/agent/gen"
@@ -32,5 +33,8 @@ func (rpc *RPC) Run(ctx context.Context) error {
 		rpc.grpcServer.Stop()
 	}()
 
-	return rpc.grpcServer.Serve(rpc.listener)
+	if err := rpc.grpcServer.Serve(rpc.listener); err != nil {
+		return fmt.Errorf("serve gRPC listener: %w", err)
+	}
+	return nil
 }

@@ -63,7 +63,7 @@ func (b *Bridge) Run(ctx context.Context) error {
 		if err != nil {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return fmt.Errorf("bridge context cancelled: %w", ctx.Err())
 			default:
 				log.Printf("bridge accept: %v", err)
 				continue

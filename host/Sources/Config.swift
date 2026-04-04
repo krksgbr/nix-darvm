@@ -129,6 +129,11 @@ private struct DynamicCodingKey: CodingKey {
   let stringValue: String
   let intValue: Int?
 
+  private init(knownStringValue: String) {
+    self.stringValue = knownStringValue
+    self.intValue = nil
+  }
+
   init?(stringValue: String) {
     self.stringValue = stringValue
     self.intValue = nil
@@ -139,7 +144,7 @@ private struct DynamicCodingKey: CodingKey {
   }
 
   static func named(_ stringValue: String) -> DynamicCodingKey {
-    DynamicCodingKey(stringValue: stringValue)!
+    DynamicCodingKey(knownStringValue: stringValue)
   }
 }
 

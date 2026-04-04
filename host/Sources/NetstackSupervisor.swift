@@ -290,7 +290,10 @@ final class NetstackSupervisor: @unchecked Sendable {
     // Send JSON
     let data = try JSONSerialization.data(withJSONObject: message, options: [.sortedKeys])
     let sent = data.withUnsafeBytes { ptr in
-      write(fileDescriptor, ptr.baseAddress!, ptr.count)
+      guard let baseAddress = ptr.baseAddress else {
+        return 0
+      }
+      return write(fileDescriptor, baseAddress, ptr.count)
     }
     guard sent == data.count else {
       throw SupervisorError.controlSocketError("short write to control socket")

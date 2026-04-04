@@ -117,7 +117,10 @@ extension ControlSocket {
     var data = requestData
     data.append(0x0A)
     _ = data.withUnsafeBytes { ptr in
-      write(fileDescriptor, ptr.baseAddress!, data.count)
+      guard let baseAddress = ptr.baseAddress else {
+        return 0
+      }
+      return write(fileDescriptor, baseAddress, data.count)
     }
 
     var timeoutValue = timeval(tv_sec: Int(timeout), tv_usec: 0)

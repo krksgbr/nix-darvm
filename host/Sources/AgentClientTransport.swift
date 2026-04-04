@@ -25,7 +25,10 @@ extension AgentClient {
       }
     }
 
-    throw lastError!
+    guard let lastError else {
+      throw AgentClientError.agentTimeout(nil)
+    }
+    throw lastError
   }
 
   fileprivate func withAgentClientOnce<T: Sendable>(
@@ -54,6 +57,7 @@ extension AgentClient {
   func waitForAgent(timeout: TimeInterval = 60) async throws {
     let deadline = Date().addingTimeInterval(timeout)
     var lastError: Error?
+    var lastErrorDescription: String?
     var attempts = 0
 
     while Date() < deadline {
@@ -64,10 +68,11 @@ extension AgentClient {
         return
       } catch {
         let errStr = "\(error)"
-        if lastError == nil || errStr != "\(lastError!)" {
+        if lastErrorDescription != errStr {
           DVMLog.log(level: "debug", "waitForAgent attempt \(attempts): \(errStr)")
         }
         lastError = error
+        lastErrorDescription = errStr
         try await Task.sleep(nanoseconds: 1_000_000_000)
       }
     }

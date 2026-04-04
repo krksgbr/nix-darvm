@@ -235,7 +235,7 @@ final class HostCommandBridge {
 
       // Write payload to stdin then close
       if !payload.isEmpty {
-        stdinPipe.fileHandleForWriting.write(payload.data(using: .utf8)!)
+        stdinPipe.fileHandleForWriting.write(Data(payload.utf8))
       }
       stdinPipe.fileHandleForWriting.closeFile()
 
@@ -272,7 +272,10 @@ final class HostCommandBridge {
     }
     let bytes = Array(response.utf8)
     _ = bytes.withUnsafeBufferPointer { ptr in
-      write(fileDescriptor, ptr.baseAddress!, ptr.count)
+      guard let baseAddress = ptr.baseAddress else {
+        return 0
+      }
+      return write(fileDescriptor, baseAddress, ptr.count)
     }
   }
 }

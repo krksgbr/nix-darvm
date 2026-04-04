@@ -260,7 +260,7 @@ func (ns *Stack) Close() error {
 	ns.closed = true
 	ns.cancelSwitch()
 	if err := ns.frameConn.Close(); err != nil {
-		return err
+		return fmt.Errorf("close frame connection: %w", err)
 	}
 	ns.gstack.Close()
 	return nil

@@ -14,11 +14,15 @@ enum HostNetworkResolver {
 
   enum Error: Swift.Error, CustomStringConvertible {
     case noMatchingInterface(String)
+    case invalidInterfaceAddress(String)
 
     var description: String {
       switch self {
       case .noMatchingInterface(let guestIP):
         return "Could not find a host IPv4 interface in the same subnet as guest IP \(guestIP)"
+
+      case .invalidInterfaceAddress(let address):
+        return "Resolved an invalid IPv4 address while inspecting host interfaces: \(address)"
       }
     }
   }
@@ -55,10 +59,16 @@ enum HostNetworkResolver {
       }
 
       if candidate.networkAddress(mask: mask) == guest.networkAddress(mask: mask) {
+        guard let hostIP = GuestIP(candidate.string) else {
+          throw Error.invalidInterfaceAddress(candidate.string)
+        }
+        guard let netmaskIP = GuestIP(mask.string) else {
+          throw Error.invalidInterfaceAddress(mask.string)
+        }
         return Resolution(
           interfaceName: String(cString: current.pointee.ifa_name),
-          hostIP: GuestIP(candidate.string)!,
-          netmask: GuestIP(mask.string)!
+          hostIP: hostIP,
+          netmask: netmaskIP
         )
       }
     }

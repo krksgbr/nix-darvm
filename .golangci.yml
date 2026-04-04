@@ -3,14 +3,17 @@ version: "2"
 linters:
   default: none
   enable:
+    - bodyclose
     - copyloopvar
     - errcheck
     - errorlint
+    - exhaustive
     - govet
     - ineffassign
     - intrange
     - makezero
     - misspell
+    - nilnil
     - noctx
     - prealloc
     - staticcheck
@@ -18,3 +21,4 @@ linters:
     - unparam
     - unused
     - wastedassign
+    - wrapcheck

@@ -68,11 +68,10 @@ func GenerateCA() (*CAPool, string, error) {
 }
 
 // NewCAPool creates a CAPool from PEM-encoded cert and key.
-// Returns nil (no error) if both are empty — HTTPS MITM will be disabled.
 // The key must be in PKCS#8 format (PEM type "PRIVATE KEY").
 func NewCAPool(certPEM, keyPEM string) (*CAPool, error) {
 	if certPEM == "" || keyPEM == "" {
-		return nil, nil
+		return nil, fmt.Errorf("missing CA cert or key PEM")
 	}
 
 	certBlock, _ := pem.Decode([]byte(certPEM))
@@ -127,7 +126,7 @@ func (p *CAPool) GetCertificate(serverName string) (*tls.Certificate, error) {
 func (p *CAPool) generateLeafCert(serverName string) (*tls.Certificate, time.Time, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, fmt.Errorf("generate leaf key: %w", err)
 	}
 
 	serialNumber, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
@@ -147,7 +146,7 @@ func (p *CAPool) generateLeafCert(serverName string) (*tls.Certificate, time.Tim
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, p.caCert, &key.PublicKey, p.caKey)
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, time.Time{}, fmt.Errorf("create leaf certificate for %q: %w", serverName, err)
 	}
 
 	return &tls.Certificate{

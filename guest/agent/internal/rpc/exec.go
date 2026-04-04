@@ -27,7 +27,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	// First request must describe the command to execute
 	firstReq, err := stream.Recv()
 	if err != nil {
-		return err
+		return fmt.Errorf("receive exec command: %w", err)
 	}
 	cmdReq, ok := firstReq.Type.(*pb.ExecRequest_Command)
 	if !ok {
@@ -112,24 +112,24 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 		if command.Interactive {
 			stdin, err = cmd.StdinPipe()
 			if err != nil {
-				return err
+				return fmt.Errorf("open stdin pipe: %w", err)
 			}
 		}
 
 		stdout, err = cmd.StdoutPipe()
 		if err != nil {
-			return err
+			return fmt.Errorf("open stdout pipe: %w", err)
 		}
 
 		stderr, err = cmd.StderrPipe()
 		if err != nil {
-			return err
+			return fmt.Errorf("open stderr pipe: %w", err)
 		}
 
 		err = cmd.Start()
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("start command %s: %w", formatCommandAndArgs(command.Name, command.Args), err)
 	}
 	if ptmx != nil {
 		defer func() {
@@ -147,7 +147,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 			request, err := stream.Recv()
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
-					fromClientErrCh <- err
+					fromClientErrCh <- fmt.Errorf("receive exec stream input: %w", err)
 				}
 				return
 			}
@@ -166,7 +166,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 						data = []byte{eofChar}
 					} else {
 						if err := stdin.Close(); err != nil {
-							fromClientErrCh <- err
+							fromClientErrCh <- fmt.Errorf("close exec stdin: %w", err)
 							return
 						}
 						continue
@@ -174,7 +174,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 				}
 
 				if _, err := stdin.Write(data); err != nil {
-					fromClientErrCh <- err
+					fromClientErrCh <- fmt.Errorf("write exec stdin: %w", err)
 					return
 				}
 
@@ -186,7 +186,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 					Rows: uint16(typed.TerminalResize.GetRows()),
 					Cols: uint16(typed.TerminalResize.GetCols()),
 				}); err != nil {
-					fromClientErrCh <- err
+					fromClientErrCh <- fmt.Errorf("resize exec terminal: %w", err)
 					return
 				}
 			}
@@ -208,7 +208,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 				if ptmx != nil && strings.Contains(err.Error(), "input/output error") {
 					return nil
 				}
-				return err
+				return fmt.Errorf("read exec stdout: %w", err)
 			}
 
 			if err := stream.Send(&pb.ExecResponse{
@@ -218,7 +218,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 					},
 				},
 			}); err != nil {
-				return err
+				return fmt.Errorf("send exec stdout: %w", err)
 			}
 		}
 	})
@@ -233,7 +233,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 					if errors.Is(err, io.EOF) {
 						return nil
 					}
-					return err
+					return fmt.Errorf("read exec stderr: %w", err)
 				}
 
 				if err := stream.Send(&pb.ExecResponse{
@@ -243,7 +243,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 						},
 					},
 				}); err != nil {
-					return err
+					return fmt.Errorf("send exec stderr: %w", err)
 				}
 			}
 		})
@@ -260,17 +260,20 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 		if errors.As(err, &exitError) {
 			exitCode = int32(exitError.ExitCode())
 		} else {
-			return err
+			return fmt.Errorf("wait for command %s: %w", formatCommandAndArgs(command.Name, command.Args), err)
 		}
 	}
 
-	return stream.Send(&pb.ExecResponse{
+	if err := stream.Send(&pb.ExecResponse{
 		Type: &pb.ExecResponse_Exit{
 			Exit: &pb.Exit{
 				Code: exitCode,
 			},
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("send exec exit status: %w", err)
+	}
+	return nil
 }
 
 // resolveUID501User returns the username for UID 501.

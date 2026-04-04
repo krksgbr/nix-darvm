@@ -165,7 +165,10 @@ final class ControlSocket: @unchecked Sendable {
     if var responseData = try? JSONEncoder().encode(response) {
       responseData.append(0x0A)  // newline
       _ = responseData.withUnsafeBytes { ptr in
-        write(clientFD, ptr.baseAddress!, responseData.count)
+        guard let baseAddress = ptr.baseAddress else {
+          return 0
+        }
+        return write(clientFD, baseAddress, responseData.count)
       }
     }
     close(clientFD)

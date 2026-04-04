@@ -367,7 +367,13 @@ type sniConn struct {
 	net.Conn // nil; satisfies interface without a real connection
 }
 
-func (c sniConn) Read(p []byte) (int, error)  { return c.r.Read(p) }
+func (c sniConn) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if err != nil {
+		return n, fmt.Errorf("read buffered client hello: %w", err)
+	}
+	return n, nil
+}
 func (c sniConn) Write(p []byte) (int, error) { return 0, io.EOF }
 
 // bufferedConn wraps a bufio.Reader with its underlying net.Conn so that
@@ -378,5 +384,9 @@ type bufferedConn struct {
 }
 
 func (c *bufferedConn) Read(p []byte) (int, error) {
-	return c.Reader.Read(p)
+	n, err := c.Reader.Read(p)
+	if err != nil {
+		return n, fmt.Errorf("read buffered connection: %w", err)
+	}
+	return n, nil
 }

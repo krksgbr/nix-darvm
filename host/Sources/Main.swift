@@ -28,7 +28,7 @@ enum DVMLog {
   /// Unique run identifier, shared with VMStatus.
   static let runId: String = {
     let chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-    return String((0..<8).map { _ in chars.randomElement()! })
+    return String((0..<8).compactMap { _ in chars.randomElement() })
   }()
 
   /// When true, JSON log lines are also written to stderr.
@@ -56,7 +56,7 @@ enum DVMLog {
     else { return }
     let lineWithNewline = line + "\n"
 
-    logHandle?.write(lineWithNewline.data(using: .utf8)!)
+    logHandle?.write(Data(lineWithNewline.utf8))
 
     if debugMode {
       fputs(lineWithNewline, stderr)

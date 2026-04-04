@@ -264,19 +264,8 @@ struct Status: AsyncParsableCommand {
 
     switch ControlSocket.send(.status) {
     case .success(.status(let payload)):
-      result["running"] = payload.running
-      if let phase = payload.phase { result["phase"] = phase }
-      if let ipAddress = payload.ipAddress { result["ip"] = ipAddress }
-      if let runId = payload.runId { result["run_id"] = runId }
-      if let phaseError = payload.phaseError { result["error"] = phaseError }
-
-      if payload.running, payload.phase == VMPhase.running.rawValue {
-        if case .success(.guestHealth(let health)) = ControlSocket.send(.guestHealth, timeout: 5) {
-          result["mounts"] = health.mounts
-          result["activation"] = health.activation
-          result["services"] = health.services
-        }
-      }
+      populateStatusJSON(&result, from: payload)
+      addGuestHealthJSON(&result, status: payload)
 
     case .failure:
       break
@@ -286,11 +275,41 @@ struct Status: AsyncParsableCommand {
     }
 
     let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
-    print(String(data: data, encoding: .utf8)!)
+    guard let output = String(data: data, encoding: .utf8) else {
+      throw CleanError.message("status response was not valid UTF-8")
+    }
+    print(output)
 
     if result["running"] as? Bool != true {
       throw ExitCode(1)
     }
+  }
+
+  private func populateStatusJSON(
+    _ result: inout [String: Any],
+    from payload: ControlSocketStatusPayload
+  ) {
+    result["running"] = payload.running
+    if let phase = payload.phase { result["phase"] = phase }
+    if let ipAddress = payload.ipAddress { result["ip"] = ipAddress }
+    if let runId = payload.runId { result["run_id"] = runId }
+    if let phaseError = payload.phaseError { result["error"] = phaseError }
+  }
+
+  private func addGuestHealthJSON(
+    _ result: inout [String: Any],
+    status payload: ControlSocketStatusPayload
+  ) {
+    guard payload.running, payload.phase == VMPhase.running.rawValue else {
+      return
+    }
+    guard case .success(.guestHealth(let health)) = ControlSocket.send(.guestHealth, timeout: 5)
+    else {
+      return
+    }
+    result["mounts"] = health.mounts
+    result["activation"] = health.activation
+    result["services"] = health.services
   }
 
   private func outputHuman() throws {

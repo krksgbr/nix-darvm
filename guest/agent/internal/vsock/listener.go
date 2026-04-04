@@ -17,11 +17,14 @@ type listener struct {
 func Listen(port uint32) (net.Listener, error) {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("create vsock listener socket on port %d: %w", port, err)
 	}
 
 	if err := unix.SetNonblock(fd, true); err != nil {
-		return nil, err
+		if closeErr := unix.Close(fd); closeErr != nil {
+			log.Printf("vsock: close listener fd=%d after SetNonblock failure: %v", fd, closeErr)
+		}
+		return nil, fmt.Errorf("set vsock listener nonblocking on port %d: %w", port, err)
 	}
 
 	file := os.NewFile(uintptr(fd), "vsock")
@@ -30,11 +33,17 @@ func Listen(port uint32) (net.Listener, error) {
 		CID:  unix.VMADDR_CID_ANY,
 		Port: port,
 	}); err != nil {
-		return nil, err
+		if closeErr := file.Close(); closeErr != nil {
+			log.Printf("vsock: close listener file after bind failure on port %d: %v", port, closeErr)
+		}
+		return nil, fmt.Errorf("bind vsock listener on port %d: %w", port, err)
 	}
 
 	if err := unix.Listen(int(file.Fd()), unix.SOMAXCONN); err != nil {
-		return nil, err
+		if closeErr := file.Close(); closeErr != nil {
+			log.Printf("vsock: close listener file after listen failure on port %d: %v", port, closeErr)
+		}
+		return nil, fmt.Errorf("listen on vsock port %d: %w", port, err)
 	}
 
 	return &listener{
@@ -46,22 +55,31 @@ func Listen(port uint32) (net.Listener, error) {
 func (listener *listener) Accept() (net.Conn, error) {
 	fd, _, err := unix.Accept(int(listener.file.Fd()))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("accept vsock connection on port %d: %w", listener.port, err)
 	}
 
 	if err := unix.SetNonblock(fd, true); err != nil {
-		return nil, err
+		if closeErr := unix.Close(fd); closeErr != nil {
+			log.Printf("vsock: close accepted fd=%d after SetNonblock failure: %v", fd, closeErr)
+		}
+		return nil, fmt.Errorf("set accepted vsock connection nonblocking on port %d: %w", listener.port, err)
 	}
 
 	file := os.NewFile(uintptr(fd), "vsock")
 
 	peerName, err := unix.Getpeername(int(file.Fd()))
 	if err != nil {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Printf("vsock: close accepted file after Getpeername failure on port %d: %v", listener.port, closeErr)
+		}
 		return nil, fmt.Errorf("failed to get peer name for AF_VSOCK connection: %w", err)
 	}
 
 	peerNameVM, ok := peerName.(*unix.SockaddrVM)
 	if !ok {
+		if closeErr := file.Close(); closeErr != nil {
+			log.Printf("vsock: close accepted file after non-vsock peer on port %d: %v", listener.port, closeErr)
+		}
 		return nil, fmt.Errorf("accepted a non-AF_VSOCK connection on an AF_VSOCK socket")
 	}
 
@@ -80,5 +98,8 @@ func (listener *listener) Addr() net.Addr {
 }
 
 func (listener *listener) Close() error {
-	return listener.file.Close()
+	if err := listener.file.Close(); err != nil {
+		return fmt.Errorf("close vsock listener on port %d: %w", listener.port, err)
+	}
+	return nil
 }

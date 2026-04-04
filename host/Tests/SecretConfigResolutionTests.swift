@@ -178,8 +178,8 @@ final class ManifestResolveTests: XCTestCase {
     let resolved = try manifest.resolve(hostKey: testKey)
     XCTAssertEqual(resolved.count, 2)
 
-    let proxy = resolved.first { $0.mode == .proxy }!
-    let passthrough = resolved.first { $0.mode == .passthrough }!
+    let proxy = try XCTUnwrap(resolved.first { $0.mode == .proxy })
+    let passthrough = try XCTUnwrap(resolved.first { $0.mode == .passthrough })
 
     XCTAssertTrue(proxy.placeholder.hasPrefix("SANDBOX_CRED_"))
     XCTAssertNotEqual(proxy.placeholder, proxy.value)
@@ -219,12 +219,12 @@ final class HostKeyTests: XCTestCase {
   func testLoadOrCreate_rejectsWrongSize() {
     let dir = NSTemporaryDirectory() + "dvm-hostkey-test-\(UUID().uuidString)"
     let path = dir + "/placeholder.key"
-    try! FileManager.default.createDirectory(
+    try FileManager.default.createDirectory(
       atPath: dir, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(atPath: dir) }
 
     // Write a 16-byte key (wrong size)
-    try! Data(repeating: 0x00, count: 16).write(to: URL(fileURLWithPath: path))
+    try Data(repeating: 0x00, count: 16).write(to: URL(fileURLWithPath: path))
 
     XCTAssertThrowsError(try HostKey.loadOrCreate(at: path)) { error in
       let description = String(describing: error)
@@ -242,7 +242,7 @@ final class HostKeyTests: XCTestCase {
     _ = try HostKey.loadOrCreate(at: path)
 
     let attrs = try FileManager.default.attributesOfItem(atPath: path)
-    let perms = (attrs[.posixPermissions] as! NSNumber).intValue
+    let perms = try XCTUnwrap(attrs[.posixPermissions] as? NSNumber).intValue
     XCTAssertEqual(perms, 0o600, "Key file should be owner-only (0600)")
   }
 

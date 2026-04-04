@@ -9,12 +9,12 @@ import XCTest
 /// These tests mutate the process-global `DVM_CREDENTIALS` env var and must run
 /// serially (the default for XCTest in SwiftPM).
 final class DiscoveryTests: XCTestCase {
-  var tempDir: String!
+  var tempDir = ""
 
-  override func setUp() {
-    super.setUp()
+  override func setUpWithError() throws {
+    try super.setUpWithError()
     tempDir = NSTemporaryDirectory() + "dvm-discovery-test-\(UUID().uuidString)"
-    try! FileManager.default.createDirectory(
+    try FileManager.default.createDirectory(
       atPath: tempDir, withIntermediateDirectories: true)
   }
 
@@ -51,7 +51,7 @@ final class DiscoveryTests: XCTestCase {
 
   func testCwdDiscovery_noWalking() throws {
     // Put manifest in parent, but cwd is a child — should NOT find it
-    let parentDir = tempDir!
+    let parentDir = tempDir
     let childDir = parentDir + "/child"
     try FileManager.default.createDirectory(
       atPath: childDir, withIntermediateDirectories: true)
