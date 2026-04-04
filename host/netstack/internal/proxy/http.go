@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,22 +54,26 @@ func NewInterceptor(secrets []control.SecretRule, caPool *CAPool) *Interceptor {
 			if host == "" {
 				host = req.URL.Host
 			}
+
 			log.Printf("proxy error: %s: %v", host, err)
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}
 	i.UpdateSecrets(secrets)
+
 	return i
 }
 
 // UpdateSecrets atomically replaces the secret rules.
 func (i *Interceptor) UpdateSecrets(secrets []control.SecretRule) {
 	index := make(map[string][]control.SecretRule)
+
 	for _, s := range secrets {
 		for _, h := range s.Hosts {
 			index[normalizeHost(h)] = append(index[normalizeHost(h)], s)
 		}
 	}
+
 	i.mu.Lock()
 	i.secrets = secrets
 	i.hostIndex = index
@@ -83,14 +88,17 @@ func (i *Interceptor) secretsForHost(host string) []control.SecretRule {
 	if idx := strings.LastIndex(h, ":"); idx != -1 {
 		h = h[:idx]
 	}
+
 	i.mu.RLock()
 	defer i.mu.RUnlock()
+
 	return i.hostIndex[normalizeHost(h)]
 }
 
 // normalizeHost lowercases and strips trailing dots for consistent matching.
 func normalizeHost(h string) string {
 	h = strings.ToLower(h)
+
 	return strings.TrimRight(h, ".")
 }
 
@@ -109,6 +117,7 @@ func (i *Interceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort int) 
 			log.Printf("http: close guest conn: %v", err)
 		}
 	}()
+
 	i.serveConn(guestConn, "http", dstIP, dstPort, false)
 }
 
@@ -127,6 +136,7 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 	if i.caPool == nil {
 		// No CA — can't MITM. TCP passthrough.
 		i.tcpPassthrough(guestConn, dstIP, dstPort)
+
 		return
 	}
 
@@ -142,6 +152,7 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 		// No SNI (IP-based request, non-TLS traffic, or malformed ClientHello).
 		// Pass through instead of attempting MITM without a hostname.
 		i.tcpPassthrough(bc, dstIP, dstPort)
+
 		return
 	}
 
@@ -149,6 +160,7 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 	if secrets == nil {
 		// Not intercepted — TCP passthrough.
 		i.tcpPassthrough(bc, dstIP, dstPort)
+
 		return
 	}
 
@@ -159,10 +171,13 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 		},
 		NextProtos: []string{"h2", "http/1.1"},
 	})
+
 	handshakeCtx, cancelHandshake := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancelHandshake()
+
 	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
 		log.Printf("https: TLS handshake failed: %v", err)
+
 		return
 	}
 
@@ -196,6 +211,7 @@ func (i *Interceptor) replaceSecrets(req *http.Request, secrets []control.Secret
 		if s.Value == "" || s.Placeholder == "" {
 			continue
 		}
+
 		for key, orig := range originals {
 			for j, v := range orig {
 				if strings.Contains(v, s.Placeholder) {
@@ -208,12 +224,14 @@ func (i *Interceptor) replaceSecrets(req *http.Request, secrets []control.Secret
 
 // tcpPassthrough does a bidirectional byte relay without any inspection.
 func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort int) {
-	target := net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort))
+	target := net.JoinHostPort(dstIP, strconv.Itoa(dstPort))
 	dialer := &net.Dialer{Timeout: 30 * time.Second}
+
 	realConn, err := dialer.DialContext(context.Background(), "tcp", target)
 	if err != nil {
 		return
 	}
+
 	defer func() {
 		if err := realConn.Close(); err != nil {
 			log.Printf("tcp passthrough: close upstream conn: %v", err)
@@ -221,15 +239,19 @@ func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort i
 	}()
 
 	done := make(chan struct{})
+
 	go func() {
 		if _, err := io.Copy(realConn, guestConn); err != nil {
 			log.Printf("tcp passthrough: guest to upstream copy: %v", err)
 		}
+
 		close(done)
 	}()
+
 	if _, err := io.Copy(guestConn, realConn); err != nil {
 		log.Printf("tcp passthrough: upstream to guest copy: %v", err)
 	}
+
 	<-done
 }
 
@@ -245,6 +267,7 @@ func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort i
 // our use case (API credential injection has no WebSocket traffic).
 func (i *Interceptor) serveConn(conn net.Conn, scheme, dstIP string, dstPort int, enableH2 bool) {
 	done := make(chan struct{})
+
 	var doneOnce sync.Once
 
 	ln := &singleConnListener{conn: conn, done: done}
@@ -268,6 +291,7 @@ func (i *Interceptor) serveConn(conn net.Conn, scheme, dstIP string, dstPort int
 	if enableH2 {
 		if err := http2.ConfigureServer(srv, nil); err != nil {
 			log.Printf("proxy: configure http2: %v", err)
+
 			return
 		}
 	}
@@ -294,7 +318,7 @@ func (i *Interceptor) rewriteRequest(pr *httputil.ProxyRequest) {
 	}
 
 	pr.Out.URL.Scheme = info.scheme
-	pr.Out.URL.Host = net.JoinHostPort(hostOnly, fmt.Sprintf("%d", info.dstPort))
+	pr.Out.URL.Host = net.JoinHostPort(hostOnly, strconv.Itoa(info.dstPort))
 
 	secrets := i.secretsForHost(hostOnly)
 	if secrets != nil {
@@ -314,11 +338,15 @@ type singleConnListener struct {
 
 func (l *singleConnListener) Accept() (net.Conn, error) {
 	var c net.Conn
+
 	l.once.Do(func() { c = l.conn })
+
 	if c != nil {
 		return c, nil
 	}
+
 	<-l.done
+
 	return nil, net.ErrClosed
 }
 
@@ -334,6 +362,7 @@ func peekSNI(br *bufio.Reader) string {
 	if err != nil || hdr[0] != 0x16 { // 0x16 = TLS Handshake
 		return ""
 	}
+
 	recordLen := int(hdr[3])<<8 | int(hdr[4])
 	if recordLen > 16384 {
 		return ""
@@ -348,15 +377,18 @@ func peekSNI(br *bufio.Reader) string {
 	// Feed the record to tls.Server to parse the ClientHello using Go's own
 	// TLS implementation. GetConfigForClient captures the SNI and aborts.
 	var sni string
+
 	srv := tls.Server(sniConn{r: bytes.NewReader(record)}, &tls.Config{
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			sni = hello.ServerName
-			return nil, fmt.Errorf("sni extracted")
+
+			return nil, errors.New("sni extracted")
 		},
 	})
 	if err := srv.HandshakeContext(context.Background()); err == nil {
 		return sni
 	}
+
 	return sni
 }
 
@@ -372,6 +404,7 @@ func (c sniConn) Read(p []byte) (int, error) {
 	if err != nil {
 		return n, fmt.Errorf("read buffered client hello: %w", err)
 	}
+
 	return n, nil
 }
 func (c sniConn) Write(p []byte) (int, error) { return 0, io.EOF }
@@ -388,5 +421,6 @@ func (c *bufferedConn) Read(p []byte) (int, error) {
 	if err != nil {
 		return n, fmt.Errorf("read buffered connection: %w", err)
 	}
+
 	return n, nil
 }

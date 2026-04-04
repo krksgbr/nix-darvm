@@ -2,119 +2,119 @@ import Foundation
 
 /// Access mode for a VirtioFS mount.
 enum AccessMode {
-  case readOnly
-  case readWrite
+    case readOnly
+    case readWrite
 }
 
 /// Runtime transport for a guest-visible mount.
 enum MountTransport: String, Codable {
-  case virtiofs = "virtiofs"
-  case nfs = "nfs"
+    case virtiofs = "virtiofs"
+    case nfs = "nfs"
 }
 
 /// An absolute filesystem path. Rejects empty and relative paths.
 struct AbsolutePath: CustomStringConvertible {
-  let rawValue: String
+    let rawValue: String
 
-  init(_ path: String) throws {
-    guard !path.isEmpty, path.hasPrefix("/") else {
-      throw MountConfigError.relativePath(path)
+    init(_ path: String) throws {
+        guard !path.isEmpty, path.hasPrefix("/") else {
+            throw MountConfigError.relativePath(path)
+        }
+        self.rawValue = path
     }
-    self.rawValue = path
-  }
 
-  /// Internal init for values already known to be absolute.
-  private init(trusted: String) {
-    self.rawValue = trusted
-  }
+    /// Internal init for values already known to be absolute.
+    private init(trusted: String) {
+        self.rawValue = trusted
+    }
 
-  var description: String { rawValue }
+    var description: String { rawValue }
 
-  /// Parent directory.
-  var deletingLastComponent: AbsolutePath {
-    AbsolutePath(
-      trusted:
-        URL(fileURLWithPath: rawValue).deletingLastPathComponent().path
-    )
-  }
+    /// Parent directory.
+    var deletingLastComponent: Self {
+        Self(
+            trusted:
+                URL(fileURLWithPath: rawValue).deletingLastPathComponent().path
+        )
+    }
 }
 
 /// A VirtioFS device tag. Must be non-empty and not collide with the macOS
 /// automount tag.
 struct MountTag: CustomStringConvertible {
-  static let macOSAutomount = "com.apple.virtio-fs.automount"
+    static let macOSAutomount = "com.apple.virtio-fs.automount"
 
-  let rawValue: String
+    let rawValue: String
 
-  init(_ tag: String) throws {
-    guard !tag.isEmpty, tag != Self.macOSAutomount else {
-      throw MountConfigError.invalidTag(tag)
+    init(_ tag: String) throws {
+        guard !tag.isEmpty, tag != Self.macOSAutomount else {
+            throw MountConfigError.invalidTag(tag)
+        }
+        self.rawValue = tag
     }
-    self.rawValue = tag
-  }
 
-  var description: String { rawValue }
+    var description: String { rawValue }
 }
 
 /// Configuration for a host↔guest mount.
 /// Mirrors use NFS in the current spike; everything else stays on VirtioFS.
 enum MountConfig {
-  case exact(
-    tag: MountTag,
-    hostPath: AbsolutePath,
-    guestPath: AbsolutePath,
-    access: AccessMode,
-    transport: MountTransport
-  )
+    case exact(
+            tag: MountTag,
+            hostPath: AbsolutePath,
+            guestPath: AbsolutePath,
+            access: AccessMode,
+            transport: MountTransport
+         )
 
-  var tag: MountTag {
-    switch self {
-    case .exact(let tag, _, _, _, _):
-      tag
+    var tag: MountTag {
+        switch self {
+        case .exact(let tag, _, _, _, _):
+            tag
+        }
     }
-  }
 
-  var hostPath: AbsolutePath {
-    switch self {
-    case .exact(_, let hostPath, _, _, _):
-      hostPath
+    var hostPath: AbsolutePath {
+        switch self {
+        case .exact(_, let hostPath, _, _, _):
+            hostPath
+        }
     }
-  }
 
-  var guestPath: AbsolutePath {
-    switch self {
-    case .exact(_, _, let guestPath, _, _):
-      guestPath
+    var guestPath: AbsolutePath {
+        switch self {
+        case .exact(_, _, let guestPath, _, _):
+            guestPath
+        }
     }
-  }
 
-  var access: AccessMode {
-    switch self {
-    case .exact(_, _, _, let access, _):
-      access
+    var access: AccessMode {
+        switch self {
+        case .exact(_, _, _, let access, _):
+            access
+        }
     }
-  }
 
-  var transport: MountTransport {
-    switch self {
-    case .exact(_, _, _, _, let transport):
-      transport
+    var transport: MountTransport {
+        switch self {
+        case .exact(_, _, _, _, let transport):
+            transport
+        }
     }
-  }
 
-  var isMirror: Bool {
-    tag.rawValue.hasPrefix("mirror-")
-  }
+    var isMirror: Bool {
+        tag.rawValue.hasPrefix("mirror-")
+    }
 }
 
 enum MountConfigError: Error, CustomStringConvertible {
-  case relativePath(String)
-  case invalidTag(String)
+    case relativePath(String)
+    case invalidTag(String)
 
-  var description: String {
-    switch self {
-    case .relativePath(let path): return "Path must be absolute: \(path)"
-    case .invalidTag(let tag): return "Invalid mount tag: \(tag)"
+    var description: String {
+        switch self {
+        case .relativePath(let path): return "Path must be absolute: \(path)"
+        case .invalidTag(let tag): return "Invalid mount tag: \(tag)"
+        }
     }
-  }
 }

@@ -20,12 +20,14 @@ import (
 func main() {
 	frameFD := flag.Int("frame-fd", -1, "file descriptor for the socketpair carrying raw Ethernet frames")
 	controlSock := flag.String("control-sock", "", "path to the Unix domain control socket")
+
 	flag.Parse()
 
 	if *frameFD < 0 {
 		fmt.Fprintln(os.Stderr, "error: --frame-fd is required")
 		os.Exit(1)
 	}
+
 	if *controlSock == "" {
 		fmt.Fprintln(os.Stderr, "error: --control-sock is required")
 		os.Exit(1)
@@ -40,10 +42,12 @@ func main() {
 	if frameFile == nil {
 		log.Fatal("failed to open frame FD")
 	}
+
 	frameConn, err := net.FileConn(frameFile)
 	if err != nil {
 		log.Fatalf("failed to wrap frame FD as net.Conn: %v", err)
 	}
+
 	if err := frameFile.Close(); err != nil { // FileConn dups internally
 		log.Fatalf("failed to close duplicated frame file: %v", err)
 	}
@@ -54,6 +58,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("control socket: %v", err)
 	}
+
 	defer func() {
 		if err := ctrl.Close(); err != nil {
 			log.Printf("control socket shutdown: %v", err)
@@ -62,6 +67,7 @@ func main() {
 
 	// Wait for initial config before starting the network stack.
 	log.Println("waiting for config on control socket...")
+
 	cfg := ctrl.WaitForConfig()
 	log.Printf("config received: subnet=%s gateway=%s guest=%s dns=%v",
 		cfg.Subnet, cfg.GatewayIP, cfg.GuestIP, cfg.DNSServers)
@@ -82,6 +88,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("network stack: %v", err)
 	}
+
 	defer func() {
 		if err := ns.Close(); err != nil {
 			log.Printf("network stack shutdown: %v", err)

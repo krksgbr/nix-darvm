@@ -26,14 +26,17 @@ func cleanupClose(t *testing.T, name string, closer io.Closer) {
 // interceptor) and an x509.CertPool (for client trust).
 func newTestCA(t *testing.T) (*CAPool, *x509.CertPool) {
 	t.Helper()
+
 	caPool, certPEM, err := GenerateCA()
 	if err != nil {
 		t.Fatalf("GenerateCA: %v", err)
 	}
+
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM([]byte(certPEM)) {
 		t.Fatal("failed to add CA cert to root pool")
 	}
+
 	return caPool, roots
 }
 
@@ -42,6 +45,7 @@ func newTestCA(t *testing.T) (*CAPool, *x509.CertPool) {
 // upstream uses TLS (so the ReverseProxy trusts the test server's cert).
 func newTestInterceptor(t *testing.T, secrets []control.SecretRule, caPool *CAPool) *Interceptor {
 	t.Helper()
+
 	return NewInterceptor(secrets, caPool)
 }
 
@@ -55,6 +59,7 @@ func startProxyListener(t *testing.T, interceptor *Interceptor, mode string, dst
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+
 	cleanupClose(t, "proxy listener", ln)
 
 	go func() {
@@ -63,6 +68,7 @@ func startProxyListener(t *testing.T, interceptor *Interceptor, mode string, dst
 			if err != nil {
 				return // listener closed
 			}
+
 			switch mode {
 			case "http":
 				go interceptor.HandleHTTP(conn, dstIP, dstPort)
@@ -79,6 +85,7 @@ func startProxyListener(t *testing.T, interceptor *Interceptor, mode string, dst
 // to proxyAddr, regardless of the requested host.
 func newProxyHTTPClient(t *testing.T, proxyAddr string) *http.Client {
 	t.Helper()
+
 	return &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
@@ -94,6 +101,7 @@ func newProxyHTTPClient(t *testing.T, proxyAddr string) *http.Client {
 // attempts HTTP/2 negotiation.
 func newProxyHTTPSClient(t *testing.T, proxyAddr string, roots *x509.CertPool, forceH2 bool) *http.Client {
 	t.Helper()
+
 	return &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{

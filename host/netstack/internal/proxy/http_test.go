@@ -30,7 +30,9 @@ func TestHTTPNoReplacement_PlaceholderPassesThrough(t *testing.T) {
 		if auth != "Bearer PLACEHOLDER_TOKEN" {
 			t.Errorf("expected placeholder to pass through, got Authorization %q", auth)
 		}
+
 		w.WriteHeader(http.StatusOK)
+
 		if _, err := w.Write([]byte("ok")); err != nil {
 			t.Errorf("write response: %v", err)
 		}
@@ -46,10 +48,12 @@ func TestHTTPNoReplacement_PlaceholderPassesThrough(t *testing.T) {
 
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/path", nil)
 	req.Header.Set("Authorization", "Bearer PLACEHOLDER_TOKEN")
+
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			t.Errorf("close response body: %v", err)
@@ -75,9 +79,11 @@ func TestHTTPNonInterceptedHost_Unchanged(t *testing.T) {
 		if auth := r.Header.Get("Authorization"); auth != "" {
 			t.Errorf("expected no Authorization header, got %q", auth)
 		}
+
 		if custom := r.Header.Get("X-Custom"); custom != "preserved" {
 			t.Errorf("expected X-Custom=preserved, got %q", custom)
 		}
+
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(upstream.Close)
@@ -91,10 +97,12 @@ func TestHTTPNonInterceptedHost_Unchanged(t *testing.T) {
 
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/path", nil)
 	req.Header.Set("X-Custom", "preserved")
+
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			t.Errorf("close response body: %v", err)
@@ -110,6 +118,7 @@ func TestHTTPNonInterceptedHost_Unchanged(t *testing.T) {
 // connection work and that the connection is actually reused.
 func TestHTTPKeepAlive(t *testing.T) {
 	var reqCount atomic.Int32
+
 	secrets := []control.SecretRule{{
 		Name:        "ka-secret",
 		Hosts:       []string{"localhost"},
@@ -132,16 +141,19 @@ func TestHTTPKeepAlive(t *testing.T) {
 
 	// First request.
 	req1, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/first", nil)
+
 	resp1, err := client.Do(req1)
 	if err != nil {
 		t.Fatalf("first GET failed: %v", err)
 	}
+
 	if err := resp1.Body.Close(); err != nil {
 		t.Fatalf("close first response body: %v", err)
 	}
 
 	// Second request — verify the connection is actually reused via httptrace.
 	var reused bool
+
 	trace := &httptrace.ClientTrace{
 		GotConn: func(info httptrace.GotConnInfo) {
 			reused = info.Reused
@@ -149,10 +161,12 @@ func TestHTTPKeepAlive(t *testing.T) {
 	}
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "http://localhost/second", nil)
 	req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+
 	resp2, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("second GET failed: %v", err)
 	}
+
 	if err := resp2.Body.Close(); err != nil {
 		t.Fatalf("close second response body: %v", err)
 	}
@@ -160,6 +174,7 @@ func TestHTTPKeepAlive(t *testing.T) {
 	if !reused {
 		t.Fatal("second request did not reuse the keep-alive connection")
 	}
+
 	if reqCount.Load() != 2 {
 		t.Fatalf("expected 2 requests at upstream, got %d", reqCount.Load())
 	}

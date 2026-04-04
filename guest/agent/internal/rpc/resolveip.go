@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os/exec"
@@ -12,8 +13,9 @@ import (
 
 func (rpc *RPC) ResolveIP(ctx context.Context, _ *pb.ResolveIPRequest) (*pb.ResolveIPResponse, error) {
 	defaultGateways := map[string]struct{}{}
+
 	if out, err := exec.CommandContext(ctx, "netstat", "-rn", "-f", "inet").Output(); err == nil {
-		for _, line := range strings.Split(string(out), "\n") {
+		for line := range strings.SplitSeq(string(out), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 && fields[0] == "default" {
 				defaultGateways[fields[1]] = struct{}{}
@@ -27,6 +29,7 @@ func (rpc *RPC) ResolveIP(ctx context.Context, _ *pb.ResolveIPRequest) (*pb.Reso
 	}
 
 	var fallback string
+
 	for _, ifaceAddr := range ifaceAddrs {
 		ipNet, ok := ifaceAddr.(*net.IPNet)
 		if !ok {
@@ -46,6 +49,7 @@ func (rpc *RPC) ResolveIP(ctx context.Context, _ *pb.ResolveIPRequest) (*pb.Reso
 			if fallback == "" {
 				fallback = ip
 			}
+
 			continue
 		}
 
@@ -58,5 +62,5 @@ func (rpc *RPC) ResolveIP(ctx context.Context, _ *pb.ResolveIPRequest) (*pb.Reso
 		return &pb.ResolveIPResponse{Ip: fallback}, nil
 	}
 
-	return nil, fmt.Errorf("cannot resolve VM's IP address")
+	return nil, errors.New("cannot resolve VM's IP address")
 }

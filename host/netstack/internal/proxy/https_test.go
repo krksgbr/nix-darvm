@@ -26,8 +26,10 @@ import (
 // the client→proxy leg still does full cert verification against the MITM CA.
 func upstreamTransport(t *testing.T, upstream *httptest.Server) *http.Transport {
 	t.Helper()
+
 	tr := upstream.Client().Transport.(*http.Transport).Clone()
 	tr.TLSClientConfig.InsecureSkipVerify = true
+
 	return tr
 }
 
@@ -42,16 +44,18 @@ func TestHTTPSNoCA_PassesThroughWithoutMITM(t *testing.T) {
 		Value:       "secret-value",
 	}}
 
-		upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// No replacement should occur — proxy can't MITM without a CA.
-			if auth := r.Header.Get("Authorization"); auth != "" {
-				t.Errorf("expected no Authorization header, got %q", auth)
-			}
-			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte("no-ca-passthrough")); err != nil {
-				t.Errorf("write response: %v", err)
-			}
-		}))
+		if auth := r.Header.Get("Authorization"); auth != "" {
+			t.Errorf("expected no Authorization header, got %q", auth)
+		}
+
+		w.WriteHeader(http.StatusOK)
+
+		if _, err := w.Write([]byte("no-ca-passthrough")); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
 	t.Cleanup(upstream.Close)
 
 	upstreamCert := upstream.Certificate()
@@ -79,10 +83,12 @@ func TestHTTPSNoCA_PassesThroughWithoutMITM(t *testing.T) {
 	}
 
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://example.com/test", nil)
+
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			t.Errorf("close response body: %v", err)
@@ -98,6 +104,7 @@ func TestHTTPSNoCA_PassesThroughWithoutMITM(t *testing.T) {
 	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
 		t.Fatal("expected TLS peer certificates")
 	}
+
 	if !resp.TLS.PeerCertificates[0].Equal(upstreamCert) {
 		t.Fatal("peer certificate does not match upstream — unexpected MITM")
 	}
@@ -116,16 +123,18 @@ func TestHTTPSIntercept_ReplacesPlaceholderInHeader(t *testing.T) {
 		Value:       "real-bearer-value",
 	}}
 
-		upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
-			if auth != "Bearer real-bearer-value" {
-				t.Errorf("expected Authorization 'Bearer real-bearer-value', got %q", auth)
-			}
-			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte("mitm-ok")); err != nil {
-				t.Errorf("write response: %v", err)
-			}
-		}))
+		if auth != "Bearer real-bearer-value" {
+			t.Errorf("expected Authorization 'Bearer real-bearer-value', got %q", auth)
+		}
+
+		w.WriteHeader(http.StatusOK)
+
+		if _, err := w.Write([]byte("mitm-ok")); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
 	t.Cleanup(upstream.Close)
 
 	upHost, upPortStr, _ := net.SplitHostPort(upstream.Listener.Addr().String())
@@ -139,10 +148,12 @@ func TestHTTPSIntercept_ReplacesPlaceholderInHeader(t *testing.T) {
 
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://localhost/test", nil)
 	req.Header.Set("Authorization", "Bearer SANDBOX_CRED_myproj_apikey_abc123")
+
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			t.Errorf("close response body: %v", err)
@@ -184,10 +195,12 @@ func TestHTTPSIntercept_HTTP2Negotiated(t *testing.T) {
 	client := newProxyHTTPSClient(t, proxyAddr, mitmRoots, true)
 
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://localhost/h2test", nil)
+
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			t.Errorf("close response body: %v", err)
@@ -215,6 +228,7 @@ func TestHTTPSPassthrough_PreservesUpstreamCert(t *testing.T) {
 
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
+
 		if _, err := w.Write([]byte("passthrough-ok")); err != nil {
 			t.Errorf("write response: %v", err)
 		}
@@ -233,10 +247,10 @@ func TestHTTPSPassthrough_PreservesUpstreamCert(t *testing.T) {
 	proxyAddr := startProxyListener(t, interceptor, "https", upHost, upPort)
 
 	client := &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					return (&net.Dialer{}).DialContext(ctx, "tcp", proxyAddr)
-				},
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "tcp", proxyAddr)
+			},
 			TLSClientConfig: &tls.Config{
 				RootCAs:    upstreamRoots,
 				ServerName: "example.com",
@@ -245,10 +259,12 @@ func TestHTTPSPassthrough_PreservesUpstreamCert(t *testing.T) {
 	}
 
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://example.com/passthrough", nil)
+
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			t.Errorf("close response body: %v", err)
@@ -263,6 +279,7 @@ func TestHTTPSPassthrough_PreservesUpstreamCert(t *testing.T) {
 	if resp.TLS == nil || len(resp.TLS.PeerCertificates) == 0 {
 		t.Fatal("expected TLS info with peer certificates")
 	}
+
 	if !resp.TLS.PeerCertificates[0].Equal(upstreamCert) {
 		t.Fatal("peer certificate does not match upstream certificate — MITM may have occurred")
 	}
@@ -285,6 +302,7 @@ func TestHTTPSNoSNI_FallsBackToPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen echo: %v", err)
 	}
+
 	cleanupClose(t, "echo listener", echoLn)
 
 	go func() {
@@ -293,12 +311,14 @@ func TestHTTPSNoSNI_FallsBackToPassthrough(t *testing.T) {
 			if err != nil {
 				return
 			}
+
 			go func(c net.Conn) {
 				defer func() {
 					if err := c.Close(); err != nil {
 						t.Errorf("close echo conn: %v", err)
 					}
 				}()
+
 				if _, err := io.Copy(c, c); err != nil {
 					t.Errorf("echo copy: %v", err)
 				}
@@ -317,6 +337,7 @@ func TestHTTPSNoSNI_FallsBackToPassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial proxy: %v", err)
 	}
+
 	defer func() {
 		if err := conn.Close(); err != nil {
 			t.Errorf("close proxy conn: %v", err)
@@ -324,6 +345,7 @@ func TestHTTPSNoSNI_FallsBackToPassthrough(t *testing.T) {
 	}()
 
 	msg := "hello-no-sni\n"
+
 	_, err = conn.Write([]byte(msg))
 	if err != nil {
 		t.Fatalf("write: %v", err)
@@ -332,11 +354,14 @@ func TestHTTPSNoSNI_FallsBackToPassthrough(t *testing.T) {
 	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
+
 	buf := make([]byte, len(msg))
+
 	_, err = io.ReadFull(conn, buf)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
+
 	if string(buf) != msg {
 		t.Fatalf("expected echo %q, got %q", msg, string(buf))
 	}
@@ -360,17 +385,20 @@ func TestHTTPSIntercept_SSEStreaming(t *testing.T) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			t.Error("upstream: ResponseWriter does not implement Flusher")
+
 			return
 		}
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
 
 		for _, ev := range events {
-				if _, err := fmt.Fprintf(w, "data: %s\n\n", ev); err != nil {
-					t.Errorf("write sse event: %v", err)
-				}
-				flusher.Flush()
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", ev); err != nil {
+				t.Errorf("write sse event: %v", err)
+			}
+
+			flusher.Flush()
 			time.Sleep(50 * time.Millisecond)
 		}
 	}))
@@ -386,10 +414,12 @@ func TestHTTPSIntercept_SSEStreaming(t *testing.T) {
 	client := newProxyHTTPSClient(t, proxyAddr, mitmRoots, false)
 
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", "https://localhost/sse", nil)
+
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("GET failed: %v", err)
 	}
+
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
 			t.Errorf("close response body: %v", err)
@@ -401,8 +431,12 @@ func TestHTTPSIntercept_SSEStreaming(t *testing.T) {
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	var received []string
-	var lastTime time.Time
+
+	var (
+		received []string
+		lastTime time.Time
+	)
+
 	progressive := true
 
 	for scanner.Scan() {
@@ -410,25 +444,32 @@ func TestHTTPSIntercept_SSEStreaming(t *testing.T) {
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
+
 		now := time.Now()
+
 		received = append(received, strings.TrimPrefix(line, "data: "))
+
 		if !lastTime.IsZero() && now.Sub(lastTime) < 10*time.Millisecond {
 			progressive = false
 		}
+
 		lastTime = now
 	}
 
 	if err := scanner.Err(); err != nil {
 		t.Fatalf("scanner error: %v", err)
 	}
+
 	if len(received) != len(events) {
 		t.Fatalf("expected %d events, got %d: %v", len(events), len(received), received)
 	}
+
 	for i, ev := range events {
 		if received[i] != ev {
 			t.Errorf("event %d: expected %q, got %q", i, ev, received[i])
 		}
 	}
+
 	if !progressive {
 		t.Error("SSE events were not delivered progressively — possible buffering issue")
 	}
@@ -438,38 +479,48 @@ func TestHTTPSIntercept_SSEStreaming(t *testing.T) {
 // handshake on a pipe. Returns the raw bytes written by the client.
 func tlsClientHelloBytes(t *testing.T, serverName string) []byte {
 	t.Helper()
+
 	clientConn, serverConn := net.Pipe()
 	cleanupClose(t, "client conn", clientConn)
 	cleanupClose(t, "server conn", serverConn)
 
-	var clientHello []byte
-	var mu sync.Mutex
+	var (
+		clientHello []byte
+		mu          sync.Mutex
+	)
+
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
+
 		buf := make([]byte, 16384)
 		n, _ := serverConn.Read(buf)
+
 		mu.Lock()
 		clientHello = make([]byte, n)
 		copy(clientHello, buf[:n])
 		mu.Unlock()
-			if err := serverConn.Close(); err != nil {
-				t.Errorf("close server conn: %v", err)
-			}
-		}()
+
+		if err := serverConn.Close(); err != nil {
+			t.Errorf("close server conn: %v", err)
+		}
+	}()
 
 	tlsClient := tls.Client(clientConn, &tls.Config{
 		ServerName:         serverName,
 		InsecureSkipVerify: true,
 	})
 	_ = tlsClient.HandshakeContext(context.Background()) // expected to fail; we only need the ClientHello bytes
+
 	if err := clientConn.Close(); err != nil {
 		t.Fatalf("close client conn: %v", err)
 	}
+
 	<-done
 
 	mu.Lock()
 	defer mu.Unlock()
+
 	return clientHello
 }

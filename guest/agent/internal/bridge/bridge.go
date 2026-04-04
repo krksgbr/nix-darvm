@@ -66,9 +66,11 @@ func (b *Bridge) Run(ctx context.Context) error {
 				return fmt.Errorf("bridge context cancelled: %w", ctx.Err())
 			default:
 				log.Printf("bridge accept: %v", err)
+
 				continue
 			}
 		}
+
 		go b.handleConn(conn)
 	}
 }
@@ -79,6 +81,7 @@ func (b *Bridge) handleConn(local net.Conn) {
 	remoteFD, err := dialVsockHost(b.VsockPort)
 	if err != nil {
 		log.Printf("bridge vsock dial: %v", err)
+
 		return
 	}
 
@@ -92,9 +95,11 @@ func (b *Bridge) handleConn(local net.Conn) {
 	// the remote → local goroutine (which may be blocked on remote.Read).
 	go func() {
 		defer wg.Done()
+
 		if _, err := io.Copy(remote, local); err != nil {
 			log.Printf("bridge copy local->remote: %v", err)
 		}
+
 		closeFile(remote)
 	}()
 
@@ -102,9 +107,11 @@ func (b *Bridge) handleConn(local net.Conn) {
 	// the local → remote goroutine (which may be blocked on local.Read).
 	go func() {
 		defer wg.Done()
+
 		if _, err := io.Copy(local, remote); err != nil {
 			log.Printf("bridge copy remote->local: %v", err)
 		}
+
 		closeConn(local)
 	}()
 
@@ -125,6 +132,7 @@ func dialVsockHost(port uint32) (int, error) {
 		if closeErr := unix.Close(fd); closeErr != nil {
 			log.Printf("bridge close failed socket fd=%d: %v", fd, closeErr)
 		}
+
 		return -1, fmt.Errorf("connect: %w", err)
 	}
 

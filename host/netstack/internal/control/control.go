@@ -106,6 +106,7 @@ func NewServer(sockPath string) (*Server, error) {
 	}
 
 	go s.acceptLoop()
+
 	return s, nil
 }
 
@@ -123,6 +124,7 @@ func (s *Server) ShutdownCh() <-chan struct{} {
 func (s *Server) SetStack(si StackInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.stack = si
 }
 
@@ -141,9 +143,11 @@ func (s *Server) Close() error {
 	if err := s.listener.Close(); err != nil {
 		errs = append(errs, err)
 	}
+
 	if err := os.Remove(s.sockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		errs = append(errs, err)
 	}
+
 	return errors.Join(errs...)
 }
 
@@ -154,6 +158,7 @@ func (s *Server) mergedSecrets() []SecretRule {
 	for _, secrets := range s.projects {
 		merged = append(merged, secrets...)
 	}
+
 	return merged
 }
 
@@ -165,6 +170,7 @@ func (s *Server) checkCollisions(incomingProject string, incoming []SecretRule) 
 		if projName == incomingProject {
 			continue // same project — will be overwritten
 		}
+
 		for _, es := range existing {
 			for _, is := range incoming {
 				if es.Placeholder == is.Placeholder && es.Value != is.Value {
@@ -174,6 +180,7 @@ func (s *Server) checkCollisions(incomingProject string, incoming []SecretRule) 
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -183,6 +190,7 @@ func (s *Server) acceptLoop() {
 		if err != nil {
 			return
 		}
+
 		go s.handleConn(conn)
 	}
 }
@@ -203,12 +211,14 @@ func (s *Server) handleConn(conn net.Conn) {
 			if err != io.EOF {
 				log.Printf("control: decode error: %v", err)
 			}
+
 			return
 		}
 
 		resp := s.handleRequest(&req)
 		if err := enc.Encode(resp); err != nil {
 			log.Printf("control: encode error: %v", err)
+
 			return
 		}
 	}
@@ -230,24 +240,31 @@ func (s *Server) handleRequest(req *Request) *Response {
 		s.mu.Lock()
 		readyCh := s.readyCh
 		s.mu.Unlock()
+
 		if readyCh != nil {
 			<-readyCh
 		}
+
 		s.mu.Lock()
 		caPEM := s.caCertPEM
 		s.mu.Unlock()
+
 		return &Response{Type: "ready", GuestIP: req.Config.GuestIP, CACertPEM: caPEM}
 
 	case "load":
 		// Per-project credential push. Same project name overwrites previous.
 		s.mu.Lock()
+
 		st := s.stack
 		if st == nil {
 			s.mu.Unlock()
+
 			return &Response{Type: "error", Error: "stack not initialized"}
 		}
+
 		if req.ProjectName == "" {
 			s.mu.Unlock()
+
 			return &Response{Type: "error", Error: "load: missing project_name"}
 		}
 		// Collision detection: same placeholder with different value across
@@ -255,31 +272,38 @@ func (s *Server) handleRequest(req *Request) *Response {
 		// or two projects claiming the same identity).
 		if err := s.checkCollisions(req.ProjectName, req.Secrets); err != nil {
 			s.mu.Unlock()
+
 			return &Response{Type: "error", Error: err.Error()}
 		}
+
 		s.projects[req.ProjectName] = req.Secrets
 		merged := s.mergedSecrets()
 		st.UpdateSecrets(merged)
 		s.mu.Unlock()
+
 		return &Response{Type: "ok"}
 
 	case "status":
 		s.mu.Lock()
 		st := s.stack
 		s.mu.Unlock()
+
 		info := &StatusInfo{Healthy: st != nil}
 		if st != nil {
 			info.SecretCount = st.SecretCount()
 		}
+
 		return &Response{Type: "status", Status: info}
 
 	case "shutdown":
 		log.Println("control: shutdown requested")
+
 		select {
 		case <-s.shutdownCh:
 		default:
 			close(s.shutdownCh)
 		}
+
 		return &Response{Type: "ok"}
 
 	default:

@@ -1,6 +1,6 @@
 package vsock
 
-import "fmt"
+import "strconv"
 
 type addr struct {
 	port uint32
@@ -11,5 +11,5 @@ func (addr *addr) Network() string {
 }
 
 func (addr *addr) String() string {
-	return fmt.Sprintf("%d", addr.port)
+	return strconv.FormatUint(uint64(addr.port), 10)
 }

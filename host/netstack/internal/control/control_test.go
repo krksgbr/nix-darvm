@@ -12,15 +12,18 @@ import (
 // dial connects to the control socket and returns a JSON encoder/decoder pair.
 func dial(t *testing.T, sockPath string) (*json.Encoder, *json.Decoder) {
 	t.Helper()
+
 	conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "unix", sockPath)
 	if err != nil {
 		t.Fatalf("dial control socket: %v", err)
 	}
+
 	t.Cleanup(func() {
 		if err := conn.Close(); err != nil {
 			t.Errorf("close control conn: %v", err)
 		}
 	})
+
 	return json.NewEncoder(conn), json.NewDecoder(conn)
 }
 
@@ -28,22 +31,27 @@ func dial(t *testing.T, sockPath string) (*json.Encoder, *json.Decoder) {
 // 104-byte macOS limit on unix socket paths.
 func shortSockPath(t *testing.T) string {
 	t.Helper()
+
 	f, err := os.CreateTemp("/tmp", "ctrl-*.sock")
 	if err != nil {
 		t.Fatalf("create temp: %v", err)
 	}
+
 	path := f.Name()
 	if err := f.Close(); err != nil {
 		t.Fatalf("close temp socket placeholder: %v", err)
 	}
+
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove temp socket placeholder: %v", err)
 	}
+
 	t.Cleanup(func() {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			t.Errorf("remove temp socket path: %v", err)
 		}
 	})
+
 	return path
 }
 
@@ -52,10 +60,12 @@ func shortSockPath(t *testing.T) string {
 func initServer(t *testing.T) *Server {
 	t.Helper()
 	sock := shortSockPath(t)
+
 	srv, err := NewServer(sock)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
+
 	t.Cleanup(func() {
 		if err := srv.Close(); err != nil {
 			t.Errorf("close server: %v", err)
@@ -74,10 +84,12 @@ func initServer(t *testing.T) *Server {
 	}); err != nil {
 		t.Fatalf("encode load_config: %v", err)
 	}
+
 	var resp Response
 	if err := dec.Decode(&resp); err != nil {
 		t.Fatalf("decode ready: %v", err)
 	}
+
 	if resp.Type != "ready" {
 		t.Fatalf("expected ready, got %q: %s", resp.Type, resp.Error)
 	}
@@ -88,6 +100,7 @@ func initServer(t *testing.T) *Server {
 // sendLoad sends a load request on a fresh connection and returns the response.
 func sendLoad(t *testing.T, sockPath, project string, secrets []SecretRule) Response {
 	t.Helper()
+
 	enc, dec := dial(t, sockPath)
 	if err := enc.Encode(Request{
 		Type:        "load",
@@ -96,10 +109,12 @@ func sendLoad(t *testing.T, sockPath, project string, secrets []SecretRule) Resp
 	}); err != nil {
 		t.Fatalf("encode load: %v", err)
 	}
+
 	var resp Response
 	if err := dec.Decode(&resp); err != nil {
 		t.Fatalf("decode load response: %v", err)
 	}
+
 	return resp
 }
 
@@ -146,6 +161,7 @@ func TestLoad_CollisionDifferentProjects(t *testing.T) {
 	if resp.Type != "error" {
 		t.Fatal("expected collision error for same placeholder with different value")
 	}
+
 	if resp.Error == "" {
 		t.Fatal("expected non-empty error message")
 	}
@@ -172,6 +188,7 @@ func TestLoad_SamePlaceholderSameValueNoCrash(t *testing.T) {
 
 func TestLoad_MissingProjectName(t *testing.T) {
 	srv := initServer(t)
+
 	resp := sendLoad(t, srv.sockPath, "", []SecretRule{{
 		Name: "KEY", Hosts: []string{"api.example.com"}, Placeholder: "PH", Value: "val",
 	}})

@@ -1,6 +1,7 @@
 package vsock
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -24,6 +25,7 @@ func Listen(port uint32) (net.Listener, error) {
 		if closeErr := unix.Close(fd); closeErr != nil {
 			log.Printf("vsock: close listener fd=%d after SetNonblock failure: %v", fd, closeErr)
 		}
+
 		return nil, fmt.Errorf("set vsock listener nonblocking on port %d: %w", port, err)
 	}
 
@@ -36,6 +38,7 @@ func Listen(port uint32) (net.Listener, error) {
 		if closeErr := file.Close(); closeErr != nil {
 			log.Printf("vsock: close listener file after bind failure on port %d: %v", port, closeErr)
 		}
+
 		return nil, fmt.Errorf("bind vsock listener on port %d: %w", port, err)
 	}
 
@@ -43,6 +46,7 @@ func Listen(port uint32) (net.Listener, error) {
 		if closeErr := file.Close(); closeErr != nil {
 			log.Printf("vsock: close listener file after listen failure on port %d: %v", port, closeErr)
 		}
+
 		return nil, fmt.Errorf("listen on vsock port %d: %w", port, err)
 	}
 
@@ -62,6 +66,7 @@ func (listener *listener) Accept() (net.Conn, error) {
 		if closeErr := unix.Close(fd); closeErr != nil {
 			log.Printf("vsock: close accepted fd=%d after SetNonblock failure: %v", fd, closeErr)
 		}
+
 		return nil, fmt.Errorf("set accepted vsock connection nonblocking on port %d: %w", listener.port, err)
 	}
 
@@ -72,6 +77,7 @@ func (listener *listener) Accept() (net.Conn, error) {
 		if closeErr := file.Close(); closeErr != nil {
 			log.Printf("vsock: close accepted file after Getpeername failure on port %d: %v", listener.port, closeErr)
 		}
+
 		return nil, fmt.Errorf("failed to get peer name for AF_VSOCK connection: %w", err)
 	}
 
@@ -80,7 +86,8 @@ func (listener *listener) Accept() (net.Conn, error) {
 		if closeErr := file.Close(); closeErr != nil {
 			log.Printf("vsock: close accepted file after non-vsock peer on port %d: %v", listener.port, closeErr)
 		}
-		return nil, fmt.Errorf("accepted a non-AF_VSOCK connection on an AF_VSOCK socket")
+
+		return nil, errors.New("accepted a non-AF_VSOCK connection on an AF_VSOCK socket")
 	}
 
 	log.Printf("vsock: accepted connection on port %d from CID %d port %d (fd=%d)",
@@ -101,5 +108,6 @@ func (listener *listener) Close() error {
 	if err := listener.file.Close(); err != nil {
 		return fmt.Errorf("close vsock listener on port %d: %w", listener.port, err)
 	}
+
 	return nil
 }

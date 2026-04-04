@@ -33,6 +33,7 @@ const (
 func main() {
 	runRPC := flag.Bool("run-rpc", false, "run gRPC server on vsock port 6175")
 	runBridge := flag.Bool("run-bridge", false, "run nix daemon bridge")
+
 	flag.Parse()
 
 	if !*runRPC && !*runBridge {
@@ -64,6 +65,7 @@ func main() {
 	if *runBridge {
 		group.Go(func() error {
 			b := bridge.New()
+
 			return b.Run(ctx)
 		})
 	}
@@ -71,6 +73,7 @@ func main() {
 	// Keep running until cancelled
 	group.Go(func() error {
 		<-ctx.Done()
+
 		return ctx.Err()
 	})
 
@@ -86,8 +89,10 @@ func runRPCOnce(ctx context.Context) error {
 	listener, err := vsock.Listen(rpcPort)
 	if err != nil {
 		log.Printf("RPC server failed to listen on AF_VSOCK port %d: %v", rpcPort, err)
+
 		return nil // return nil to retry
 	}
+
 	defer func() {
 		if closeErr := listener.Close(); closeErr != nil {
 			log.Printf("RPC listener close: %v", closeErr)
@@ -97,6 +102,7 @@ func runRPCOnce(ctx context.Context) error {
 	rpcServer, err := rpc.New(listener)
 	if err != nil {
 		log.Printf("failed to initialize RPC server: %v", err)
+
 		return nil
 	}
 
@@ -104,6 +110,7 @@ func runRPCOnce(ctx context.Context) error {
 
 	if err := rpcServer.Run(ctx); err != nil {
 		log.Printf("RPC server stopped: %v", err)
+
 		return nil
 	}
 

@@ -18,6 +18,7 @@ func (conn *conn) Read(b []byte) (n int, err error) {
 	if err != nil {
 		return n, fmt.Errorf("read vsock port %d: %w", conn.localPort, err)
 	}
+
 	return n, nil
 }
 
@@ -26,6 +27,7 @@ func (conn *conn) Write(b []byte) (n int, err error) {
 	if err != nil {
 		return n, fmt.Errorf("write vsock port %d: %w", conn.remotePort, err)
 	}
+
 	return n, nil
 }
 
@@ -33,6 +35,7 @@ func (conn *conn) SetDeadline(t time.Time) error {
 	if err := conn.file.SetDeadline(t); err != nil {
 		return fmt.Errorf("set vsock deadline: %w", err)
 	}
+
 	return nil
 }
 
@@ -40,6 +43,7 @@ func (conn *conn) SetReadDeadline(t time.Time) error {
 	if err := conn.file.SetReadDeadline(t); err != nil {
 		return fmt.Errorf("set vsock read deadline: %w", err)
 	}
+
 	return nil
 }
 
@@ -47,6 +51,7 @@ func (conn *conn) SetWriteDeadline(t time.Time) error {
 	if err := conn.file.SetWriteDeadline(t); err != nil {
 		return fmt.Errorf("set vsock write deadline: %w", err)
 	}
+
 	return nil
 }
 
@@ -62,5 +67,6 @@ func (conn *conn) Close() error {
 	if err := conn.file.Close(); err != nil {
 		return fmt.Errorf("close vsock port %d: %w", conn.localPort, err)
 	}
+
 	return nil
 }

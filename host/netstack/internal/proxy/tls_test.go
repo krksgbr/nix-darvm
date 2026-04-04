@@ -10,12 +10,14 @@ import (
 // bufio.Reader and verifies that peekSNI extracts the correct server name.
 func TestPeekSNI_ValidClientHello(t *testing.T) {
 	serverName := "api.example.com"
+
 	hello := tlsClientHelloBytes(t, serverName)
 	if len(hello) == 0 {
 		t.Fatal("generated empty ClientHello")
 	}
 
 	br := bufio.NewReaderSize(bytes.NewReader(hello), 16384+5)
+
 	got := peekSNI(br)
 	if got != serverName {
 		t.Fatalf("peekSNI = %q, want %q", got, serverName)
@@ -27,6 +29,7 @@ func TestPeekSNI_ValidClientHello(t *testing.T) {
 func TestPeekSNI_GarbageInput(t *testing.T) {
 	garbage := []byte("this is not a TLS ClientHello at all")
 	br := bufio.NewReaderSize(bytes.NewReader(garbage), 16384+5)
+
 	got := peekSNI(br)
 	if got != "" {
 		t.Fatalf("peekSNI on garbage = %q, want empty", got)
@@ -77,6 +80,7 @@ func TestCAPool_CachesAndExpires(t *testing.T) {
 func TestPeekSNI_ShortInput(t *testing.T) {
 	short := []byte{0x16, 0x03} // only 2 bytes, need at least 5
 	br := bufio.NewReaderSize(bytes.NewReader(short), 16384+5)
+
 	got := peekSNI(br)
 	if got != "" {
 		t.Fatalf("peekSNI on short input = %q, want empty", got)
@@ -86,6 +90,7 @@ func TestPeekSNI_ShortInput(t *testing.T) {
 // TestPeekSNI_EmptyReader verifies peekSNI handles an empty reader gracefully.
 func TestPeekSNI_EmptyReader(t *testing.T) {
 	br := bufio.NewReaderSize(bytes.NewReader(nil), 16384+5)
+
 	got := peekSNI(br)
 	if got != "" {
 		t.Fatalf("peekSNI on empty = %q, want empty", got)
@@ -105,10 +110,12 @@ func TestPeekSNI_DoesNotConsume(t *testing.T) {
 
 	// All original bytes should still be readable.
 	remaining := make([]byte, len(hello))
+
 	n, _ := br.Read(remaining)
 	if n != len(hello) {
 		t.Fatalf("after peekSNI, read %d bytes, expected %d", n, len(hello))
 	}
+
 	if !bytes.Equal(remaining[:n], hello) {
 		t.Fatal("peekSNI consumed or corrupted bytes in the reader")
 	}

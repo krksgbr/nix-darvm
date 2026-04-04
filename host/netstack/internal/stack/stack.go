@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"sync"
 
 	"github.com/containers/gvisor-tap-vsock/pkg/services/dhcp"
@@ -91,6 +92,7 @@ func New(cfg *Config) (*Stack, error) {
 	// IP pool for DHCP
 	ipPool := tap.NewIPPool(subnet)
 	ipPool.Reserve(net.ParseIP(gvConfig.GatewayIP), gatewayMAC)
+
 	for ip, mac := range gvConfig.DHCPStaticLeases {
 		ipPool.Reserve(net.ParseIP(ip), mac)
 	}
@@ -100,6 +102,7 @@ func New(cfg *Config) (*Stack, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tap endpoint: %w", err)
 	}
+
 	netSwitch := tap.NewSwitch(false)
 	tapEndpoint.Connect(netSwitch)
 	netSwitch.Connect(tapEndpoint)
@@ -141,11 +144,13 @@ func New(cfg *Config) (*Stack, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dhcp: %w", err)
 	}
+
 	go func() {
 		if err := dhcpServer.Serve(); err != nil {
 			log.Printf("dhcp server error: %v", err)
 		}
 	}()
+
 	log.Println("dhcp: server started")
 
 	// Start DNS server
@@ -157,6 +162,7 @@ func New(cfg *Config) (*Stack, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dns udp bind: %w", err)
 	}
+
 	tcpLn, err := gonet.ListenTCP(s, tcpip.FullAddress{
 		NIC:  1,
 		Addr: gatewayAddr,
@@ -165,33 +171,43 @@ func New(cfg *Config) (*Stack, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dns tcp bind: %w", err)
 	}
+
 	dnsServer, err := gvdns.New(udpConn, tcpLn, gvConfig.DNS)
 	if err != nil {
 		return nil, fmt.Errorf("dns server: %w", err)
 	}
+
 	go func() { _ = dnsServer.Serve() }()
 	go func() { _ = dnsServer.ServeTCP() }()
+
 	log.Println("dns: server started")
 
 	// Credential interception.
 	// If no CA PEM provided, generate one in Go (more reliable than Swift DER builder).
 	var caPool *proxy.CAPool
+
 	if cfg.CACertPEM != "" && cfg.CAKeyPEM != "" {
 		var err2 error
+
 		caPool, err2 = proxy.NewCAPool(cfg.CACertPEM, cfg.CAKeyPEM)
 		if err2 != nil {
 			return nil, fmt.Errorf("CA pool: %w", err2)
 		}
 	} else {
-		var certPEM string
-		var err2 error
+		var (
+			certPEM string
+			err2    error
+		)
+
 		caPool, certPEM, err2 = proxy.GenerateCA()
 		if err2 != nil {
 			return nil, fmt.Errorf("generate CA: %w", err2)
 		}
+
 		cfg.CACertPEM = certPEM
 		log.Printf("generated ephemeral MITM CA (%d bytes PEM)", len(certPEM))
 	}
+
 	interceptor := proxy.NewInterceptor(cfg.Secrets, caPool)
 
 	// The frame conn is a SOCK_DGRAM unix socket wrapping the VZ socketpair.
@@ -233,6 +249,7 @@ func New(cfg *Config) (*Stack, error) {
 func (ns *Stack) SecretCount() int {
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
+
 	return len(ns.secrets)
 }
 
@@ -247,6 +264,7 @@ func (ns *Stack) UpdateSecrets(secrets []control.SecretRule) {
 func (ns *Stack) isClosed() bool {
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
+
 	return ns.closed
 }
 
@@ -254,15 +272,20 @@ func (ns *Stack) isClosed() bool {
 func (ns *Stack) Close() error {
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
+
 	if ns.closed {
 		return nil
 	}
+
 	ns.closed = true
 	ns.cancelSwitch()
+
 	if err := ns.frameConn.Close(); err != nil {
 		return fmt.Errorf("close frame connection: %w", err)
 	}
+
 	ns.gstack.Close()
+
 	return nil
 }
 
@@ -272,12 +295,16 @@ func (ns *Stack) handleTCPConnection(r *tcp.ForwarderRequest) {
 	dstIP := id.LocalAddress.String()
 
 	var wq waiter.Queue
+
 	ep, tcpipErr := r.CreateEndpoint(&wq)
 	if tcpipErr != nil {
 		r.Complete(true)
+
 		return
 	}
+
 	r.Complete(false)
+
 	guestConn := gonet.NewTCPConn(&wq, ep)
 
 	switch dstPort {
@@ -296,12 +323,16 @@ func (ns *Stack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int
 			log.Printf("passthrough: close guest conn: %v", err)
 		}
 	}()
-	target := net.JoinHostPort(dstIP, fmt.Sprintf("%d", dstPort))
+
+	target := net.JoinHostPort(dstIP, strconv.Itoa(dstPort))
+
 	realConn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", target)
 	if err != nil {
 		log.Printf("passthrough: dial %s: %v", target, err)
+
 		return
 	}
+
 	defer func() {
 		if err := realConn.Close(); err != nil {
 			log.Printf("passthrough: close upstream conn: %v", err)
@@ -309,6 +340,7 @@ func (ns *Stack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int
 	}()
 
 	done := make(chan struct{})
+
 	go func() {
 		buf := make([]byte, 32*1024)
 		for {
@@ -316,33 +348,42 @@ func (ns *Stack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int
 			if n > 0 {
 				if _, writeErr := guestConn.Write(buf[:n]); writeErr != nil {
 					log.Printf("passthrough: write to guest: %v", writeErr)
+
 					break
 				}
 			}
+
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
 					log.Printf("passthrough: read from upstream: %v", err)
 				}
+
 				break
 			}
 		}
+
 		close(done)
 	}()
+
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := guestConn.Read(buf)
 		if n > 0 {
 			if _, writeErr := realConn.Write(buf[:n]); writeErr != nil {
 				log.Printf("passthrough: write to upstream: %v", writeErr)
+
 				break
 			}
 		}
+
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				log.Printf("passthrough: read from guest: %v", err)
 			}
+
 			break
 		}
 	}
+
 	<-done
 }

@@ -29,14 +29,15 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	if err != nil {
 		return fmt.Errorf("receive exec command: %w", err)
 	}
-	cmdReq, ok := firstReq.Type.(*pb.ExecRequest_Command)
+
+	cmdReq, ok := firstReq.GetType().(*pb.ExecRequest_Command)
 	if !ok {
-		return fmt.Errorf("first exec request must describe a command")
+		return errors.New("first exec request must describe a command")
 	}
 
 	command := cmdReq.Command
-	log.Printf("exec: %s (tty=%v interactive=%v cwd=%q)", formatCommandAndArgs(command.Name, command.Args),
-		command.Tty, command.Interactive, command.WorkingDirectory)
+	log.Printf("exec: %s (tty=%v interactive=%v cwd=%q)", formatCommandAndArgs(command.GetName(), command.GetArgs()),
+		command.GetTty(), command.GetInteractive(), command.GetWorkingDirectory())
 
 	// Run as the UID 501 user (admin in base image, may be renamed to host username).
 	// Resolved dynamically so the agent doesn't need restarting after rename.
@@ -52,64 +53,73 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	// Build env prefix: TERM for TTY + any env vars from the gRPC request.
 	// These are prepended to the shell command so they survive sudo -iu's env reset.
 	var envParts []string
-	if command.Tty {
+	if command.GetTty() {
 		envParts = append(envParts, "export TERM=xterm-256color")
 	}
-	for _, ev := range command.Environment {
-		envParts = append(envParts, fmt.Sprintf("export %s=%s", ev.Name, shellQuote(ev.Value)))
+
+	for _, ev := range command.GetEnvironment() {
+		envParts = append(envParts, fmt.Sprintf("export %s=%s", ev.GetName(), shellQuote(ev.GetValue())))
 	}
+
 	var envPrefix string
 	if len(envParts) > 0 {
 		envPrefix = strings.Join(envParts, "; ") + "; "
 	}
 
 	var cmd *exec.Cmd
-	if command.Name == "sudo" {
-		cmd = exec.CommandContext(stream.Context(), command.Name, command.Args...)
-		if command.WorkingDirectory != "" {
-			cmd.Dir = command.WorkingDirectory
+	if command.GetName() == "sudo" {
+		cmd = exec.CommandContext(stream.Context(), command.GetName(), command.GetArgs()...)
+		if command.GetWorkingDirectory() != "" {
+			cmd.Dir = command.GetWorkingDirectory()
 		}
 		// For sudo commands, inject env vars directly into cmd.Env if present.
-		if len(command.Environment) > 0 {
+		if len(command.GetEnvironment()) > 0 {
 			cmd.Env = os.Environ()
-			for _, ev := range command.Environment {
-				cmd.Env = append(cmd.Env, ev.Name+"="+ev.Value)
+			for _, ev := range command.GetEnvironment() {
+				cmd.Env = append(cmd.Env, ev.GetName()+"="+ev.GetValue())
 			}
 		}
-	} else if command.WorkingDirectory != "" || envPrefix != "" {
-		inner := shellQuote(command.Name)
-		for _, a := range command.Args {
-			inner += " " + shellQuote(a)
+	} else if command.GetWorkingDirectory() != "" || envPrefix != "" {
+		inner := shellQuote(command.GetName())
+		var innerSb81 strings.Builder
+		for _, a := range command.GetArgs() {
+			innerSb81.WriteString(" " + shellQuote(a))
 		}
+		inner += innerSb81.String()
+
 		var shellCmd string
-		if command.WorkingDirectory != "" {
-			shellCmd = fmt.Sprintf("%scd %s && exec %s", envPrefix, shellQuote(command.WorkingDirectory), inner)
+		if command.GetWorkingDirectory() != "" {
+			shellCmd = fmt.Sprintf("%scd %s && exec %s", envPrefix, shellQuote(command.GetWorkingDirectory()), inner)
 		} else {
 			shellCmd = fmt.Sprintf("%sexec %s", envPrefix, inner)
 		}
+
 		args := []string{"-iu", execUser, "--", "sh", "-c", shellCmd}
 		cmd = exec.CommandContext(stream.Context(), "sudo", args...)
 	} else {
-		args := append([]string{"-iu", execUser, "--", command.Name}, command.Args...)
+		args := append([]string{"-iu", execUser, "--", command.GetName()}, command.GetArgs()...)
 		cmd = exec.CommandContext(stream.Context(), "sudo", args...)
 	}
 
-	var stdin io.WriteCloser
-	var stdout, stderr io.ReadCloser
-	var ptmx *os.File
+	var (
+		stdin          io.WriteCloser
+		stdout, stderr io.ReadCloser
+		ptmx           *os.File
+	)
 
-	if command.Tty {
+	if command.GetTty() {
 		ptmx, err = pty.StartWithSize(cmd, &pty.Winsize{
 			Rows: uint16(command.GetTerminalSize().GetRows()),
 			Cols: uint16(command.GetTerminalSize().GetCols()),
 		})
-		if command.Interactive {
+		if command.GetInteractive() {
 			stdin = ptmx
 		}
+
 		stdout = ptmx
 		stderr = ptmx
 	} else {
-		if command.Interactive {
+		if command.GetInteractive() {
 			stdin, err = cmd.StdinPipe()
 			if err != nil {
 				return fmt.Errorf("open stdin pipe: %w", err)
@@ -128,9 +138,11 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 
 		err = cmd.Start()
 	}
+
 	if err != nil {
-		return fmt.Errorf("start command %s: %w", formatCommandAndArgs(command.Name, command.Args), err)
+		return fmt.Errorf("start command %s: %w", formatCommandAndArgs(command.GetName(), command.GetArgs()), err)
 	}
+
 	if ptmx != nil {
 		defer func() {
 			if closeErr := ptmx.Close(); closeErr != nil {
@@ -149,44 +161,50 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 				if !errors.Is(err, io.EOF) {
 					fromClientErrCh <- fmt.Errorf("receive exec stream input: %w", err)
 				}
+
 				return
 			}
 
-			switch typed := request.Type.(type) {
+			switch typed := request.GetType().(type) {
 			case *pb.ExecRequest_StandardInput:
-				if !command.Interactive {
+				if !command.GetInteractive() {
 					continue
 				}
 
-				data := typed.StandardInput.Data
+				data := typed.StandardInput.GetData()
 
 				if len(data) == 0 {
-					if command.Tty {
+					if command.GetTty() {
 						// PTY: send EOF character instead of closing
 						data = []byte{eofChar}
 					} else {
 						if err := stdin.Close(); err != nil {
 							fromClientErrCh <- fmt.Errorf("close exec stdin: %w", err)
+
 							return
 						}
+
 						continue
 					}
 				}
 
 				if _, err := stdin.Write(data); err != nil {
 					fromClientErrCh <- fmt.Errorf("write exec stdin: %w", err)
+
 					return
 				}
 
 			case *pb.ExecRequest_TerminalResize:
-				if !command.Tty {
+				if !command.GetTty() {
 					continue
 				}
+
 				if err := pty.Setsize(ptmx, &pty.Winsize{
 					Rows: uint16(typed.TerminalResize.GetRows()),
 					Cols: uint16(typed.TerminalResize.GetCols()),
 				}); err != nil {
 					fromClientErrCh <- fmt.Errorf("resize exec terminal: %w", err)
+
 					return
 				}
 			}
@@ -208,6 +226,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 				if ptmx != nil && strings.Contains(err.Error(), "input/output error") {
 					return nil
 				}
+
 				return fmt.Errorf("read exec stdout: %w", err)
 			}
 
@@ -224,7 +243,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	})
 
 	// Stream stderr (only when not using TTY)
-	if !command.Tty {
+	if !command.GetTty() {
 		group.Go(func() error {
 			buf := make([]byte, standardStreamsBufferSize)
 			for {
@@ -233,6 +252,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 					if errors.Is(err, io.EOF) {
 						return nil
 					}
+
 					return fmt.Errorf("read exec stderr: %w", err)
 				}
 
@@ -255,12 +275,13 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 
 	// Wait for command to finish
 	exitCode := int32(0)
+
 	if err := cmd.Wait(); err != nil {
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
 			exitCode = int32(exitError.ExitCode())
 		} else {
-			return fmt.Errorf("wait for command %s: %w", formatCommandAndArgs(command.Name, command.Args), err)
+			return fmt.Errorf("wait for command %s: %w", formatCommandAndArgs(command.GetName(), command.GetArgs()), err)
 		}
 	}
 
@@ -273,6 +294,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	}); err != nil {
 		return fmt.Errorf("send exec exit status: %w", err)
 	}
+
 	return nil
 }
 
@@ -284,6 +306,7 @@ func resolveUID501User() string {
 	if err != nil {
 		return "admin"
 	}
+
 	return u.Username
 }
 
@@ -293,9 +316,11 @@ func shellQuote(s string) string {
 
 func formatCommandAndArgs(name string, args []string) string {
 	all := append([]string{name}, args...)
+
 	quoted := make([]string, len(all))
 	for i, s := range all {
 		quoted[i] = fmt.Sprintf("%q", s)
 	}
+
 	return fmt.Sprintf("[%s]", strings.Join(quoted, ", "))
 }

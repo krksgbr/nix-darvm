@@ -36,5 +36,6 @@ func (rpc *RPC) Run(ctx context.Context) error {
 	if err := rpc.grpcServer.Serve(rpc.listener); err != nil {
 		return fmt.Errorf("serve gRPC listener: %w", err)
 	}
+
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"sync"
@@ -71,13 +72,14 @@ func GenerateCA() (*CAPool, string, error) {
 // The key must be in PKCS#8 format (PEM type "PRIVATE KEY").
 func NewCAPool(certPEM, keyPEM string) (*CAPool, error) {
 	if certPEM == "" || keyPEM == "" {
-		return nil, fmt.Errorf("missing CA cert or key PEM")
+		return nil, errors.New("missing CA cert or key PEM")
 	}
 
 	certBlock, _ := pem.Decode([]byte(certPEM))
 	if certBlock == nil {
-		return nil, fmt.Errorf("failed to decode CA cert PEM")
+		return nil, errors.New("failed to decode CA cert PEM")
 	}
+
 	caCert, err := x509.ParseCertificate(certBlock.Bytes)
 	if err != nil {
 		return nil, fmt.Errorf("parse CA cert: %w", err)
@@ -85,8 +87,9 @@ func NewCAPool(certPEM, keyPEM string) (*CAPool, error) {
 
 	keyBlock, _ := pem.Decode([]byte(keyPEM))
 	if keyBlock == nil {
-		return nil, fmt.Errorf("failed to decode CA key PEM")
+		return nil, errors.New("failed to decode CA key PEM")
 	}
+
 	signer, err := parsePrivateKey(keyBlock)
 	if err != nil {
 		return nil, err
@@ -105,10 +108,13 @@ func (p *CAPool) GetCertificate(serverName string) (*tls.Certificate, error) {
 	now := time.Now()
 
 	p.cacheMu.RLock()
+
 	if cached, ok := p.certCache[serverName]; ok && now.Before(cached.notAfter) {
 		p.cacheMu.RUnlock()
+
 		return cached.cert, nil
 	}
+
 	p.cacheMu.RUnlock()
 
 	cert, notAfter, err := p.generateLeafCert(serverName)
@@ -164,22 +170,26 @@ func parsePrivateKey(block *pem.Block) (crypto.Signer, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse CA key (PKCS#8): %w", err)
 		}
+
 		signer, ok := key.(crypto.Signer)
 		if !ok {
 			return nil, fmt.Errorf("CA key type %T does not implement crypto.Signer", key)
 		}
+
 		return signer, nil
 	case "RSA PRIVATE KEY": // PKCS#1
 		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 		if err != nil {
 			return nil, fmt.Errorf("parse CA key (PKCS#1): %w", err)
 		}
+
 		return key, nil
 	case "EC PRIVATE KEY": // SEC1
 		key, err := x509.ParseECPrivateKey(block.Bytes)
 		if err != nil {
 			return nil, fmt.Errorf("parse CA key (SEC1): %w", err)
 		}
+
 		return key, nil
 	default:
 		return nil, fmt.Errorf("unsupported CA key PEM type: %s", block.Type)
