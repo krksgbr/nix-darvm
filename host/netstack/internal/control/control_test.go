@@ -126,6 +126,8 @@ func (f *fakeStack) SecretCount() int             { return len(f.secrets) }
 func (f *fakeStack) UpdateSecrets(s []SecretRule) { f.secrets = s }
 
 func TestLoad_SameProjectOverwrites(t *testing.T) {
+	t.Parallel()
+
 	srv := initServer(t)
 
 	resp := sendLoad(t, srv.sockPath, "myproj", []SecretRule{{
@@ -145,6 +147,8 @@ func TestLoad_SameProjectOverwrites(t *testing.T) {
 }
 
 func TestLoad_CollisionDifferentProjects(t *testing.T) {
+	t.Parallel()
+
 	srv := initServer(t)
 
 	resp := sendLoad(t, srv.sockPath, "proj-a", []SecretRule{{
@@ -168,6 +172,8 @@ func TestLoad_CollisionDifferentProjects(t *testing.T) {
 }
 
 func TestLoad_SamePlaceholderSameValueNoCrash(t *testing.T) {
+	t.Parallel()
+
 	srv := initServer(t)
 
 	resp := sendLoad(t, srv.sockPath, "proj-a", []SecretRule{{
@@ -187,6 +193,8 @@ func TestLoad_SamePlaceholderSameValueNoCrash(t *testing.T) {
 }
 
 func TestLoad_MissingProjectName(t *testing.T) {
+	t.Parallel()
+
 	srv := initServer(t)
 
 	resp := sendLoad(t, srv.sockPath, "", []SecretRule{{

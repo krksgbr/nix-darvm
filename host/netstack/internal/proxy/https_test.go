@@ -41,6 +41,8 @@ func upstreamTransport(t *testing.T, upstream *httptest.Server) *http.Transport 
 // configured (caPool == nil), HTTPS connections are passed through as raw TCP
 // even for hosts that have secret rules.
 func TestHTTPSNoCA_PassesThroughWithoutMITM(t *testing.T) {
+	t.Parallel()
+
 	secrets := []control.SecretRule{{
 		Name:        "no-ca-secret",
 		Hosts:       []string{"example.com"},
@@ -118,6 +120,8 @@ func TestHTTPSNoCA_PassesThroughWithoutMITM(t *testing.T) {
 // client → proxy (terminates with MITM cert) → upstream (test TLS server).
 // The guest sets Authorization with a placeholder; the proxy replaces it.
 func TestHTTPSIntercept_ReplacesPlaceholderInHeader(t *testing.T) {
+	t.Parallel()
+
 	caPool, mitmRoots := newTestCA(t)
 
 	secrets := []control.SecretRule{{
@@ -173,6 +177,8 @@ func TestHTTPSIntercept_ReplacesPlaceholderInHeader(t *testing.T) {
 // TestHTTPSIntercept_HTTP2Negotiated verifies that the MITM TLS connection
 // negotiates HTTP/2 via ALPN (regression test for the HTTP/2 code path).
 func TestHTTPSIntercept_HTTP2Negotiated(t *testing.T) {
+	t.Parallel()
+
 	caPool, mitmRoots := newTestCA(t)
 
 	secrets := []control.SecretRule{{
@@ -220,6 +226,8 @@ func TestHTTPSIntercept_HTTP2Negotiated(t *testing.T) {
 // hosts get pure TCP passthrough — the client sees the upstream's real TLS
 // certificate, not a MITM-generated one.
 func TestHTTPSPassthrough_PreservesUpstreamCert(t *testing.T) {
+	t.Parallel()
+
 	caPool, _ := newTestCA(t)
 
 	// No secrets for "localhost" — the host is not intercepted.
@@ -292,6 +300,8 @@ func TestHTTPSPassthrough_PreservesUpstreamCert(t *testing.T) {
 // TestHTTPSNoSNI_FallsBackToPassthrough verifies that when the proxy cannot
 // extract an SNI, traffic is passed through as-is.
 func TestHTTPSNoSNI_FallsBackToPassthrough(t *testing.T) {
+	t.Parallel()
+
 	caPool, _ := newTestCA(t)
 
 	secrets := []control.SecretRule{{
@@ -374,6 +384,8 @@ func TestHTTPSNoSNI_FallsBackToPassthrough(t *testing.T) {
 // TestHTTPSIntercept_SSEStreaming verifies that Server-Sent Events are flushed
 // progressively through the proxy (FlushInterval: -1 behavior).
 func TestHTTPSIntercept_SSEStreaming(t *testing.T) {
+	t.Parallel()
+
 	caPool, mitmRoots := newTestCA(t)
 
 	secrets := []control.SecretRule{{

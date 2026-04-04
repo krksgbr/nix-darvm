@@ -17,6 +17,8 @@ import (
 // (not HTTPS) the proxy does NOT replace placeholders — the placeholder passes
 // through as-is. This prevents credential leaks over cleartext.
 func TestHTTPNoReplacement_PlaceholderPassesThrough(t *testing.T) {
+	t.Parallel()
+
 	secrets := []control.SecretRule{{
 		Name:        "test-api-key",
 		Hosts:       []string{"localhost"},
@@ -68,6 +70,8 @@ func TestHTTPNoReplacement_PlaceholderPassesThrough(t *testing.T) {
 // TestHTTPNonInterceptedHost_Unchanged verifies that requests to hosts without
 // secret rules pass through unmodified — original headers preserved.
 func TestHTTPNonInterceptedHost_Unchanged(t *testing.T) {
+	t.Parallel()
+
 	secrets := []control.SecretRule{{
 		Name:        "other-secret",
 		Hosts:       []string{"other.example.com"},
@@ -117,6 +121,8 @@ func TestHTTPNonInterceptedHost_Unchanged(t *testing.T) {
 // TestHTTPKeepAlive verifies that multiple requests over a single kept-alive
 // connection work and that the connection is actually reused.
 func TestHTTPKeepAlive(t *testing.T) {
+	t.Parallel()
+
 	var reqCount atomic.Int32
 
 	secrets := []control.SecretRule{{

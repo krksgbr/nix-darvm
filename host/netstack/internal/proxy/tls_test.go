@@ -9,6 +9,8 @@ import (
 // TestPeekSNI_ValidClientHello writes a real TLS ClientHello into a
 // bufio.Reader and verifies that peekSNI extracts the correct server name.
 func TestPeekSNI_ValidClientHello(t *testing.T) {
+	t.Parallel()
+
 	serverName := "api.example.com"
 
 	hello := tlsClientHelloBytes(t, serverName)
@@ -27,6 +29,8 @@ func TestPeekSNI_ValidClientHello(t *testing.T) {
 // TestPeekSNI_GarbageInput verifies that garbage bytes produce an empty result
 // without panicking.
 func TestPeekSNI_GarbageInput(t *testing.T) {
+	t.Parallel()
+
 	garbage := []byte("this is not a TLS ClientHello at all")
 	br := bufio.NewReaderSize(bytes.NewReader(garbage), 16384+5)
 
@@ -39,6 +43,8 @@ func TestPeekSNI_GarbageInput(t *testing.T) {
 // TestCAPool_CachesAndExpires verifies that GetCertificate returns the same
 // cert on repeated calls (cache hit) and regenerates expired certs.
 func TestCAPool_CachesAndExpires(t *testing.T) {
+	t.Parallel()
+
 	caPool, _ := newTestCA(t)
 
 	// First call generates and caches.
@@ -78,6 +84,8 @@ func TestCAPool_CachesAndExpires(t *testing.T) {
 // TestPeekSNI_ShortInput verifies that input too short for a TLS record header
 // returns empty string without panicking.
 func TestPeekSNI_ShortInput(t *testing.T) {
+	t.Parallel()
+
 	short := []byte{0x16, 0x03} // only 2 bytes, need at least 5
 	br := bufio.NewReaderSize(bytes.NewReader(short), 16384+5)
 
@@ -89,6 +97,8 @@ func TestPeekSNI_ShortInput(t *testing.T) {
 
 // TestPeekSNI_EmptyReader verifies peekSNI handles an empty reader gracefully.
 func TestPeekSNI_EmptyReader(t *testing.T) {
+	t.Parallel()
+
 	br := bufio.NewReaderSize(bytes.NewReader(nil), 16384+5)
 
 	got := peekSNI(br)
@@ -100,6 +110,8 @@ func TestPeekSNI_EmptyReader(t *testing.T) {
 // TestPeekSNI_DoesNotConsume verifies that peekSNI does not consume bytes from
 // the reader — the full ClientHello is still available for subsequent reads.
 func TestPeekSNI_DoesNotConsume(t *testing.T) {
+	t.Parallel()
+
 	hello := tlsClientHelloBytes(t, "nodelete.example.com")
 	if len(hello) == 0 {
 		t.Fatal("generated empty ClientHello")
