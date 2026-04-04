@@ -104,7 +104,7 @@ final class HostCommandBridge {
   /// Writes happen only from the main actor (reload), so no data race.
   nonisolated(unsafe) private var manifest: CapabilitiesManifest
 
-  private var listenerDelegate: ListenerDelegate?
+  private var listenerRetainer: ListenerDelegate?
 
   init(
     virtualMachine: VZVirtualMachine,
@@ -131,7 +131,7 @@ final class HostCommandBridge {
   func start() {
     let listener = VZVirtioSocketListener()
     let delegate = ListenerDelegate(bridge: self)
-    self.listenerDelegate = delegate
+    self.listenerRetainer = delegate
     listener.delegate = delegate
     socketDevice.setSocketListener(listener, forPort: listenPort)
     let actions = manifest.handlers.keys.sorted().joined(separator: ", ")

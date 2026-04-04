@@ -13,7 +13,7 @@ final class VsockDaemonBridge {
   let socketDevice: VZVirtioSocketDevice
   let listenPort: UInt32
   let daemonSocketPath: String
-  private var listenerDelegate: ListenerDelegate?
+  private var listenerRetainer: ListenerDelegate?
 
   init(
     virtualMachine: VZVirtualMachine,
@@ -32,7 +32,7 @@ final class VsockDaemonBridge {
   func start() {
     let listener = VZVirtioSocketListener()
     let delegate = ListenerDelegate(bridge: self)
-    self.listenerDelegate = delegate
+    self.listenerRetainer = delegate
     listener.delegate = delegate
     socketDevice.setSocketListener(listener, forPort: listenPort)
     print("Nix daemon bridge listening on vsock port \(listenPort)")

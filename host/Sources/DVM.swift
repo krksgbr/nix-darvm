@@ -39,7 +39,19 @@ enum DVMLog {
     return FileHandle(forWritingAtPath: logPath)
   }()
 
-  static func log(phase: VMPhase? = nil, level: String = "info", _ msg: String) {
+  static func log(_ msg: String) {
+    log(phase: nil, level: "info", msg)
+  }
+
+  static func log(phase: VMPhase?, _ msg: String) {
+    log(phase: phase, level: "info", msg)
+  }
+
+  static func log(level: String, _ msg: String) {
+    log(phase: nil, level: level, msg)
+  }
+
+  static func log(phase: VMPhase?, level: String, _ msg: String) {
     let elapsed = CFAbsoluteTimeGetCurrent() - processStartTime
     var entry: [String: Any] = [
       "t": String(format: "%.3f", elapsed),

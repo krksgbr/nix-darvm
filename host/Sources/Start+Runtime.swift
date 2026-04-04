@@ -182,7 +182,6 @@ extension Start {
       functionName: functionName,
       tagLogPath: tagLogPath,
       mountPathRaw: mountPathRaw,
-      privateMountPathRaw: privateMountPathRaw,
       mount: mount,
       command: mountDetails.command
     )
@@ -204,10 +203,11 @@ extension Start {
     functionName: String,
     tagLogPath: String,
     mountPathRaw: String,
-    privateMountPathRaw: String,
     mount: MountConfig,
     command: String
   ) -> String {
+    let privateMountPathRaw =
+      mountPathRaw.hasPrefix("/private/") ? mountPathRaw : "/private" + mountPathRaw
     """
     \(functionName)() {
       log_mount() { printf '%s\\n' "$1" >> \(tagLogPath); }

@@ -31,6 +31,12 @@ enum VMConfigurator {
     }
   }
 
+  private struct NetworkDevicesResult {
+    let devices: [VZNetworkDeviceConfiguration]
+    let primaryMAC: VZMACAddress
+    let nfsMACAddress: VZMACAddress?
+  }
+
   /// Create a configured VM.
   ///
   /// - Parameters:
@@ -48,9 +54,9 @@ enum VMConfigurator {
   static func create(
     vmDir: URL,
     mounts: [MountConfig],
+    homeDataDir: URL,
     netstackFD: Int32? = nil,
-    stateDir: URL? = nil,
-    homeDataDir: URL
+    stateDir: URL? = nil
   ) throws -> ConfiguredVM {
     let paths = VMPaths(vmDir: vmDir)
     let config = try TartConfig(fromURL: paths.config)
@@ -114,7 +120,7 @@ enum VMConfigurator {
     tartConfig: TartConfig,
     mounts: [MountConfig],
     netstackFD: Int32?
-  ) -> (devices: [VZNetworkDeviceConfiguration], primaryMAC: VZMACAddress, nfsMACAddress: VZMACAddress?) {
+  ) -> NetworkDevicesResult {
     let primaryNetwork = VZVirtioNetworkDeviceConfiguration()
     let primaryMAC =
       netstackFD != nil
@@ -129,14 +135,22 @@ enum VMConfigurator {
     }
 
     guard mounts.contains(where: { $0.transport == .nfs && $0.isMirror }) else {
-      return ([primaryNetwork], primaryMAC, nil)
+      return NetworkDevicesResult(
+        devices: [primaryNetwork],
+        primaryMAC: primaryMAC,
+        nfsMACAddress: nil
+      )
     }
 
     let nfsNetwork = VZVirtioNetworkDeviceConfiguration()
     let nfsMACAddress = VZMACAddress.randomLocallyAdministered()
     nfsNetwork.macAddress = nfsMACAddress
     nfsNetwork.attachment = VZNATNetworkDeviceAttachment()
-    return ([primaryNetwork, nfsNetwork], primaryMAC, nfsMACAddress)
+    return NetworkDevicesResult(
+      devices: [primaryNetwork, nfsNetwork],
+      primaryMAC: primaryMAC,
+      nfsMACAddress: nfsMACAddress
+    )
   }
 
   private static func makeDirectorySharingDevices(

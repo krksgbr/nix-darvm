@@ -128,9 +128,9 @@ extension Start {
     let configured = try VMConfigurator.create(
       vmDir: prepared.vmDirectory,
       mounts: prepared.mounts,
+      homeDataDir: prepared.homeDataDir,
       netstackFD: prepared.netstackSupervisor.vmFD,
-      stateDir: prepared.stateDir,
-      homeDataDir: prepared.homeDataDir
+      stateDir: prepared.stateDir
     )
     let caCertPEM = try configureNetstack(
       configured: configured,
