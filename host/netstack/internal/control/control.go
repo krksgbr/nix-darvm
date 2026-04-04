@@ -229,89 +229,96 @@ func (s *Server) handleConn(conn net.Conn) {
 func (s *Server) handleRequest(req *Request) *Response {
 	switch req.Type {
 	case "load_config":
-		if req.Config == nil {
-			return &Response{Type: "error", Error: "load_config: missing config"}
-		}
-		// No secrets at startup — credentials are pushed per-project at exec time.
-		// Non-blocking send; first config wins.
-		select {
-		case s.configCh <- *req.Config:
-		default:
-		}
-		// Block until the stack is ready and we have the CA cert PEM.
-		s.mu.Lock()
-		readyCh := s.readyCh
-		s.mu.Unlock()
-
-		if readyCh != nil {
-			<-readyCh
-		}
-
-		s.mu.Lock()
-		caPEM := s.caCertPEM
-		s.mu.Unlock()
-
-		return &Response{Type: "ready", GuestIP: req.Config.GuestIP, CACertPEM: caPEM}
-
+		return s.handleLoadConfigRequest(req)
 	case "load":
-		// Per-project credential push. Same project name overwrites previous.
-		s.mu.Lock()
-
-		st := s.stack
-		if st == nil {
-			s.mu.Unlock()
-
-			return &Response{Type: "error", Error: "stack not initialized"}
-		}
-
-		if req.ProjectName == "" {
-			s.mu.Unlock()
-
-			return &Response{Type: "error", Error: "load: missing project_name"}
-		}
-		// Collision detection: same placeholder with different value across
-		// different projects is an error (indicates a placeholder derivation bug
-		// or two projects claiming the same identity).
-		if err := s.checkCollisions(req.ProjectName, req.Secrets); err != nil {
-			s.mu.Unlock()
-
-			return &Response{Type: "error", Error: err.Error()}
-		}
-
-		s.projects[req.ProjectName] = req.Secrets
-		merged := s.mergedSecrets()
-		st.UpdateSecrets(merged)
-		s.mu.Unlock()
-
-		return &Response{Type: "ok"}
-
+		return s.handleLoadRequest(req)
 	case "status":
-		s.mu.Lock()
-		st := s.stack
-		s.mu.Unlock()
-
-		info := &StatusInfo{
-			Healthy:     st != nil,
-			SecretCount: 0,
-		}
-		if st != nil {
-			info.SecretCount = st.SecretCount()
-		}
-
-		return &Response{Type: "status", Status: info}
-
+		return s.handleStatusRequest()
 	case "shutdown":
-		log.Println("control: shutdown requested")
-
-		select {
-		case <-s.shutdownCh:
-		default:
-			close(s.shutdownCh)
-		}
-
-		return &Response{Type: "ok"}
-
+		return s.handleShutdownRequest()
 	default:
 		return &Response{Type: "error", Error: fmt.Sprintf("unknown request type: %q", req.Type)}
 	}
+}
+
+func (s *Server) handleLoadConfigRequest(req *Request) *Response {
+	if req.Config == nil {
+		return &Response{Type: "error", Error: "load_config: missing config"}
+	}
+
+	select {
+	case s.configCh <- *req.Config:
+	default:
+	}
+
+	readyCh := s.readyChannel()
+	if readyCh != nil {
+		<-readyCh
+	}
+
+	return &Response{
+		Type:      "ready",
+		GuestIP:   req.Config.GuestIP,
+		CACertPEM: s.readyCACertPEM(),
+	}
+}
+
+func (s *Server) handleLoadRequest(req *Request) *Response {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.stack == nil {
+		return &Response{Type: "error", Error: "stack not initialized"}
+	}
+	if req.ProjectName == "" {
+		return &Response{Type: "error", Error: "load: missing project_name"}
+	}
+	if err := s.checkCollisions(req.ProjectName, req.Secrets); err != nil {
+		return &Response{Type: "error", Error: err.Error()}
+	}
+
+	s.projects[req.ProjectName] = req.Secrets
+	merged := s.mergedSecrets()
+	s.stack.UpdateSecrets(merged)
+
+	return &Response{Type: "ok"}
+}
+
+func (s *Server) handleStatusRequest() *Response {
+	s.mu.Lock()
+	st := s.stack
+	s.mu.Unlock()
+
+	info := &StatusInfo{Healthy: st != nil, SecretCount: 0}
+	if st != nil {
+		info.SecretCount = st.SecretCount()
+	}
+
+	return &Response{Type: "status", Status: info}
+}
+
+func (s *Server) handleShutdownRequest() *Response {
+	log.Println("control: shutdown requested")
+
+	select {
+	case <-s.shutdownCh:
+	default:
+		close(s.shutdownCh)
+	}
+
+	return &Response{Type: "ok"}
+}
+
+func (s *Server) readyChannel() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.readyCh
+}
+
+func (s *Server) readyCACertPEM() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.caCertPEM
 }

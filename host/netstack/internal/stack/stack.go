@@ -158,59 +158,13 @@ func New(cfg *Config) (*Stack, error) {
 
 	log.Println("dhcp: server started")
 
-	// Start DNS server
-	udpConn, err := gonet.DialUDP(s, &tcpip.FullAddress{
-		NIC:  1,
-		Addr: gatewayAddr,
-		Port: 53,
-	}, nil, ipv4.ProtocolNumber)
-	if err != nil {
-		return nil, fmt.Errorf("dns udp bind: %w", err)
+	if err := startDNSServer(s, gatewayAddr, gvConfig.DNS); err != nil {
+		return nil, err
 	}
 
-	tcpLn, err := gonet.ListenTCP(s, tcpip.FullAddress{
-		NIC:  1,
-		Addr: gatewayAddr,
-		Port: 53,
-	}, ipv4.ProtocolNumber)
+	caPool, err := newCAPool(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("dns tcp bind: %w", err)
-	}
-
-	dnsServer, err := gvdns.New(udpConn, tcpLn, gvConfig.DNS)
-	if err != nil {
-		return nil, fmt.Errorf("dns server: %w", err)
-	}
-
-	go func() { _ = dnsServer.Serve() }()
-	go func() { _ = dnsServer.ServeTCP() }()
-
-	log.Println("dns: server started")
-
-	// Credential interception.
-	// If no CA PEM provided, generate one in Go (more reliable than Swift DER builder).
-	var caPool *proxy.CAPool
-
-	if cfg.CACertPEM != "" && cfg.CAKeyPEM != "" {
-		var err2 error
-
-		caPool, err2 = proxy.NewCAPool(cfg.CACertPEM, cfg.CAKeyPEM)
-		if err2 != nil {
-			return nil, fmt.Errorf("CA pool: %w", err2)
-		}
-	} else {
-		var (
-			certPEM string
-			err2    error
-		)
-
-		caPool, certPEM, err2 = proxy.GenerateCA()
-		if err2 != nil {
-			return nil, fmt.Errorf("generate CA: %w", err2)
-		}
-
-		cfg.CACertPEM = certPEM
-		log.Printf("generated ephemeral MITM CA (%d bytes PEM)", len(certPEM))
+		return nil, err
 	}
 
 	interceptor := proxy.NewInterceptor(cfg.Secrets, caPool)
@@ -323,72 +277,90 @@ func (ns *Stack) handleTCPConnection(r *tcp.ForwarderRequest) {
 }
 
 func (ns *Stack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int) {
-	defer func() {
-		if err := guestConn.Close(); err != nil {
-			log.Printf("passthrough: close guest conn: %v", err)
-		}
-	}()
+	defer closeWithLog("passthrough: close guest conn", guestConn)
 
 	target := net.JoinHostPort(dstIP, strconv.Itoa(dstPort))
-
 	realConn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", target)
 	if err != nil {
 		log.Printf("passthrough: dial %s: %v", target, err)
-
 		return
 	}
-
-	defer func() {
-		if err := realConn.Close(); err != nil {
-			log.Printf("passthrough: close upstream conn: %v", err)
-		}
-	}()
+	defer closeWithLog("passthrough: close upstream conn", realConn)
 
 	done := make(chan struct{})
-
 	go func() {
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := realConn.Read(buf)
-			if n > 0 {
-				if _, writeErr := guestConn.Write(buf[:n]); writeErr != nil {
-					log.Printf("passthrough: write to guest: %v", writeErr)
-
-					break
-				}
-			}
-
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					log.Printf("passthrough: read from upstream: %v", err)
-				}
-
-				break
-			}
-		}
-
-		close(done)
+		defer close(done)
+		proxyPassthroughStream("upstream", realConn, "guest", guestConn)
 	}()
 
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := guestConn.Read(buf)
-		if n > 0 {
-			if _, writeErr := realConn.Write(buf[:n]); writeErr != nil {
-				log.Printf("passthrough: write to upstream: %v", writeErr)
+	proxyPassthroughStream("guest", guestConn, "upstream", realConn)
+	<-done
+}
 
-				break
-			}
-		}
-
-		if err != nil {
-			if !errors.Is(err, io.EOF) {
-				log.Printf("passthrough: read from guest: %v", err)
-			}
-
-			break
-		}
+func startDNSServer(s *gstack.Stack, gatewayAddr tcpip.Address, zones []types.Zone) error {
+	udpConn, err := gonet.DialUDP(s, &tcpip.FullAddress{NIC: 1, Addr: gatewayAddr, Port: 53}, nil, ipv4.ProtocolNumber)
+	if err != nil {
+		return fmt.Errorf("dns udp bind: %w", err)
 	}
 
-	<-done
+	tcpLn, err := gonet.ListenTCP(s, tcpip.FullAddress{NIC: 1, Addr: gatewayAddr, Port: 53}, ipv4.ProtocolNumber)
+	if err != nil {
+		return fmt.Errorf("dns tcp bind: %w", err)
+	}
+
+	dnsServer, err := gvdns.New(udpConn, tcpLn, zones)
+	if err != nil {
+		return fmt.Errorf("dns server: %w", err)
+	}
+
+	go func() { _ = dnsServer.Serve() }()
+	go func() { _ = dnsServer.ServeTCP() }()
+	log.Println("dns: server started")
+	return nil
+}
+
+func newCAPool(cfg *Config) (*proxy.CAPool, error) {
+	if cfg.CACertPEM != "" && cfg.CAKeyPEM != "" {
+		caPool, err := proxy.NewCAPool(cfg.CACertPEM, cfg.CAKeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("CA pool: %w", err)
+		}
+		return caPool, nil
+	}
+
+	caPool, certPEM, err := proxy.GenerateCA()
+	if err != nil {
+		return nil, fmt.Errorf("generate CA: %w", err)
+	}
+
+	cfg.CACertPEM = certPEM
+	log.Printf("generated ephemeral MITM CA (%d bytes PEM)", len(certPEM))
+	return caPool, nil
+}
+
+func closeWithLog(operation string, closer io.Closer) {
+	if err := closer.Close(); err != nil {
+		log.Printf("%s: %v", operation, err)
+	}
+}
+
+func proxyPassthroughStream(srcName string, src io.Reader, dstName string, dst io.Writer) {
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+				log.Printf("passthrough: write to %s: %v", dstName, writeErr)
+				return
+			}
+		}
+
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, io.EOF) {
+			log.Printf("passthrough: read from %s: %v", srcName, err)
+		}
+		return
+	}
 }

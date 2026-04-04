@@ -11,6 +11,7 @@ linters:
     - containedctx
     - contextcheck
     - copyloopvar
+    - cyclop
     - decorder
     - dogsled
     - dupl
@@ -39,6 +40,7 @@ linters:
     - goheader
     - gomoddirectives
     - gomodguard
+    - gocognit
     - goprintffuncname
     - gosec
     - gosmopolitan
@@ -95,6 +97,9 @@ linters:
     - whitespace
     - wrapcheck
   settings:
+    cyclop:
+      max-complexity: 15
+
     exhaustruct:
       include:
         - github.com/unbody/darvm/netstack/internal/control\.(Request|NetConfig|StatusInfo)

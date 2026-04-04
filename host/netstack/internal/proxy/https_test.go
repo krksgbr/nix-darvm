@@ -442,17 +442,30 @@ func TestHTTPSIntercept_SSEStreaming(t *testing.T) {
 		}
 	}()
 
+	assertSSEContentType(t, resp)
+	received, progressive := collectSSEEvents(t, resp.Body)
+	assertSSESequence(t, events, received)
+	if !progressive {
+		t.Error("SSE events were not delivered progressively — possible buffering issue")
+	}
+}
+
+func assertSSEContentType(t *testing.T, resp *http.Response) {
+	t.Helper()
+
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Fatalf("expected Content-Type text/event-stream, got %q", ct)
 	}
+}
 
-	scanner := bufio.NewScanner(resp.Body)
+func collectSSEEvents(t *testing.T, body io.Reader) ([]string, bool) {
+	t.Helper()
 
+	scanner := bufio.NewScanner(body)
 	var (
 		received []string
 		lastTime time.Time
 	)
-
 	progressive := true
 
 	for scanner.Scan() {
@@ -462,13 +475,10 @@ func TestHTTPSIntercept_SSEStreaming(t *testing.T) {
 		}
 
 		now := time.Now()
-
 		received = append(received, strings.TrimPrefix(line, "data: "))
-
 		if !lastTime.IsZero() && now.Sub(lastTime) < 10*time.Millisecond {
 			progressive = false
 		}
-
 		lastTime = now
 	}
 
@@ -476,18 +486,20 @@ func TestHTTPSIntercept_SSEStreaming(t *testing.T) {
 		t.Fatalf("scanner error: %v", err)
 	}
 
-	if len(received) != len(events) {
-		t.Fatalf("expected %d events, got %d: %v", len(events), len(received), received)
+	return received, progressive
+}
+
+func assertSSESequence(t *testing.T, expected, received []string) {
+	t.Helper()
+
+	if len(received) != len(expected) {
+		t.Fatalf("expected %d events, got %d: %v", len(expected), len(received), received)
 	}
 
-	for i, ev := range events {
+	for i, ev := range expected {
 		if received[i] != ev {
 			t.Errorf("event %d: expected %q, got %q", i, ev, received[i])
 		}
-	}
-
-	if !progressive {
-		t.Error("SSE events were not delivered progressively — possible buffering issue")
 	}
 }
 

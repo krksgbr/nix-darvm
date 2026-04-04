@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -27,18 +28,10 @@ const (
 var errFirstExecRequestNotCommand = errors.New("first exec request must describe a command")
 
 func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResponse]) error {
-	// First request must describe the command to execute
-	firstReq, err := stream.Recv()
+	command, err := receiveExecCommand(stream)
 	if err != nil {
-		return fmt.Errorf("receive exec command: %w", err)
+		return err
 	}
-
-	cmdReq, ok := firstReq.GetType().(*pb.ExecRequest_Command)
-	if !ok {
-		return errFirstExecRequestNotCommand
-	}
-
-	command := cmdReq.Command
 	log.Printf("exec: %s (tty=%v interactive=%v cwd=%q)", formatCommandAndArgs(command.GetName(), command.GetArgs()),
 		command.GetTty(), command.GetInteractive(), command.GetWorkingDirectory())
 
@@ -53,47 +46,8 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 	// TTY sessions get TERM=xterm-256color injected (sudo -i resets env).
 	execUser := resolveUID501User()
 
-	// Build env prefix: TERM for TTY + any env vars from the gRPC request.
-	// These are prepended to the shell command so they survive sudo -iu's env reset.
-	var envParts []string
-	if command.GetTty() {
-		envParts = append(envParts, "export TERM=xterm-256color")
-	}
-
-	for _, ev := range command.GetEnvironment() {
-		envParts = append(envParts, fmt.Sprintf("export %s=%s", ev.GetName(), shellQuote(ev.GetValue())))
-	}
-
-	var envPrefix string
-	if len(envParts) > 0 {
-		envPrefix = strings.Join(envParts, "; ") + "; "
-	}
-
-	var cmd *exec.Cmd
-	if command.GetName() == "sudo" {
-		cmd = exec.CommandContext(stream.Context(), command.GetName(), command.GetArgs()...) //nolint:gosec // Exec is an explicit remote command execution API.
-		configureDirectSudoCommand(cmd, command)
-	} else if command.GetWorkingDirectory() != "" || envPrefix != "" {
-		inner := shellQuote(command.GetName())
-		var innerSb81 strings.Builder
-		for _, a := range command.GetArgs() {
-			innerSb81.WriteString(" " + shellQuote(a))
-		}
-		inner += innerSb81.String()
-
-		var shellCmd string
-		if command.GetWorkingDirectory() != "" {
-			shellCmd = fmt.Sprintf("%scd %s && exec %s", envPrefix, shellQuote(command.GetWorkingDirectory()), inner)
-		} else {
-			shellCmd = fmt.Sprintf("%sexec %s", envPrefix, inner)
-		}
-
-		args := []string{"-iu", execUser, "--", "sh", "-c", shellCmd}
-		cmd = exec.CommandContext(stream.Context(), "sudo", args...) //nolint:gosec // Exec is an explicit remote command execution API.
-	} else {
-		args := append([]string{"-iu", execUser, "--", command.GetName()}, command.GetArgs()...)
-		cmd = exec.CommandContext(stream.Context(), "sudo", args...) //nolint:gosec // Exec is an explicit remote command execution API.
-	}
+	envPrefix := buildExecEnvPrefix(command)
+	cmd := buildExecCommand(stream.Context(), command, execUser, envPrefix)
 
 	var (
 		stdin          io.WriteCloser
@@ -118,173 +72,257 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 		}()
 	}
 
-	// Handle stdin and terminal resize from client
 	fromClientErrCh := make(chan error, 1)
-
-	go func() {
-		for {
-			request, err := stream.Recv()
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					fromClientErrCh <- fmt.Errorf("receive exec stream input: %w", err)
-				}
-
-				return
-			}
-
-			switch typed := request.GetType().(type) {
-			case *pb.ExecRequest_StandardInput:
-				if !command.GetInteractive() {
-					continue
-				}
-
-				data := typed.StandardInput.GetData()
-
-				if len(data) == 0 {
-					if command.GetTty() {
-						// PTY: send EOF character instead of closing
-						data = []byte{eofChar}
-					} else {
-						if err := stdin.Close(); err != nil {
-							fromClientErrCh <- fmt.Errorf("close exec stdin: %w", err)
-
-							return
-						}
-
-						continue
-					}
-				}
-
-				if _, err := stdin.Write(data); err != nil {
-					fromClientErrCh <- fmt.Errorf("write exec stdin: %w", err)
-
-					return
-				}
-
-			case *pb.ExecRequest_TerminalResize:
-				if !command.GetTty() {
-					continue
-				}
-
-				rows, err := uint32ToUint16(typed.TerminalResize.GetRows(), "resize terminal rows")
-				if err != nil {
-					fromClientErrCh <- err
-
-					return
-				}
-
-				cols, err := uint32ToUint16(typed.TerminalResize.GetCols(), "resize terminal cols")
-				if err != nil {
-					fromClientErrCh <- err
-
-					return
-				}
-
-				if err := pty.Setsize(ptmx, &pty.Winsize{
-					Rows: rows,
-					Cols: cols,
-				}); err != nil {
-					fromClientErrCh <- fmt.Errorf("resize exec terminal: %w", err)
-
-					return
-				}
-			}
-		}
-	}()
+	go pumpExecRequests(stream, command, stdin, ptmx, fromClientErrCh)
 
 	group, _ := errgroup.WithContext(stream.Context())
-
-	// Stream stdout
-	group.Go(func() error {
-		buf := make([]byte, standardStreamsBufferSize)
-		for {
-			n, err := stdout.Read(buf)
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return nil
-				}
-				// PTY way of signalling EOF
-				if ptmx != nil && strings.Contains(err.Error(), "input/output error") {
-					return nil
-				}
-
-				return fmt.Errorf("read exec stdout: %w", err)
-			}
-
-			if err := stream.Send(&pb.ExecResponse{
-				Type: &pb.ExecResponse_StandardOutput{
-					StandardOutput: &pb.IOChunk{
-						Data: slices.Clone(buf[:n]),
-					},
-				},
-			}); err != nil {
-				return fmt.Errorf("send exec stdout: %w", err)
-			}
-		}
-	})
-
-	// Stream stderr (only when not using TTY)
-	if !command.GetTty() {
-		group.Go(func() error {
-			buf := make([]byte, standardStreamsBufferSize)
-			for {
-				n, err := stderr.Read(buf)
-				if err != nil {
-					if errors.Is(err, io.EOF) {
-						return nil
-					}
-
-					return fmt.Errorf("read exec stderr: %w", err)
-				}
-
-				if err := stream.Send(&pb.ExecResponse{
-					Type: &pb.ExecResponse_StandardError{
-						StandardError: &pb.IOChunk{
-							Data: slices.Clone(buf[:n]),
-						},
-					},
-				}); err != nil {
-					return fmt.Errorf("send exec stderr: %w", err)
-				}
-			}
-		})
-	}
+	startExecOutputPump(group, stream, command, stdout, stderr, ptmx)
 
 	if err := group.Wait(); err != nil {
 		log.Printf("exec stream: %v", err)
 	}
 
-	// Wait for command to finish
-	exitCode := int32(0)
+	select {
+	case err := <-fromClientErrCh:
+		log.Printf("exec input: %v", err)
+	default:
+	}
 
+	return waitForExecAndSendExit(stream, cmd, command)
+}
+
+// resolveUID501User returns the username for UID 501.
+// This is the primary VM user — "admin" in the base image, potentially
+// renamed to the host username by dvm-core at startup.
+func receiveExecCommand(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResponse]) (*pb.Command, error) {
+	firstReq, err := stream.Recv()
+	if err != nil {
+		return nil, fmt.Errorf("receive exec command: %w", err)
+	}
+
+	cmdReq, ok := firstReq.GetType().(*pb.ExecRequest_Command)
+	if !ok {
+		return nil, errFirstExecRequestNotCommand
+	}
+
+	return cmdReq.Command, nil
+}
+
+func buildExecEnvPrefix(command *pb.Command) string {
+	var envParts []string
+	if command.GetTty() {
+		envParts = append(envParts, "export TERM=xterm-256color")
+	}
+
+	for _, ev := range command.GetEnvironment() {
+		envParts = append(envParts, fmt.Sprintf("export %s=%s", ev.GetName(), shellQuote(ev.GetValue())))
+	}
+
+	if len(envParts) == 0 {
+		return ""
+	}
+
+	return strings.Join(envParts, "; ") + "; "
+}
+
+func buildExecCommand(ctx context.Context, command *pb.Command, execUser, envPrefix string) *exec.Cmd {
+	if command.GetName() == "sudo" {
+		cmd := exec.CommandContext(ctx, command.GetName(), command.GetArgs()...) //nolint:gosec // Exec is an explicit remote command execution API.
+		configureDirectSudoCommand(cmd, command)
+		return cmd
+	}
+
+	if command.GetWorkingDirectory() != "" || envPrefix != "" {
+		return buildShellExecCommand(ctx, command, execUser, envPrefix)
+	}
+
+	args := append([]string{"-iu", execUser, "--", command.GetName()}, command.GetArgs()...)
+	return exec.CommandContext(ctx, "sudo", args...) //nolint:gosec // Exec is an explicit remote command execution API.
+}
+
+func buildShellExecCommand(ctx context.Context, command *pb.Command, execUser, envPrefix string) *exec.Cmd {
+	inner := shellQuote(command.GetName())
+	var quotedArgs strings.Builder
+	for _, a := range command.GetArgs() {
+		quotedArgs.WriteString(" " + shellQuote(a))
+	}
+	inner += quotedArgs.String()
+
+	var shellCmd string
+	if command.GetWorkingDirectory() != "" {
+		shellCmd = fmt.Sprintf("%scd %s && exec %s", envPrefix, shellQuote(command.GetWorkingDirectory()), inner)
+	} else {
+		shellCmd = fmt.Sprintf("%sexec %s", envPrefix, inner)
+	}
+
+	args := []string{"-iu", execUser, "--", "sh", "-c", shellCmd}
+	return exec.CommandContext(ctx, "sudo", args...) //nolint:gosec // Exec is an explicit remote command execution API.
+}
+
+func pumpExecRequests(
+	stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResponse],
+	command *pb.Command,
+	stdin io.WriteCloser,
+	ptmx *os.File,
+	errCh chan<- error,
+) {
+	for {
+		request, err := stream.Recv()
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				errCh <- fmt.Errorf("receive exec stream input: %w", err)
+			}
+
+			return
+		}
+
+		switch typed := request.GetType().(type) {
+		case *pb.ExecRequest_StandardInput:
+			if err := handleExecStandardInput(command, stdin, typed.StandardInput.GetData()); err != nil {
+				errCh <- err
+				return
+			}
+		case *pb.ExecRequest_TerminalResize:
+			if err := handleExecTerminalResize(command, ptmx, typed.TerminalResize); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}
+}
+
+func handleExecStandardInput(command *pb.Command, stdin io.WriteCloser, data []byte) error {
+	if !command.GetInteractive() {
+		return nil
+	}
+
+	if len(data) == 0 {
+		if command.GetTty() {
+			data = []byte{eofChar}
+		} else {
+			if err := stdin.Close(); err != nil {
+				return fmt.Errorf("close exec stdin: %w", err)
+			}
+			return nil
+		}
+	}
+
+	if _, err := stdin.Write(data); err != nil {
+		return fmt.Errorf("write exec stdin: %w", err)
+	}
+
+	return nil
+}
+
+func handleExecTerminalResize(command *pb.Command, ptmx *os.File, resize *pb.TerminalSize) error {
+	if !command.GetTty() {
+		return nil
+	}
+
+	rows, err := uint32ToUint16(resize.GetRows(), "resize terminal rows")
+	if err != nil {
+		return err
+	}
+
+	cols, err := uint32ToUint16(resize.GetCols(), "resize terminal cols")
+	if err != nil {
+		return err
+	}
+
+	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: rows, Cols: cols}); err != nil {
+		return fmt.Errorf("resize exec terminal: %w", err)
+	}
+
+	return nil
+}
+
+func startExecOutputPump(
+	group *errgroup.Group,
+	stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResponse],
+	command *pb.Command,
+	stdout io.ReadCloser,
+	stderr io.ReadCloser,
+	ptmx *os.File,
+) {
+	group.Go(func() error {
+		return streamExecPipe(stream, stdout, ptmx != nil, pb.ExecResponse_StandardOutput{StandardOutput: &pb.IOChunk{}})
+	})
+
+	if !command.GetTty() {
+		group.Go(func() error {
+			return streamExecPipe(stream, stderr, false, pb.ExecResponse_StandardError{StandardError: &pb.IOChunk{}})
+		})
+	}
+}
+
+func streamExecPipe(
+	stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResponse],
+	reader io.ReadCloser,
+	ignorePTYEOF bool,
+	response any,
+) error {
+	buf := make([]byte, standardStreamsBufferSize)
+	for {
+		n, err := reader.Read(buf)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			if ignorePTYEOF && strings.Contains(err.Error(), "input/output error") {
+				return nil
+			}
+
+			switch response.(type) {
+			case pb.ExecResponse_StandardOutput:
+				return fmt.Errorf("read exec stdout: %w", err)
+			default:
+				return fmt.Errorf("read exec stderr: %w", err)
+			}
+		}
+
+		data := slices.Clone(buf[:n])
+		var sendErr error
+		switch response.(type) {
+		case pb.ExecResponse_StandardOutput:
+			sendErr = stream.Send(&pb.ExecResponse{Type: &pb.ExecResponse_StandardOutput{StandardOutput: &pb.IOChunk{Data: data}}})
+			if sendErr != nil {
+				return fmt.Errorf("send exec stdout: %w", sendErr)
+			}
+		default:
+			sendErr = stream.Send(&pb.ExecResponse{Type: &pb.ExecResponse_StandardError{StandardError: &pb.IOChunk{Data: data}}})
+			if sendErr != nil {
+				return fmt.Errorf("send exec stderr: %w", sendErr)
+			}
+		}
+	}
+}
+
+func waitForExecAndSendExit(
+	stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResponse],
+	cmd *exec.Cmd,
+	command *pb.Command,
+) error {
+	exitCode := int32(0)
 	if err := cmd.Wait(); err != nil {
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
-			exitCode, err = intToInt32(exitError.ExitCode(), "command exit code")
-			if err != nil {
-				return err
+			converted, convErr := intToInt32(exitError.ExitCode(), "command exit code")
+			if convErr != nil {
+				return convErr
 			}
+			exitCode = converted
 		} else {
 			return fmt.Errorf("wait for command %s: %w", formatCommandAndArgs(command.GetName(), command.GetArgs()), err)
 		}
 	}
 
-	if err := stream.Send(&pb.ExecResponse{
-		Type: &pb.ExecResponse_Exit{
-			Exit: &pb.Exit{
-				Code: exitCode,
-			},
-		},
-	}); err != nil {
+	if err := stream.Send(&pb.ExecResponse{Type: &pb.ExecResponse_Exit{Exit: &pb.Exit{Code: exitCode}}}); err != nil {
 		return fmt.Errorf("send exec exit status: %w", err)
 	}
 
 	return nil
 }
 
-// resolveUID501User returns the username for UID 501.
-// This is the primary VM user — "admin" in the base image, potentially
-// renamed to the host username by dvm-core at startup.
 func configureDirectSudoCommand(cmd *exec.Cmd, command *pb.Command) {
 	if cwd := command.GetWorkingDirectory(); cwd != "" {
 		cmd.Dir = cwd
