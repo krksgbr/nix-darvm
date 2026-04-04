@@ -27,6 +27,8 @@ import (
 
 type connInfoKey struct{}
 
+var errSNIExtracted = errors.New("sni extracted")
+
 type connInfo struct {
 	scheme  string
 	dstIP   string
@@ -387,7 +389,7 @@ func peekSNI(br *bufio.Reader) string {
 		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
 			sni = hello.ServerName
 
-			return nil, errors.New("sni extracted")
+			return nil, errSNIExtracted
 		},
 	})
 	if err := srv.HandshakeContext(context.Background()); err == nil {

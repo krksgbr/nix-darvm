@@ -14,6 +14,8 @@ import (
 	"sync"
 )
 
+var errPlaceholderCollision = errors.New("load placeholder collision")
+
 // SecretRule is a resolved secret passed from dvm-core.
 // The proxy replaces Placeholder with Value in HTTPS request headers for
 // matching Hosts. No inject modes — the guest tool decides how to use the
@@ -174,8 +176,8 @@ func (s *Server) checkCollisions(incomingProject string, incoming []SecretRule) 
 		for _, es := range existing {
 			for _, is := range incoming {
 				if es.Placeholder == is.Placeholder && es.Value != is.Value {
-					return fmt.Errorf("load: placeholder collision: %q has different values in projects %q and %q",
-						es.Placeholder, projName, incomingProject)
+					return fmt.Errorf("%w: %q has different values in projects %q and %q",
+						errPlaceholderCollision, es.Placeholder, projName, incomingProject)
 				}
 			}
 		}

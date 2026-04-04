@@ -32,6 +32,11 @@ import (
 	"gvisor.dev/gvisor/pkg/waiter"
 )
 
+var (
+	errCreateNIC  = errors.New("create NIC")
+	errAddAddress = errors.New("add protocol address")
+)
+
 // Config configures the network stack.
 type Config struct {
 	FrameConn  net.Conn
@@ -121,7 +126,7 @@ func New(cfg *Config) (*Stack, error) {
 	})
 
 	if tcpipErr := s.CreateNIC(1, tapEndpoint); tcpipErr != nil {
-		return nil, fmt.Errorf("create NIC: %v", tcpipErr)
+		return nil, fmt.Errorf("%w: %v", errCreateNIC, tcpipErr)
 	}
 
 	gatewayAddr := tcpip.AddrFrom4Slice(net.ParseIP(cfg.GatewayIP).To4())
@@ -129,7 +134,7 @@ func New(cfg *Config) (*Stack, error) {
 		Protocol:          ipv4.ProtocolNumber,
 		AddressWithPrefix: gatewayAddr.WithPrefix(),
 	}, gstack.AddressProperties{}); tcpipErr != nil {
-		return nil, fmt.Errorf("add address: %v", tcpipErr)
+		return nil, fmt.Errorf("%w: %v", errAddAddress, tcpipErr)
 	}
 
 	s.SetRouteTable([]tcpip.Route{{

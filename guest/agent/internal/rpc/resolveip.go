@@ -11,6 +11,8 @@ import (
 	pb "github.com/unbody/darvm/agent/gen"
 )
 
+var errResolveIPNotFound = errors.New("cannot resolve VM's IP address")
+
 func (rpc *RPC) ResolveIP(ctx context.Context, _ *pb.ResolveIPRequest) (*pb.ResolveIPResponse, error) {
 	defaultGateways := map[string]struct{}{}
 
@@ -62,5 +64,5 @@ func (rpc *RPC) ResolveIP(ctx context.Context, _ *pb.ResolveIPRequest) (*pb.Reso
 		return &pb.ResolveIPResponse{Ip: fallback}, nil
 	}
 
-	return nil, errors.New("cannot resolve VM's IP address")
+	return nil, errResolveIPNotFound
 }

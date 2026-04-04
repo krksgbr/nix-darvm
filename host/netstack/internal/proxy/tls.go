@@ -16,6 +16,14 @@ import (
 	"time"
 )
 
+var (
+	errMissingCAPEM      = errors.New("missing CA cert or key PEM")
+	errDecodeCACertPEM   = errors.New("failed to decode CA cert PEM")
+	errDecodeCAKeyPEM    = errors.New("failed to decode CA key PEM")
+	errCAKeyNotSigner    = errors.New("CA key does not implement crypto.Signer")
+	errUnsupportedKeyPEM = errors.New("unsupported CA key PEM type")
+)
+
 // CAPool holds a CA certificate and key for issuing leaf certs.
 type CAPool struct {
 	caCert    *x509.Certificate
@@ -72,12 +80,12 @@ func GenerateCA() (*CAPool, string, error) {
 // The key must be in PKCS#8 format (PEM type "PRIVATE KEY").
 func NewCAPool(certPEM, keyPEM string) (*CAPool, error) {
 	if certPEM == "" || keyPEM == "" {
-		return nil, errors.New("missing CA cert or key PEM")
+		return nil, errMissingCAPEM
 	}
 
 	certBlock, _ := pem.Decode([]byte(certPEM))
 	if certBlock == nil {
-		return nil, errors.New("failed to decode CA cert PEM")
+		return nil, errDecodeCACertPEM
 	}
 
 	caCert, err := x509.ParseCertificate(certBlock.Bytes)
@@ -87,7 +95,7 @@ func NewCAPool(certPEM, keyPEM string) (*CAPool, error) {
 
 	keyBlock, _ := pem.Decode([]byte(keyPEM))
 	if keyBlock == nil {
-		return nil, errors.New("failed to decode CA key PEM")
+		return nil, errDecodeCAKeyPEM
 	}
 
 	signer, err := parsePrivateKey(keyBlock)
@@ -173,7 +181,7 @@ func parsePrivateKey(block *pem.Block) (crypto.Signer, error) {
 
 		signer, ok := key.(crypto.Signer)
 		if !ok {
-			return nil, fmt.Errorf("CA key type %T does not implement crypto.Signer", key)
+			return nil, fmt.Errorf("%w: %T", errCAKeyNotSigner, key)
 		}
 
 		return signer, nil
@@ -192,6 +200,6 @@ func parsePrivateKey(block *pem.Block) (crypto.Signer, error) {
 
 		return key, nil
 	default:
-		return nil, fmt.Errorf("unsupported CA key PEM type: %s", block.Type)
+		return nil, fmt.Errorf("%w: %s", errUnsupportedKeyPEM, block.Type)
 	}
 }

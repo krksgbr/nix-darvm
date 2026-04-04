@@ -23,6 +23,8 @@ const (
 	execUID                   = 501 // UID of the primary VM user (admin or renamed)
 )
 
+var errFirstExecRequestNotCommand = errors.New("first exec request must describe a command")
+
 func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResponse]) error {
 	// First request must describe the command to execute
 	firstReq, err := stream.Recv()
@@ -32,7 +34,7 @@ func (rpc *RPC) Exec(stream grpc.BidiStreamingServer[pb.ExecRequest, pb.ExecResp
 
 	cmdReq, ok := firstReq.GetType().(*pb.ExecRequest_Command)
 	if !ok {
-		return errors.New("first exec request must describe a command")
+		return errFirstExecRequestNotCommand
 	}
 
 	command := cmdReq.Command

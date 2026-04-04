@@ -10,6 +10,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var errNonVSockPeer = errors.New("accepted a non-AF_VSOCK connection on an AF_VSOCK socket")
+
 type listener struct {
 	file *os.File
 	port uint32
@@ -87,7 +89,7 @@ func (listener *listener) Accept() (net.Conn, error) {
 			log.Printf("vsock: close accepted file after non-vsock peer on port %d: %v", listener.port, closeErr)
 		}
 
-		return nil, errors.New("accepted a non-AF_VSOCK connection on an AF_VSOCK socket")
+		return nil, errNonVSockPeer
 	}
 
 	log.Printf("vsock: accepted connection on port %d from CID %d port %d (fd=%d)",
