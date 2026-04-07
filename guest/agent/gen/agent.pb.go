@@ -730,12 +730,13 @@ func (*StatusRequest) Descriptor() ([]byte, []int) {
 }
 
 type StatusResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Mounts        []string               `protobuf:"bytes,1,rep,name=mounts,proto3" json:"mounts,omitempty"`
-	Activation    string                 `protobuf:"bytes,2,opt,name=activation,proto3" json:"activation,omitempty"`
-	Services      map[string]string      `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Mounts           []string               `protobuf:"bytes,1,rep,name=mounts,proto3" json:"mounts,omitempty"`
+	Activation       string                 `protobuf:"bytes,2,opt,name=activation,proto3" json:"activation,omitempty"`
+	Services         map[string]string      `protobuf:"bytes,3,rep,name=services,proto3" json:"services,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	PortForwardReady bool                   `protobuf:"varint,4,opt,name=port_forward_ready,json=portForwardReady,proto3" json:"port_forward_ready,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *StatusResponse) Reset() {
@@ -789,6 +790,13 @@ func (x *StatusResponse) GetServices() map[string]string {
 	return nil
 }
 
+func (x *StatusResponse) GetPortForwardReady() bool {
+	if x != nil {
+		return x.PortForwardReady
+	}
+	return false
+}
+
 var File_agent_proto protoreflect.FileDescriptor
 
 const file_agent_proto_rawDesc = "" +
@@ -832,13 +840,14 @@ const file_agent_proto_rawDesc = "" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12%\n" +
 	"\x0eactivated_path\x18\x03 \x01(\tR\ractivatedPath\"\x0f\n" +
-	"\rStatusRequest\"\xc6\x01\n" +
+	"\rStatusRequest\"\xf4\x01\n" +
 	"\x0eStatusResponse\x12\x16\n" +
 	"\x06mounts\x18\x01 \x03(\tR\x06mounts\x12\x1e\n" +
 	"\n" +
 	"activation\x18\x02 \x01(\tR\n" +
 	"activation\x12?\n" +
-	"\bservices\x18\x03 \x03(\v2#.darvm.StatusResponse.ServicesEntryR\bservices\x1a;\n" +
+	"\bservices\x18\x03 \x03(\v2#.darvm.StatusResponse.ServicesEntryR\bservices\x12,\n" +
+	"\x12port_forward_ready\x18\x04 \x01(\bR\x10portForwardReady\x1a;\n" +
 	"\rServicesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xf0\x01\n" +

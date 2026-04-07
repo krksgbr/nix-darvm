@@ -225,11 +225,12 @@ extension Start {
   func startGuestServices(
     runner: VMRunner,
     controlSocket: ControlSocket
-  ) throws -> StartedGuestServices {
+  ) async throws -> StartedGuestServices {
     let vsockBridge = try VsockDaemonBridge(virtualMachine: runner.virtualMachine)
     vsockBridge.start()
     let agentProxy = try AgentProxy(virtualMachine: runner.virtualMachine)
     agentProxy.start()
+
     let hostCommandBridgeBox = HostCommandBridgeBox()
     try startInitialHostCommandBridge(runner: runner, hostCommandBridgeBox: hostCommandBridgeBox)
     registerCapabilitiesReloadHandler(
@@ -241,8 +242,39 @@ extension Start {
       vsockBridge: vsockBridge,
       agentProxy: agentProxy,
       agentClient: AgentClient(),
-      hostCommandBridgeBox: hostCommandBridgeBox
+      hostCommandBridgeBox: hostCommandBridgeBox,
+      portForwarder: nil
     )
+  }
+
+  func startHostPortForwarding(
+    runner: VMRunner,
+    forwardPorts: [UInt16]
+  ) async throws -> PortForwarder? {
+    guard !forwardPorts.isEmpty else {
+      return nil
+    }
+
+    let mappings = forwardPorts.map {
+      PortForwarder.PortMapping(hostPort: $0, guestPort: $0)
+    }
+    let forwarder = try PortForwarder(
+      virtualMachine: runner.virtualMachine,
+      mappings: mappings
+    )
+
+    do {
+      try await forwarder.start()
+    } catch {
+      forwarder.stop()
+      throw error
+    }
+
+    for port in forwardPorts {
+      tprint("Port forwarding: localhost:\(port) → guest:\(port)")
+    }
+
+    return forwarder
   }
 
   func startInitialHostCommandBridge(
@@ -319,47 +351,81 @@ extension Start {
     prepared: PreparedStartContext,
     configured: ConfiguredStartContext
   ) async throws -> RunningStartContext {
+    let config = try DVMConfig.load()
     let signalSources = installSignalHandlers(
       controlSocket: prepared.controlSocket,
       runner: configured.runner
     )
     tprint("Starting VM...")
     try await configured.runner.start()
-    let services = try startGuestServices(
+    var services = try await startGuestServices(
       runner: configured.runner,
       controlSocket: prepared.controlSocket
     )
     let bootErrorMonitor = BootErrorMonitor(stateDir: prepared.stateDir)
-    try await waitForActivationIfNeeded(
-      stateDir: prepared.stateDir,
-      runner: configured.runner,
-      bootErrorMonitor: bootErrorMonitor,
-      controlSocket: prepared.controlSocket
-    )
-    try await waitForGuestAgent(
-      services: services,
-      runner: configured.runner,
-      controlSocket: prepared.controlSocket,
-      bootErrorMonitor: bootErrorMonitor,
-      stateDir: prepared.stateDir
-    )
-    let guestIP = try await resolveGuestIP(
-      services: services,
-      runner: configured.runner,
-      controlSocket: prepared.controlSocket
-    )
-    let nfsExportManager = try await mountRuntimeShares(
-      services: services,
-      controlSocket: prepared.controlSocket,
-      effectiveMounts: configured.effectiveMounts,
-      nfsMACAddress: configured.nfsMACAddress,
-      guestIP: guestIP
-    )
-    return RunningStartContext(
-      signalSources: signalSources,
-      services: services,
-      guestIP: guestIP,
-      nfsExportManager: nfsExportManager
-    )
+
+    do {
+      try await waitForActivationIfNeeded(
+        stateDir: prepared.stateDir,
+        runner: configured.runner,
+        bootErrorMonitor: bootErrorMonitor,
+        controlSocket: prepared.controlSocket
+      )
+      try await waitForGuestAgent(
+        services: services,
+        runner: configured.runner,
+        controlSocket: prepared.controlSocket,
+        bootErrorMonitor: bootErrorMonitor,
+        stateDir: prepared.stateDir,
+        requirePortForwardReady: !config.forwardPorts.isEmpty
+      )
+
+      services.portForwarder = try await startHostPortForwarding(
+        runner: configured.runner,
+        forwardPorts: config.forwardPorts
+      )
+
+      let guestIP = try await resolveGuestIP(
+        services: services,
+        runner: configured.runner,
+        controlSocket: prepared.controlSocket
+      )
+      let nfsExportManager = try await mountRuntimeShares(
+        services: services,
+        controlSocket: prepared.controlSocket,
+        effectiveMounts: configured.effectiveMounts,
+        nfsMACAddress: configured.nfsMACAddress,
+        guestIP: guestIP
+      )
+      return RunningStartContext(
+        signalSources: signalSources,
+        services: services,
+        guestIP: guestIP,
+        nfsExportManager: nfsExportManager
+      )
+    } catch {
+      await rollbackFailedStart(
+        error: error,
+        runner: configured.runner,
+        controlSocket: prepared.controlSocket,
+        services: services
+      )
+      throw error
+    }
+  }
+
+  func rollbackFailedStart(
+    error: Error,
+    runner: VMRunner,
+    controlSocket: ControlSocket,
+    services: StartedGuestServices
+  ) async {
+    DVMLog.log(level: "error", "start failed after VM boot: \(error)")
+    tprint("Stopping VM.")
+    controlSocket.update(.failed, error: "\(error)")
+    try? await runner.stop()
+    controlSocket.cleanup()
+    services.agentProxy.cleanup()
+    services.portForwarder?.stop()
   }
 }

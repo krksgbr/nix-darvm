@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"syscall"
 	"time"
 )
 
@@ -69,4 +70,10 @@ func (conn *conn) Close() error {
 	}
 
 	return nil
+}
+
+// SyscallConn returns a raw network connection for low-level socket operations
+// (e.g. shutdown(2) for TCP half-close). Implements the syscall.Conn interface.
+func (conn *conn) SyscallConn() (syscall.RawConn, error) {
+	return conn.file.SyscallConn()
 }

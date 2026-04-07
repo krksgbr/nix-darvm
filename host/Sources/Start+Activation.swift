@@ -135,26 +135,40 @@ extension Start {
     runner: VMRunner,
     controlSocket: ControlSocket,
     bootErrorMonitor: BootErrorMonitor,
-    stateDir: URL
+    stateDir: URL,
+    requirePortForwardReady: Bool
   ) async throws {
     controlSocket.update(.waitingForAgent)
     DVMLog.log(phase: .waitingForAgent, "waiting for guest agent")
     tprint("Waiting for guest agent...")
 
-    guard await pollForGuestAgent(
+    let pollResult = await pollForGuestAgent(
       services: services,
       bootErrorMonitor: bootErrorMonitor,
-      stateDir: stateDir
-    ) else {
+      stateDir: stateDir,
+      requirePortForwardReady: requirePortForwardReady
+    )
+
+    guard pollResult == .ready else {
       if stopRequested {
         return
       }
-      controlSocket.update(.failed, error: "guest agent unreachable")
+      let message =
+        switch pollResult {
+        case .portForwardNotReady:
+          "guest port forwarding did not become ready"
+        case .unreachable:
+          "guest agent unreachable"
+        case .ready:
+          "guest agent unreachable"
+        }
+      controlSocket.update(.failed, error: message)
       tprint("Stopping VM.")
       try? await runner.stop()
       controlSocket.cleanup()
       services.agentProxy.cleanup()
-      throw DVMError.activationFailed("guest agent unreachable")
+      services.portForwarder?.stop()
+      throw DVMError.activationFailed(message)
     }
 
     DVMLog.log(phase: .waitingForAgent, "agent is reachable")
@@ -165,8 +179,9 @@ extension Start {
   func pollForGuestAgent(
     services: StartedGuestServices,
     bootErrorMonitor: BootErrorMonitor,
-    stateDir: URL
-  ) async -> Bool {
+    stateDir: URL,
+    requirePortForwardReady: Bool
+  ) async -> GuestAgentPollResult {
     let deadline = Date().addingTimeInterval(120)
     let agentRPCLogFile = stateDir.appendingPathComponent("darvm-agent-rpc.log")
     let agentBridgeLogFile = stateDir.appendingPathComponent("darvm-agent-bridge.log")
@@ -175,6 +190,7 @@ extension Start {
     var rpcLineBuffer = ""
     var bridgeLineBuffer = ""
     var lastErrorDescription: String?
+    var sawPortForwardNotReady = false
 
     while Date() < deadline, !stopRequested {
       drainGuestServiceLog(
@@ -192,13 +208,28 @@ extension Start {
       if let bootError = bootErrorMonitor.currentError() {
         DVMLog.log(phase: .waitingForAgent, level: "error", "guest boot failed: \(bootError)")
         tprint("FATAL: Guest boot failed: \(bootError)")
-        return false
+        return .unreachable
       }
       do {
-        _ = try await services.agentClient.status()
+        let status = try await services.agentClient.status()
+        if requirePortForwardReady, !status.portForwardReady {
+          sawPortForwardNotReady = true
+          let errorDescription = "guest port forward listener not ready yet"
+          if lastErrorDescription != errorDescription {
+            DVMLog.log(
+              phase: .waitingForAgent,
+              level: "warn",
+              errorDescription
+            )
+            tprint("Guest agent connected, but port forwarding is not ready yet.")
+            lastErrorDescription = errorDescription
+          }
+          try? await Task.sleep(nanoseconds: 1_000_000_000)
+          continue
+        }
         flushGuestServiceLogBuffer(label: "agent-rpc", logLineBuffer: &rpcLineBuffer)
         flushGuestServiceLogBuffer(label: "agent-bridge", logLineBuffer: &bridgeLineBuffer)
-        return true
+        return .ready
       } catch {
         let errorDescription = "\(error)"
         if lastErrorDescription != errorDescription {
@@ -216,7 +247,7 @@ extension Start {
 
     flushGuestServiceLogBuffer(label: "agent-rpc", logLineBuffer: &rpcLineBuffer)
     flushGuestServiceLogBuffer(label: "agent-bridge", logLineBuffer: &bridgeLineBuffer)
-    return false
+    return requirePortForwardReady && sawPortForwardNotReady ? .portForwardNotReady : .unreachable
   }
 
   func drainGuestServiceLog(

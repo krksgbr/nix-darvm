@@ -60,6 +60,8 @@ enum ConfigError: Error, CustomStringConvertible {
   case invalidField(String)
   case unknownKey(key: String, section: String, known: [String])
   case missingKey(key: String, section: String)
+  case invalidPort(port: UInt16)
+  case duplicatePort(port: UInt16)
 
   var description: String {
     switch self {
@@ -72,6 +74,12 @@ enum ConfigError: Error, CustomStringConvertible {
 
     case let .missingKey(key, section):
       return "Missing required key '\(key)' in \(section) of ~/.config/dvm/config.toml"
+
+    case .invalidPort(let port):
+      return "Invalid port \(port) in [ports].forward — port must be 1-65535"
+
+    case .duplicatePort(let port):
+      return "Duplicate port \(port) in [ports].forward — each port must appear only once"
     }
   }
 }

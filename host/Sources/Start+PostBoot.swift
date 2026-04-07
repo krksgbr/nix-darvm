@@ -120,6 +120,7 @@ extension Start {
     netstackSupervisor.shutdown()
     controlSocket.cleanup()
     services.agentProxy.cleanup()
+    services.portForwarder?.stop()
     tprint("VM stopped.")
   }
 

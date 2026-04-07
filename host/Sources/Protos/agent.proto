@@ -64,4 +64,5 @@ message StatusResponse {
   repeated string mounts = 1;
   string activation = 2;
   map<string, string> services = 3;
+  bool port_forward_ready = 4;
 }

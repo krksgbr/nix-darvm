@@ -65,5 +65,8 @@ struct Start: AsyncParsableCommand {
     withExtendedLifetime(running.services.hostCommandBridgeBox) {
       // Keep the command bridge alive until teardown completes.
     }
+    withExtendedLifetime(running.services.portForwarder) {
+      // Keep port forwarder alive until teardown completes.
+    }
   }
 }

@@ -24,6 +24,7 @@ struct StartedGuestServices {
   let agentProxy: AgentProxy
   let agentClient: AgentClient
   let hostCommandBridgeBox: HostCommandBridgeBox
+  var portForwarder: PortForwarder?
 }
 
 struct SignalSources {
@@ -56,6 +57,12 @@ enum ActivationPollResult {
   case pending
   case succeeded
   case failed
+}
+
+enum GuestAgentPollResult {
+  case ready
+  case unreachable
+  case portForwardNotReady
 }
 
 struct RuntimeMountPreparation {

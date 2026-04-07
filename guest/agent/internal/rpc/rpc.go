@@ -4,23 +4,30 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync/atomic"
 
 	pb "github.com/unbody/darvm/agent/gen"
+	"github.com/unbody/darvm/agent/internal/portforward"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 )
 
 type RPC struct {
-	grpcServer *grpc.Server
-	listener   net.Listener
+	grpcServer          *grpc.Server
+	listener            net.Listener
+	portForwardListener net.Listener
+	portForwardReady    atomic.Bool
 
 	pb.UnimplementedAgentServer
 }
 
-func New(listener net.Listener) (*RPC, error) {
+func New(listener net.Listener, portForwardListener net.Listener) (*RPC, error) {
 	rpc := &RPC{
-		grpcServer: grpc.NewServer(),
-		listener:   listener,
+		grpcServer:          grpc.NewServer(),
+		listener:            listener,
+		portForwardListener: portForwardListener,
 	}
+	rpc.portForwardReady.Store(portForwardListener != nil)
 
 	pb.RegisterAgentServer(rpc.grpcServer, rpc)
 
@@ -28,14 +35,33 @@ func New(listener net.Listener) (*RPC, error) {
 }
 
 func (rpc *RPC) Run(ctx context.Context) error {
-	go func() {
+	group, ctx := errgroup.WithContext(ctx)
+
+	group.Go(func() error {
 		<-ctx.Done()
+		rpc.portForwardReady.Store(false)
 		rpc.grpcServer.Stop()
-	}()
 
-	if err := rpc.grpcServer.Serve(rpc.listener); err != nil {
-		return fmt.Errorf("serve gRPC listener: %w", err)
-	}
+		return nil
+	})
 
-	return nil
+	group.Go(func() error {
+		if err := rpc.grpcServer.Serve(rpc.listener); err != nil {
+			rpc.portForwardReady.Store(false)
+			return fmt.Errorf("serve gRPC listener: %w", err)
+		}
+
+		return nil
+	})
+
+	group.Go(func() error {
+		if err := portforward.RunOnListener(ctx, rpc.portForwardListener); err != nil {
+			rpc.portForwardReady.Store(false)
+			return err
+		}
+
+		return nil
+	})
+
+	return group.Wait()
 }

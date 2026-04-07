@@ -236,8 +236,8 @@ in
           status) cmd_status ;;
           restart)
             case "''${2:-}" in
-              agent-bridge) sudo launchctl kickstart -k system/com.darvm.agent-bridge ;;
-              agent-rpc)    sudo launchctl kickstart -k system/com.darvm.agent-rpc ;;
+              agent-bridge)       sudo launchctl kickstart -k system/com.darvm.agent-bridge ;;
+              agent-rpc)          sudo launchctl kickstart -k system/com.darvm.agent-rpc ;;
               *) echo "Unknown service: ''${2:-}" >&2; usage >&2; exit 1 ;;
             esac
             ;;

@@ -5,8 +5,8 @@
 //	--run-rpc:    gRPC server on vsock port 6175 (Exec, Activate, Status, ResolveIP)
 //	--run-bridge: nix daemon proxy (/tmp/nix-daemon.sock → vsock host:6174)
 //
-// Run both for full functionality. Each component runs as a separate launchd daemon
-// in the guest for independent restarts and health monitoring.
+// Run both for full functionality. The RPC daemon also owns the TCP port forward
+// listener so published host ports share the same liveness domain as the control plane.
 package main
 
 import (
@@ -27,6 +27,7 @@ import (
 
 const (
 	rpcPort             = 6175
+	portForwardPort     = 6177
 	componentRetryDelay = time.Second
 )
 
@@ -86,7 +87,7 @@ func main() {
 func runRPCOnce(ctx context.Context) error {
 	log.Printf("initializing RPC server on vsock port %d...", rpcPort)
 
-	listener, err := vsock.Listen(rpcPort)
+	rpcListener, err := vsock.Listen(rpcPort)
 	if err != nil {
 		log.Printf("RPC server failed to listen on AF_VSOCK port %d: %v", rpcPort, err)
 
@@ -94,19 +95,36 @@ func runRPCOnce(ctx context.Context) error {
 	}
 
 	defer func() {
-		if closeErr := listener.Close(); closeErr != nil {
+		if closeErr := rpcListener.Close(); closeErr != nil {
 			log.Printf("RPC listener close: %v", closeErr)
 		}
 	}()
 
-	rpcServer, err := rpc.New(listener)
+	portForwardListener, err := vsock.Listen(portForwardPort)
+	if err != nil {
+		log.Printf("port forward listener failed to listen on AF_VSOCK port %d: %v", portForwardPort, err)
+
+		return nil
+	}
+
+	defer func() {
+		if closeErr := portForwardListener.Close(); closeErr != nil {
+			log.Printf("port forward listener close: %v", closeErr)
+		}
+	}()
+
+	rpcServer, err := rpc.New(rpcListener, portForwardListener)
 	if err != nil {
 		log.Printf("failed to initialize RPC server: %v", err)
 
 		return nil
 	}
 
-	log.Printf("RPC server running on AF_VSOCK port %d", rpcPort)
+	log.Printf(
+		"RPC server running on AF_VSOCK port %d; port forwarding ready on AF_VSOCK port %d",
+		rpcPort,
+		portForwardPort,
+	)
 
 	if err := rpcServer.Run(ctx); err != nil {
 		log.Printf("RPC server stopped: %v", err)

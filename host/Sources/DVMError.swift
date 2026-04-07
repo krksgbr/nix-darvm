@@ -6,6 +6,7 @@ enum DVMError: Error, CustomStringConvertible {
   case invalidStorePath(String)
   case activationFailed(String)
   case alreadyRunning
+  case portBindFailed(port: UInt16)
 
   var description: String {
     switch self {
@@ -23,6 +24,9 @@ enum DVMError: Error, CustomStringConvertible {
 
     case .alreadyRunning:
       return "A VM is already running. Stop it first or use `dvm switch` to apply changes."
+
+    case .portBindFailed(let port):
+      return "Port forwarding failed: could not bind localhost:\(port). Is another process using it?"
     }
   }
 }

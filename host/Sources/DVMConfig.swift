@@ -10,6 +10,13 @@ struct DVMConfig: Codable {
   var mounts: Mounts?
   /// Path to the user's dvm flake (fallback when no --flake flag or CWD flake).
   var flake: String?
+  /// Port forwarding rules: host localhost:port → guest localhost:port.
+  var ports: Ports?
+
+  struct Ports: Codable {
+    /// Ports to forward from host to guest (same port on both sides).
+    var forward: [UInt16]
+  }
 
   struct MirrorMounts: Codable {
     var dirs: [String]
@@ -33,8 +40,9 @@ struct DVMConfig: Codable {
   var mirrorDirs: [String] { mounts?.mirror?.dirs ?? [] }
   var mirrorTransport: MountTransport? { mounts?.mirror?.transport }
   var homeDirs: [String] { mounts?.home?.dirs ?? [] }
+  var forwardPorts: [UInt16] { ports?.forward ?? [] }
 
-  static let empty = Self(mounts: nil, flake: nil)
+  static let empty = Self(mounts: nil, flake: nil, ports: nil)
 
   // Known keys per level — used to reject typos and misplaced keys.
   /// Load config from the default path. Returns empty config if file doesn't exist.
@@ -61,6 +69,7 @@ struct DVMConfig: Codable {
 private struct RawConfig: Decodable {
   var mounts: RawMounts?
   var flake: String?
+  var ports: RawPorts?
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: DynamicCodingKey.self)
@@ -71,6 +80,7 @@ private struct RawConfig: Decodable {
     )
     mounts = try container.decodeIfPresent(RawMounts.self, forKey: .named("mounts"))
     flake = try container.decodeIfPresent(String.self, forKey: .named("flake"))
+    ports = try container.decodeIfPresent(RawPorts.self, forKey: .named("ports"))
   }
 }
 
@@ -120,10 +130,37 @@ private struct RawHomeMounts: Decodable {
   }
 }
 
-private let knownTopLevelKeys: Set<String> = ["flake", "mounts"]
+private struct RawPorts: Decodable {
+  var forward: [UInt16]
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+    try validateKeys(
+      container.allKeys,
+      known: knownPortsKeys,
+      section: "ports"
+    )
+    forward = try container.decode([UInt16].self, forKey: .named("forward"))
+
+    // Reject port 0 — ephemeral on host, nonsensical for guest dial.
+    for port in forward where port == 0 {
+      throw ConfigError.invalidPort(port: 0)
+    }
+
+    // Reject duplicates — would cause bind conflicts.
+    let unique = Set(forward)
+    if unique.count != forward.count {
+      let duplicates = forward.filter { port in forward.filter { $0 == port }.count > 1 }
+      throw ConfigError.duplicatePort(port: duplicates.first!)
+    }
+  }
+}
+
+private let knownTopLevelKeys: Set<String> = ["flake", "mounts", "ports"]
 private let knownMountsKeys: Set<String> = ["mirror", "home"]
 private let knownMirrorKeys: Set<String> = ["dirs", "transport"]
 private let knownHomeKeys: Set<String> = ["dirs"]
+private let knownPortsKeys: Set<String> = ["forward"]
 
 private struct DynamicCodingKey: CodingKey {
   let stringValue: String
