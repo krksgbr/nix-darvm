@@ -2,7 +2,7 @@ import ArgumentParser
 import Foundation
 import Virtualization
 
-private struct PreparedStartContext {
+struct PreparedStartContext {
   let controlSocket: ControlSocket
   let vmDirectory: URL
   let mounts: [MountConfig]
@@ -12,26 +12,26 @@ private struct PreparedStartContext {
   let netstackBinary: String
 }
 
-private struct ConfiguredStartContext {
+struct ConfiguredStartContext {
   let runner: VMRunner
   let effectiveMounts: [MountConfig]
   let nfsMACAddress: VZMACAddress?
   let caCertPEM: String
 }
 
-private struct StartedGuestServices {
+struct StartedGuestServices {
   let vsockBridge: VsockDaemonBridge
   let agentProxy: AgentProxy
   let agentClient: AgentClient
   let hostCommandBridgeBox: HostCommandBridgeBox
 }
 
-private struct SignalSources {
+struct SignalSources {
   let sigintSource: DispatchSourceSignal
   let sigtermSource: DispatchSourceSignal
 }
 
-private struct BootErrorMonitor {
+struct BootErrorMonitor {
   let bootErrorFile: URL
 
   init(stateDir: URL) {
@@ -48,23 +48,23 @@ private struct BootErrorMonitor {
   }
 }
 
-private final class HostCommandBridgeBox: @unchecked Sendable {
+final class HostCommandBridgeBox: @unchecked Sendable {
   var bridge: HostCommandBridge?
 }
 
-private enum ActivationPollResult {
+enum ActivationPollResult {
   case pending
   case succeeded
   case failed
 }
 
-private struct RuntimeMountPreparation {
+struct RuntimeMountPreparation {
   let nfsMirrorMounts: [MountConfig]
   let nfsHostIP: GuestIP?
   let nfsExportManager: NFSExportManager?
 }
 
-private struct RunningStartContext {
+struct RunningStartContext {
   let signalSources: SignalSources
   let services: StartedGuestServices
   let guestIP: GuestIP

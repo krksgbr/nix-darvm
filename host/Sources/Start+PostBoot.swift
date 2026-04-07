@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import Virtualization
 
+@MainActor
 extension Start {
   func restartGuestBridgeAndInstallCA(
     agentClient: AgentClient,
@@ -81,7 +82,7 @@ extension Start {
     }
   }
 
-  func decodeResolvedSecrets(_ secretDicts: [[String: Any]]) throws -> [ResolvedSecret] {
+  nonisolated func decodeResolvedSecrets(_ secretDicts: [[String: Any]]) throws -> [ResolvedSecret] {
     try secretDicts.enumerated().map { index, dict in
       guard let name = dict["name"] as? String,
         let placeholder = dict["placeholder"] as? String,

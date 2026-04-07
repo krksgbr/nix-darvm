@@ -34,7 +34,7 @@ struct Status: AsyncParsableCommand {
 
     let data = try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys])
     guard let output = String(data: data, encoding: .utf8) else {
-      throw CleanError.message("status response was not valid UTF-8")
+      throw DVMError.activationFailed("status response was not valid UTF-8")
     }
     print(output)
 
@@ -74,7 +74,10 @@ struct Status: AsyncParsableCommand {
     let statusResult = ControlSocket.send(.status)
     switch statusResult {
     case .success(.status(let payload)):
-      guard payload.running else { try printStoppedStatus(payload) }
+      guard payload.running else {
+        try printStoppedStatus(payload)
+        return
+      }
       print(statusSummaryLine(payload))
       if let runId = payload.runId {
         print("  Run:        \(runId)")

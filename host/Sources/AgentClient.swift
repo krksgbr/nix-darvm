@@ -128,7 +128,7 @@ struct AgentClient: Sendable {
         tty: useTTY,
         env: env
       )
-      try await withThrowingTaskGroup(of: Int32.self) { outerGroup in
+      return try await withThrowingTaskGroup(of: Int32.self) { outerGroup in
         outerGroup.addTask {
           try await agent.exec(
             requestProducer: { writer in

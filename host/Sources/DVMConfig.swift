@@ -37,11 +37,6 @@ struct DVMConfig: Codable {
   static let empty = Self(mounts: nil, flake: nil)
 
   // Known keys per level — used to reject typos and misplaced keys.
-  private static let knownTopLevel: Set<String> = ["flake", "mounts"]
-  private static let knownMounts: Set<String> = ["mirror", "home"]
-  private static let knownMirror: Set<String> = ["dirs", "transport"]
-  private static let knownHome: Set<String> = ["dirs"]
-
   /// Load config from the default path. Returns empty config if file doesn't exist.
   /// Throws on parse errors so the user knows their config is broken.
   static func load() throws -> Self {
@@ -69,9 +64,9 @@ private struct RawConfig: Decodable {
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: DynamicCodingKey.self)
-    try DVMConfig.validate(
-      keys: container.allKeys,
-      known: DVMConfig.knownTopLevel,
+    try validateKeys(
+      container.allKeys,
+      known: knownTopLevelKeys,
       section: "top level"
     )
     mounts = try container.decodeIfPresent(RawMounts.self, forKey: .named("mounts"))
@@ -85,9 +80,9 @@ private struct RawMounts: Decodable {
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: DynamicCodingKey.self)
-    try DVMConfig.validate(
-      keys: container.allKeys,
-      known: DVMConfig.knownMounts,
+    try validateKeys(
+      container.allKeys,
+      known: knownMountsKeys,
       section: "mounts"
     )
     mirror = try container.decodeIfPresent(RawMirrorMounts.self, forKey: .named("mirror"))
@@ -101,9 +96,9 @@ private struct RawMirrorMounts: Decodable {
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: DynamicCodingKey.self)
-    try DVMConfig.validate(
-      keys: container.allKeys,
-      known: DVMConfig.knownMirror,
+    try validateKeys(
+      container.allKeys,
+      known: knownMirrorKeys,
       section: "mounts.mirror"
     )
     dirs = try container.decode([String].self, forKey: .named("dirs"))
@@ -116,14 +111,19 @@ private struct RawHomeMounts: Decodable {
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: DynamicCodingKey.self)
-    try DVMConfig.validate(
-      keys: container.allKeys,
-      known: DVMConfig.knownHome,
+    try validateKeys(
+      container.allKeys,
+      known: knownHomeKeys,
       section: "mounts.home"
     )
     dirs = try container.decode([String].self, forKey: .named("dirs"))
   }
 }
+
+private let knownTopLevelKeys: Set<String> = ["flake", "mounts"]
+private let knownMountsKeys: Set<String> = ["mirror", "home"]
+private let knownMirrorKeys: Set<String> = ["dirs", "transport"]
+private let knownHomeKeys: Set<String> = ["dirs"]
 
 private struct DynamicCodingKey: CodingKey {
   let stringValue: String
@@ -148,18 +148,16 @@ private struct DynamicCodingKey: CodingKey {
   }
 }
 
-extension DVMConfig {
-  static func validate(
-    keys: [DynamicCodingKey],
-    known: Set<String>,
-    section: String
-  ) throws {
-    for key in keys where !known.contains(key.stringValue) {
-      throw ConfigError.unknownKey(
-        key: key.stringValue,
-        section: section,
-        known: known.sorted()
-      )
-    }
+private func validateKeys(
+  _ keys: [DynamicCodingKey],
+  known: Set<String>,
+  section: String
+) throws {
+  for key in keys where !known.contains(key.stringValue) {
+    throw ConfigError.unknownKey(
+      key: key.stringValue,
+      section: section,
+      known: known.sorted()
+    )
   }
 }

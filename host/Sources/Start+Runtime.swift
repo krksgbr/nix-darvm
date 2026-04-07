@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import Virtualization
 
+@MainActor
 extension Start {
   func mountRuntimeShares(
     services: StartedGuestServices,
@@ -208,7 +209,7 @@ extension Start {
   ) -> String {
     let privateMountPathRaw =
       mountPathRaw.hasPrefix("/private/") ? mountPathRaw : "/private" + mountPathRaw
-    """
+    return """
     \(functionName)() {
       log_mount() { printf '%s\\n' "$1" >> \(tagLogPath); }
       current_mount_line() {

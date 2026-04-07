@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import Virtualization
 
+@MainActor
 extension Start {
   func waitForActivationIfNeeded(
     stateDir: URL,

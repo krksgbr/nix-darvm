@@ -1,3 +1,4 @@
+import ArgumentParser
 import Foundation
 
 /// Default VM name. Overridden by --vm-name when the wrapper passes
@@ -246,7 +247,7 @@ private func makeSystemMount(index: Int, directory: String) throws -> MountConfi
   )
 }
 
-private func printStoppedStatus(_ payload: ControlSocket.StatusPayload) throws {
+func printStoppedStatus(_ payload: ControlSocket.StatusPayload) throws {
   if let error = payload.phaseError {
     let phase = payload.phase ?? "unknown"
     print("VM not running (phase: \(phase), error: \(error))")
@@ -256,7 +257,7 @@ private func printStoppedStatus(_ payload: ControlSocket.StatusPayload) throws {
   throw ExitCode(1)
 }
 
-private func statusSummaryLine(_ payload: ControlSocket.StatusPayload) -> String {
+func statusSummaryLine(_ payload: ControlSocket.StatusPayload) -> String {
   let phase = payload.phase ?? "unknown"
   let elapsed =
     payload.phaseEnteredAt.map { formatElapsed(Date().timeIntervalSince1970 - $0) } ?? ""
@@ -267,7 +268,7 @@ private func statusSummaryLine(_ payload: ControlSocket.StatusPayload) -> String
   return "VM starting (phase: \(phase), \(elapsed) elapsed)"
 }
 
-private func printGuestHealthSummary() {
+func printGuestHealthSummary() {
   switch ControlSocket.send(.guestHealth, timeout: 5) {
   case .success(.guestHealth(let health)):
     print("  Mounts:     \(health.mounts.count) virtiofs")
@@ -288,7 +289,7 @@ private func printGuestHealthSummary() {
   }
 }
 
-private func throwStatusFailure(_ result: Result<ControlSocket.Response, ControlSocket.ClientError>) throws -> Never {
+func throwStatusFailure(_ result: Result<ControlSocket.Response, ControlSocket.ClientError>) throws -> Never {
   switch result {
   case .success(.error(let message)):
     print("VM not running (server error: \(message))")

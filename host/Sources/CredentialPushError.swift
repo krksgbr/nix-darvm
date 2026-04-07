@@ -32,7 +32,7 @@ func discoverManifestPath(
   return FileManager.default.fileExists(atPath: cwdManifest) ? cwdManifest : nil
 }
 
-private func resolveAndPushCredentials(
+func resolveAndPushCredentials(
   credentialsFlag: String?,
   cwd: String
 ) throws -> [String: String] {

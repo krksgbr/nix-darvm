@@ -2,7 +2,7 @@ import Foundation
 
 /// Saved terminal state for raw mode restore.
 struct TermState {
-  private let termios: termios
+  let termios: termios
 }
 
 /// Terminal utilities for TTY mode support.
