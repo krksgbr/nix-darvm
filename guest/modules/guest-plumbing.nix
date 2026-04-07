@@ -76,8 +76,10 @@ in
         ];
         RunAtLoad = true;
         KeepAlive = true;
-        StandardOutPath = "/var/log/darvm-agent.log";
-        StandardErrorPath = "/var/log/darvm-agent.log";
+        # Write into the shared state mount so the host can stream guest-side
+        # agent failures during boot before the gRPC service is reachable.
+        StandardOutPath = "/var/run/dvm-state/darvm-agent-rpc.log";
+        StandardErrorPath = "/var/run/dvm-state/darvm-agent-rpc.log";
       };
     };
 
@@ -91,6 +93,8 @@ in
         ];
         RunAtLoad = true;
         KeepAlive = true;
+        StandardOutPath = "/var/run/dvm-state/darvm-agent-bridge.log";
+        StandardErrorPath = "/var/run/dvm-state/darvm-agent-bridge.log";
       };
     };
 

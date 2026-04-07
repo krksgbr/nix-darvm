@@ -23,14 +23,9 @@ func Listen(port uint32) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create vsock listener socket on port %d: %w", port, err)
 	}
-
-	if err := unix.SetNonblock(fd, true); err != nil {
-		if closeErr := unix.Close(fd); closeErr != nil {
-			log.Printf("vsock: close listener fd=%d after SetNonblock failure: %v", fd, closeErr)
-		}
-
-		return nil, fmt.Errorf("set vsock listener nonblocking on port %d: %w", port, err)
-	}
+	// Keep the listener in blocking mode. grpc.Server expects Accept to block
+	// until a connection arrives; nonblocking AF_VSOCK listeners surface EAGAIN
+	// as a fatal Serve error and make the guest RPC daemon flap.
 
 	file, err := newFileFromFD(fd, "vsock")
 	if err != nil {
@@ -84,14 +79,6 @@ func (listener *listener) Accept() (net.Conn, error) {
 	fd, _, err := unix.Accept(listenerFD)
 	if err != nil {
 		return nil, fmt.Errorf("accept vsock connection on port %d: %w", listener.port, err)
-	}
-
-	if err := unix.SetNonblock(fd, true); err != nil {
-		if closeErr := unix.Close(fd); closeErr != nil {
-			log.Printf("vsock: close accepted fd=%d after SetNonblock failure: %v", fd, closeErr)
-		}
-
-		return nil, fmt.Errorf("set accepted vsock connection nonblocking on port %d: %w", listener.port, err)
 	}
 
 	file, err := newFileFromFD(fd, "vsock")

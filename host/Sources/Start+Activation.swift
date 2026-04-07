@@ -134,13 +134,18 @@ extension Start {
     services: StartedGuestServices,
     runner: VMRunner,
     controlSocket: ControlSocket,
-    bootErrorMonitor: BootErrorMonitor
+    bootErrorMonitor: BootErrorMonitor,
+    stateDir: URL
   ) async throws {
     controlSocket.update(.waitingForAgent)
     DVMLog.log(phase: .waitingForAgent, "waiting for guest agent")
     tprint("Waiting for guest agent...")
 
-    guard await pollForGuestAgent(services: services, bootErrorMonitor: bootErrorMonitor) else {
+    guard await pollForGuestAgent(
+      services: services,
+      bootErrorMonitor: bootErrorMonitor,
+      stateDir: stateDir
+    ) else {
       if stopRequested {
         return
       }
@@ -159,21 +164,99 @@ extension Start {
 
   func pollForGuestAgent(
     services: StartedGuestServices,
-    bootErrorMonitor: BootErrorMonitor
+    bootErrorMonitor: BootErrorMonitor,
+    stateDir: URL
   ) async -> Bool {
     let deadline = Date().addingTimeInterval(120)
+    let agentRPCLogFile = stateDir.appendingPathComponent("darvm-agent-rpc.log")
+    let agentBridgeLogFile = stateDir.appendingPathComponent("darvm-agent-bridge.log")
+    var rpcLogOffset = 0
+    var bridgeLogOffset = 0
+    var rpcLineBuffer = ""
+    var bridgeLineBuffer = ""
+    var lastErrorDescription: String?
+
     while Date() < deadline, !stopRequested {
+      drainGuestServiceLog(
+        logFile: agentRPCLogFile,
+        label: "agent-rpc",
+        logOffset: &rpcLogOffset,
+        logLineBuffer: &rpcLineBuffer
+      )
+      drainGuestServiceLog(
+        logFile: agentBridgeLogFile,
+        label: "agent-bridge",
+        logOffset: &bridgeLogOffset,
+        logLineBuffer: &bridgeLineBuffer
+      )
       if let bootError = bootErrorMonitor.currentError() {
         DVMLog.log(phase: .waitingForAgent, level: "error", "guest boot failed: \(bootError)")
         tprint("FATAL: Guest boot failed: \(bootError)")
         return false
       }
-      if (try? await services.agentClient.status()) != nil {
+      do {
+        _ = try await services.agentClient.status()
+        flushGuestServiceLogBuffer(label: "agent-rpc", logLineBuffer: &rpcLineBuffer)
+        flushGuestServiceLogBuffer(label: "agent-bridge", logLineBuffer: &bridgeLineBuffer)
         return true
+      } catch {
+        let errorDescription = "\(error)"
+        if lastErrorDescription != errorDescription {
+          DVMLog.log(
+            phase: .waitingForAgent,
+            level: "warn",
+            "guest agent still unavailable: \(errorDescription)"
+          )
+          tprint("Guest agent not reachable yet: \(errorDescription)")
+          lastErrorDescription = errorDescription
+        }
       }
       try? await Task.sleep(nanoseconds: 1_000_000_000)
     }
+
+    flushGuestServiceLogBuffer(label: "agent-rpc", logLineBuffer: &rpcLineBuffer)
+    flushGuestServiceLogBuffer(label: "agent-bridge", logLineBuffer: &bridgeLineBuffer)
     return false
+  }
+
+  func drainGuestServiceLog(
+    logFile: URL,
+    label: String,
+    logOffset: inout Int,
+    logLineBuffer: inout String
+  ) {
+    guard let data = try? Data(contentsOf: logFile), data.count > logOffset else {
+      return
+    }
+
+    let newData = data.subdata(in: logOffset..<data.count)
+    logOffset = data.count
+    guard let text = String(data: newData, encoding: .utf8) else {
+      return
+    }
+
+    logLineBuffer += text
+    var lines = logLineBuffer.components(separatedBy: "\n")
+    logLineBuffer = lines.removeLast()
+    for line in lines where !line.isEmpty {
+      let prefixed = "[\(label)] \(line)"
+      DVMLog.log(phase: .waitingForAgent, prefixed)
+      tprint(prefixed)
+    }
+  }
+
+  func flushGuestServiceLogBuffer(
+    label: String,
+    logLineBuffer: inout String
+  ) {
+    guard !logLineBuffer.isEmpty else {
+      return
+    }
+
+    let prefixed = "[\(label)] \(logLineBuffer)"
+    DVMLog.log(phase: .waitingForAgent, prefixed)
+    tprint(prefixed)
+    logLineBuffer = ""
   }
 
   func logGuestNetworkSnapshot(agentClient: AgentClient) async {

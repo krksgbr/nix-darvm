@@ -340,7 +340,8 @@ extension Start {
       services: services,
       runner: configured.runner,
       controlSocket: prepared.controlSocket,
-      bootErrorMonitor: bootErrorMonitor
+      bootErrorMonitor: bootErrorMonitor,
+      stateDir: prepared.stateDir
     )
     let guestIP = try await resolveGuestIP(
       services: services,
