@@ -64,10 +64,12 @@ func ParseLsofOutput(output string) []uint16 {
 //	node  12345 user  4u  IPv4 0x... TCP 127.0.0.1:8080 (LISTEN)
 //	node  12345 user  4u  IPv6 0x... TCP [::1]:3000 (LISTEN)
 //	node  12345 user  4u  IPv4 0x... TCP *:5000 (LISTEN)
+const minLsofLineFields = 2
+
 func parseListenLine(line string) (uint16, bool) {
 	// Find the field just before (LISTEN), which contains the address:port.
 	fields := strings.Fields(line)
-	if len(fields) < 2 {
+	if len(fields) < minLsofLineFields {
 		return 0, false
 	}
 

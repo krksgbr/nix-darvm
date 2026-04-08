@@ -154,7 +154,7 @@ func buildMounts(
     if homeRelative.hasPrefix("/") {
       throw HomeLinkError.notUnderHome(directory)
     }
-    let topLevel = String(homeRelative.prefix(while: { $0 != "/" }))
+    let topLevel = String(homeRelative.prefix { $0 != "/" })
     if HomeRelativePath.reservedLocalPaths.contains(topLevel) {
       throw HomeLinkError.reservedPath(homeRelative)
     }
@@ -281,9 +281,11 @@ private func makeSystemMount(index: Int, directory: String) throws -> MountConfi
 /// Derives a HomeLink from a mount whose guest path is under the guest home.
 /// Returns nil for non-home-relative mounts.
 func homeLinkForMount(_ mount: MountConfig) throws -> HomeLink? {
-  let gp = mount.guestPath.rawValue
-  guard gp.hasPrefix(guestHome + "/") else { return nil }
-  let subpath = String(gp.dropFirst(guestHome.count + 1))
+  let guestPath = mount.guestPath.rawValue
+  guard guestPath.hasPrefix(guestHome + "/") else {
+    return nil
+  }
+  let subpath = String(guestPath.dropFirst(guestHome.count + 1))
   return HomeLink(
     subpath: try HomeRelativePath(subpath),
     target: try AbsolutePath("/var/dvm-mounts/\(mount.tag.rawValue)")
@@ -325,7 +327,7 @@ func statusSummaryLine(_ payload: ControlSocket.StatusPayload) -> String {
 func printGuestHealthSummary() {
   switch ControlSocket.send(.guestHealth, timeout: 5) {
   case .success(.guestHealth(let health)):
-    print("  Mounts:     \(health.mounts.count) virtiofs")
+    printMountsBlock(builtIn: health.builtInMounts, configured: health.mounts)
     print("  Activation: \(health.activation)")
     if !health.services.isEmpty {
       let serviceSummary = health.services
@@ -349,6 +351,20 @@ func printGuestHealthSummary() {
   default:
     print("  Guest:      unavailable")
   }
+}
+
+private func printMountsBlock(builtIn: [String], configured: [String]) {
+  // "  Mounts:   " = 12 chars; continuation lines use the same indent.
+  let prefix = "  Mounts:   "
+  let indent = String(repeating: " ", count: prefix.count)
+
+  print("\(prefix)---- Built-in ----")
+  print("")
+  for mount in builtIn { print("\(indent)\(mount)") }
+  print("")
+  print("\(indent)---- Configured ----")
+  print("")
+  for mount in configured { print("\(indent)\(mount)") }
 }
 
 func throwStatusFailure(_ result: Result<ControlSocket.Response, ControlSocket.ClientError>) throws -> Never {

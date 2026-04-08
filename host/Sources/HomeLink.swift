@@ -15,7 +15,7 @@ struct HomeRelativePath: CustomStringConvertible {
 
   /// The first path component (e.g., ".local" from ".local/share/foo").
   var topLevelComponent: String {
-    String(rawValue.prefix(while: { $0 != "/" }))
+    String(rawValue.prefix { $0 != "/" })
   }
 
   init(_ path: String) throws {
@@ -45,9 +45,11 @@ enum HomeLinkError: Error, CustomStringConvertible {
     switch self {
     case .invalidSubpath(let path):
       return "Invalid home-relative path: \(path)"
+
     case .reservedPath(let path):
       return "'\(path)' is reserved for the guest's local APFS disk "
         + "(required for reliable fsync semantics) and cannot be mounted from the host"
+
     case .notUnderHome(let path):
       return "'\(path)' is not inside the host home directory — "
         + "[mounts.home] dirs must be subdirectories of ~; "
@@ -66,7 +68,7 @@ func builtInLocalHomeLinks() throws -> [HomeLink] {
     HomeLink(
       subpath: try HomeRelativePath(".local"),
       target: try AbsolutePath("\(dvmLocalDir)/.local")
-    ),
+    )
   ]
 }
 
@@ -82,7 +84,7 @@ func makeHomeLinkInstallScript(homeLinks: [HomeLink], guestHome: String) -> Stri
   var parts: [String] = [
     "# HomeLink installation",
     "mkdir -p \(shellQuote(dvmLocalDir))",
-    "chown 501:20 \(shellQuote(dvmLocalDir))",
+    "chown 501:20 \(shellQuote(dvmLocalDir))"
   ]
 
   for link in homeLinks {

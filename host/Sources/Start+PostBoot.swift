@@ -50,7 +50,8 @@ extension Start {
   func registerRuntimeHandlers(
     controlSocket: ControlSocket,
     services: StartedGuestServices,
-    netstackSupervisor: NetstackSupervisor
+    netstackSupervisor: NetstackSupervisor,
+    effectiveMounts: [MountConfig]
   ) {
     controlSocket.loadCredentialsHandler = { [netstackSupervisor] projectName, secretDicts in
       do {
@@ -61,8 +62,9 @@ extension Start {
         return "\(error)"
       }
     }
-    controlSocket.guestHealthHandler = {
-      [agentClient = services.agentClient, portForwarder = services.portForwarder] in
+    let agentClient = services.agentClient
+    let portForwarder = services.portForwarder
+    controlSocket.guestHealthHandler = { [agentClient, portForwarder] in
       final class Box: @unchecked Sendable { var value: GuestHealthPayload? }
       let box = Box()
       let semaphore = DispatchSemaphore(value: 0)
@@ -70,7 +72,8 @@ extension Start {
         defer { semaphore.signal() }
         if let status = try? await agentClient.status() {
           box.value = GuestHealthPayload(
-            mounts: status.mounts,
+            builtInMounts: effectiveMounts.filter(\.isBuiltIn).map(\.formatDescription),
+            mounts: effectiveMounts.filter { !$0.isBuiltIn }.map(\.formatDescription),
             activation: status.activation,
             services: status.services.reduce(into: [:]) { $0[$1.key] = $1.value },
             forwardedPorts: portForwarder?.publishedPorts.sorted() ?? [],

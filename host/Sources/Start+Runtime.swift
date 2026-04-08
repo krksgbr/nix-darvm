@@ -4,16 +4,44 @@ import Virtualization
 
 @MainActor
 extension Start {
+  func performBootSequence(
+    services: inout StartedGuestServices,
+    bootErrorMonitor: BootErrorMonitor,
+    portPolicy: PortPolicy,
+    prepared: PreparedStartContext,
+    configured: ConfiguredStartContext
+  ) async throws {
+    try await waitForActivationIfNeeded(
+      stateDir: prepared.stateDir,
+      runner: configured.runner,
+      bootErrorMonitor: bootErrorMonitor,
+      controlSocket: prepared.controlSocket
+    )
+    try await waitForGuestAgent(
+      services: services,
+      runner: configured.runner,
+      controlSocket: prepared.controlSocket,
+      bootErrorMonitor: bootErrorMonitor,
+      stateDir: prepared.stateDir,
+      requirePortForwardReady: portPolicy.autoForward
+    )
+    if portPolicy.autoForward {
+      let forwarder = try PortForwarder(virtualMachine: configured.runner.virtualMachine)
+      let reconciler = PortForwardReconciler(portForwarder: forwarder, policy: portPolicy)
+      reconciler.start()
+      services.portForwarder = forwarder
+      services.portForwardReconciler = reconciler
+      tprint("Auto port forwarding enabled.")
+    }
+  }
+
   func mountRuntimeShares(
     services: StartedGuestServices,
-    controlSocket: ControlSocket,
     effectiveMounts: [MountConfig],
     homeLinks: [HomeLink],
-    nfsMACAddress: VZMACAddress?,
-    guestIP: GuestIP
+    nfsMACAddress: VZMACAddress?
   ) async throws -> NFSExportManager? {
     let remainingMounts = effectiveMounts.filter { !["nix-store", "dvm-home"].contains($0.tag.rawValue) }
-    controlSocket.update(.mounting, guestIP: guestIP)
     let preparation = try await prepareRuntimeMounts(
       remainingMounts: remainingMounts,
       nfsMACAddress: nfsMACAddress
@@ -139,7 +167,7 @@ extension Start {
     nfsHostIP: GuestIP?
   ) throws -> (functionBody: String, callLine: String) {
     let mountPathRaw = runtimeMountPath(for: mount, dvmMountsDir: dvmMountsDir)
-    let setupLines = runtimeMountSetupLines(mount: mount, mountPathRaw: mountPathRaw)
+    let setupLines = runtimeMountSetupLines(mountPathRaw: mountPathRaw)
     let functionName = "mount_\(mount.tag.rawValue.replacingOccurrences(of: "-", with: "_"))"
     let functionBody = try makeRuntimeMountFunction(
       mount: mount,
@@ -157,7 +185,7 @@ extension Start {
       : mount.guestPath.rawValue
   }
 
-  func runtimeMountSetupLines(mount: MountConfig, mountPathRaw: String) -> String {
+  func runtimeMountSetupLines(mountPathRaw: String) -> String {
     // Ensure the mount point directory exists. For home-relative mounts,
     // mountPathRaw is already redirected to /var/dvm-mounts/<tag> by
     // runtimeMountPath(). Symlinks from ~/subpath are handled separately
@@ -174,17 +202,12 @@ extension Start {
     functionName: String
   ) throws -> String {
     let mountPath = shellQuote(mountPathRaw)
-    let privateMountPathRaw =
-      mountPathRaw.hasPrefix("/private/") ? mountPathRaw : "/private" + mountPathRaw
     let quotedTag = shellQuote(mount.tag.rawValue)
     let transport = shellQuote(mount.transport.rawValue)
     let writeManifest =
       "printf '%s %s %s\\n' \(transport) \(quotedTag) \(mountPath) >> \(manifestPath)"
     let tagLogPath = shellQuote("/tmp/dvm-mount-logs/\(mount.tag.rawValue).log")
-    let displayPrefixText =
-      "[\(mount.tag.rawValue)] \(mount.hostPath.rawValue) -> \(mount.guestPath.rawValue)"
-      + " (\(mount.transport.rawValue))"
-    let displayPrefix = shellQuote(displayPrefixText)
+    let displayPrefix = shellQuote(mount.formatDescription)
     let mountDetails = try runtimeMountDetails(mount: mount, mountPath: mountPath, nfsHostIP: nfsHostIP)
     let prelude = runtimeMountFunctionPrelude(
       functionName: functionName,

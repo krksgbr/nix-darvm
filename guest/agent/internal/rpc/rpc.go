@@ -57,11 +57,16 @@ func (rpc *RPC) Run(ctx context.Context) error {
 	group.Go(func() error {
 		if err := portforward.RunOnListener(ctx, rpc.portForwardListener); err != nil {
 			rpc.portForwardReady.Store(false)
-			return err
+
+			return fmt.Errorf("run port forward listener: %w", err)
 		}
 
 		return nil
 	})
 
-	return group.Wait()
+	if err := group.Wait(); err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+
+	return nil
 }

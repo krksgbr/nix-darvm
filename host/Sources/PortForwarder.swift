@@ -33,7 +33,7 @@ final class PortForwarder {
   /// the port and prevent host processes from shadowing the guest service.
   private struct ActiveListener {
     let channels: [NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>]
-    let tasks: [Task<Void, Error>]
+    let tasks: [Task<Void, Never>]
     let port: UInt16
   }
 
@@ -74,7 +74,9 @@ final class PortForwarder {
 
   @discardableResult
   func publish(port: UInt16) async -> Bool {
-    guard activeListeners[port] == nil else { return false }
+    guard activeListeners[port] == nil else {
+      return false
+    }
 
     var channels: [NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>] = []
 
@@ -106,7 +108,13 @@ final class PortForwarder {
 
     let tasks = channels.map { channel in
       Task {
-        try await self.runAcceptLoop(serverChannel: channel, guestPort: port)
+        do {
+          try await self.runAcceptLoop(serverChannel: channel, guestPort: port)
+        } catch is CancellationError {
+          // normal cancellation on unpublish/stop
+        } catch {
+          DVMLog.log(level: "warn", "port-fwd: accept loop closed for port \(port): \(error)")
+        }
       }
     }
 
@@ -123,7 +131,9 @@ final class PortForwarder {
 
   /// Stop forwarding a single port. Idempotent.
   func unpublish(port: UInt16) async {
-    guard let listener = activeListeners.removeValue(forKey: port) else { return }
+    guard let listener = activeListeners.removeValue(forKey: port) else {
+      return
+    }
     for task in listener.tasks {
       task.cancel()
     }

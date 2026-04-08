@@ -24,6 +24,7 @@ struct VMStatus: Codable, Sendable {
 
 /// Health info from the guest, queried via vsock.
 struct GuestHealthPayload: Codable, Sendable {
+  let builtInMounts: [String]
   let mounts: [String]
   let activation: String
   let services: [String: String]

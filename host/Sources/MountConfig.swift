@@ -105,6 +105,16 @@ enum MountConfig {
   var isMirror: Bool {
     tag.rawValue.hasPrefix("mirror-")
   }
+
+  /// True for mounts that are always present regardless of user config (nix-store, nix-cache).
+  var isBuiltIn: Bool {
+    tag.rawValue == "nix-store" || tag.rawValue == "nix-cache"
+  }
+
+  /// Human-readable description: `[tag] hostPath -> guestPath (transport)`
+  var formatDescription: String {
+    "[\(tag.rawValue)] \(hostPath.rawValue) -> \(guestPath.rawValue) (\(transport.rawValue))"
+  }
 }
 
 enum MountConfigError: Error, CustomStringConvertible {

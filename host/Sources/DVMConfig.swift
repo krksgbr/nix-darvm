@@ -15,11 +15,18 @@ struct DVMConfig: Codable {
 
   struct Ports: Codable {
     /// Enable auto-forwarding of guest loopback listeners (default: true).
-    var auto_forward: Bool?
+    var autoForward: Bool = true
     /// Inclusive port ranges to auto-forward, e.g. ["3000-5000"].
     var ranges: [String]?
     /// Explicit ports to auto-forward outside the ranges.
     var allow: [UInt16]?
+
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+      autoForward = try container.decodeIfPresent(Bool.self, forKey: .named("auto_forward")) ?? true
+      ranges = try container.decodeIfPresent([String].self, forKey: .named("ranges"))
+      allow = try container.decodeIfPresent([UInt16].self, forKey: .named("allow"))
+    }
   }
 
   struct MirrorMounts: Codable {
@@ -135,7 +142,7 @@ private struct RawHomeMounts: Decodable {
 }
 
 private struct RawPorts: Decodable {
-  var auto_forward: Bool?
+  var autoForward: Bool
   var ranges: [String]?
   var allow: [UInt16]?
 
@@ -146,7 +153,7 @@ private struct RawPorts: Decodable {
       known: knownPortsKeys,
       section: "ports"
     )
-    auto_forward = try container.decodeIfPresent(Bool.self, forKey: .named("auto_forward"))
+    autoForward = try container.decodeIfPresent(Bool.self, forKey: .named("auto_forward")) ?? true
     ranges = try container.decodeIfPresent([String].self, forKey: .named("ranges"))
     allow = try container.decodeIfPresent([UInt16].self, forKey: .named("allow"))
 
@@ -155,9 +162,9 @@ private struct RawPorts: Decodable {
       for range in ranges {
         let parts = range.split(separator: "-")
         guard parts.count == 2,
-          let lo = UInt16(parts[0]),
-          let hi = UInt16(parts[1]),
-          lo > 0, lo <= hi
+          let loBound = UInt16(parts[0]),
+          let hiBound = UInt16(parts[1]),
+          loBound > 0, loBound <= hiBound
         else {
           throw ConfigError.invalidField(
             "Invalid range '\(range)' in [ports].ranges — expected \"LOW-HIGH\" (1-65535)")
@@ -170,10 +177,8 @@ private struct RawPorts: Decodable {
       for port in allow where port == 0 {
         throw ConfigError.invalidPort(port: 0)
       }
-      let unique = Set(allow)
-      if unique.count != allow.count {
-        let duplicates = allow.filter { port in allow.filter { $0 == port }.count > 1 }
-        throw ConfigError.duplicatePort(port: duplicates.first!)
+      if let duplicate = allow.first(where: { port in allow.filter { $0 == port }.count > 1 }) {
+        throw ConfigError.duplicatePort(port: duplicate)
       }
     }
   }

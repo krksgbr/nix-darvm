@@ -130,6 +130,7 @@ extension Start {
     ))?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
   }
 
+  // swiftlint:disable:next function_parameter_count
   func waitForGuestAgent(
     services: StartedGuestServices,
     runner: VMRunner,
@@ -157,8 +158,10 @@ extension Start {
         switch pollResult {
         case .portForwardNotReady:
           "guest port forwarding did not become ready"
+
         case .unreachable:
           "guest agent unreachable"
+
         case .ready:
           "guest agent unreachable"
         }
@@ -180,6 +183,7 @@ extension Start {
     await logGuestNetworkSnapshot(agentClient: services.agentClient)
   }
 
+  // swiftlint:disable:next function_body_length
   func pollForGuestAgent(
     services: StartedGuestServices,
     bootErrorMonitor: BootErrorMonitor,

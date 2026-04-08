@@ -28,14 +28,16 @@ final class PortForwardReconciler {
   /// Consecutive absent-poll counts for currently published ports.
   private var missCount: [UInt16: Int] = [:]
 
-  init(socketPath: String = "/tmp/darvm-agent.sock", portForwarder: PortForwarder, policy: PortPolicy) {
+  init(portForwarder: PortForwarder, policy: PortPolicy, socketPath: String = "/tmp/darvm-agent.sock") {
     self.socketPath = socketPath
     self.portForwarder = portForwarder
     self.policy = policy
   }
 
   func start() {
-    guard reconcileTask == nil else { return }
+    guard reconcileTask == nil else {
+      return
+    }
     reconcileTask = Task { [weak self] in
       await self?.runLoop()
     }
@@ -99,13 +101,17 @@ final class PortForwardReconciler {
   private func reconcileOnce(
     agent: Darvm_Agent.Client<HTTP2ClientTransport.Posix>
   ) async {
-    guard let status = try? await agent.status(Darvm_StatusRequest()) else { return }
+    guard let status = try? await agent.status(Darvm_StatusRequest()) else {
+      return
+    }
 
     let guestPorts: Set<UInt16> = Set(
-      status.loopbackListeners.compactMap { v in
-        let p = UInt16(clamping: v)
-        guard p > 0, p == v, policy.isAllowed(p) else { return nil }
-        return p
+      status.loopbackListeners.compactMap { rawValue in
+        let port = UInt16(clamping: rawValue)
+        guard port > 0, port == rawValue, policy.isAllowed(port) else {
+          return nil
+        }
+        return port
       }
     )
 

@@ -6,6 +6,7 @@ import (
 )
 
 func TestParseLsofOutput(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		input  string
@@ -97,6 +98,7 @@ node    12345 user    5u  IPv4 0xabc456      0t0  TCP 127.0.0.1:3000->127.0.0.1:
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := ParseLsofOutput(tt.input)
 			if !slices.Equal(got, tt.want) {
 				t.Errorf("ParseLsofOutput() = %v, want %v", got, tt.want)

@@ -225,7 +225,7 @@ extension Start {
   func startGuestServices(
     runner: VMRunner,
     controlSocket: ControlSocket
-  ) async throws -> StartedGuestServices {
+  ) throws -> StartedGuestServices {
     let vsockBridge = try VsockDaemonBridge(virtualMachine: runner.virtualMachine)
     vsockBridge.start()
     let agentProxy = try AgentProxy(virtualMachine: runner.virtualMachine)
@@ -329,56 +329,32 @@ extension Start {
     )
     tprint("Starting VM...")
     try await configured.runner.start()
-    var services = try await startGuestServices(
+    var services = try startGuestServices(
       runner: configured.runner,
       controlSocket: prepared.controlSocket
     )
     let bootErrorMonitor = BootErrorMonitor(stateDir: prepared.stateDir)
 
     do {
-      try await waitForActivationIfNeeded(
-        stateDir: prepared.stateDir,
-        runner: configured.runner,
+      try await performBootSequence(
+        services: &services,
         bootErrorMonitor: bootErrorMonitor,
-        controlSocket: prepared.controlSocket
+        portPolicy: portPolicy,
+        prepared: prepared,
+        configured: configured
       )
-      try await waitForGuestAgent(
-        services: services,
-        runner: configured.runner,
-        controlSocket: prepared.controlSocket,
-        bootErrorMonitor: bootErrorMonitor,
-        stateDir: prepared.stateDir,
-        requirePortForwardReady: portPolicy.autoForward
-      )
-
-      if portPolicy.autoForward {
-        let forwarder = try PortForwarder(virtualMachine: configured.runner.virtualMachine)
-        let reconciler = PortForwardReconciler(
-          portForwarder: forwarder,
-          policy: portPolicy
-        )
-        reconciler.start()
-        services.portForwarder = forwarder
-        services.portForwardReconciler = reconciler
-        tprint("Auto port forwarding enabled.")
-      }
-
       let guestIP = try await resolveGuestIP(
         services: services,
         runner: configured.runner,
         controlSocket: prepared.controlSocket
       )
-      // Derive HomeLinks from the post-filter effectiveMounts so we never install
-      // a symlink pointing at an absent host share (VMConfigurator skips mounts whose
-      // host path doesn't exist; computing links here ensures they stay in sync).
+      prepared.controlSocket.update(.mounting, guestIP: guestIP)
       let homeLinks = try homeLinksForEffectiveMounts(configured.effectiveMounts)
       let nfsExportManager = try await mountRuntimeShares(
         services: services,
-        controlSocket: prepared.controlSocket,
         effectiveMounts: configured.effectiveMounts,
         homeLinks: homeLinks,
-        nfsMACAddress: configured.nfsMACAddress,
-        guestIP: guestIP
+        nfsMACAddress: configured.nfsMACAddress
       )
       return RunningStartContext(
         signalSources: signalSources,

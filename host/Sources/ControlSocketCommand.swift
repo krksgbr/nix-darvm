@@ -39,6 +39,7 @@ enum ControlSocketResponse: Codable {
     case phaseEnteredAt = "phaseEnteredAt"
     case phaseError = "phaseError"
     case type = "type"
+    case builtInMounts = "built_in_mounts"
     case mounts = "mounts"
     case activation = "activation"
     case services = "services"
@@ -53,6 +54,7 @@ enum ControlSocketResponse: Codable {
     } else if let type = try container.decodeIfPresent(String.self, forKey: .type),
       type == "guestHealth"
     {
+      let builtInMounts = try container.decodeIfPresent([String].self, forKey: .builtInMounts) ?? []
       let mounts = try container.decode([String].self, forKey: .mounts)
       let activation = try container.decode(String.self, forKey: .activation)
       let services = try container.decode([String: String].self, forKey: .services)
@@ -60,6 +62,7 @@ enum ControlSocketResponse: Codable {
       let portConflicts = try container.decodeIfPresent([UInt16].self, forKey: .portConflicts) ?? []
       self = .guestHealth(
         GuestHealthPayload(
+          builtInMounts: builtInMounts,
           mounts: mounts,
           activation: activation,
           services: services,
@@ -100,6 +103,7 @@ enum ControlSocketResponse: Codable {
 
     case .guestHealth(let payload):
       try container.encode("guestHealth", forKey: .type)
+      try container.encode(payload.builtInMounts, forKey: .builtInMounts)
       try container.encode(payload.mounts, forKey: .mounts)
       try container.encode(payload.activation, forKey: .activation)
       try container.encode(payload.services, forKey: .services)

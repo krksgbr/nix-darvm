@@ -65,6 +65,7 @@ struct Status: AsyncParsableCommand {
     else {
       return
     }
+    result["built_in_mounts"] = health.builtInMounts
     result["mounts"] = health.mounts
     result["activation"] = health.activation
     result["services"] = health.services

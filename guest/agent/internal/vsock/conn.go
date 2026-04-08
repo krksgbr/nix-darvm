@@ -75,5 +75,10 @@ func (conn *conn) Close() error {
 // SyscallConn returns a raw network connection for low-level socket operations
 // (e.g. shutdown(2) for TCP half-close). Implements the syscall.Conn interface.
 func (conn *conn) SyscallConn() (syscall.RawConn, error) {
-	return conn.file.SyscallConn()
+	raw, err := conn.file.SyscallConn()
+	if err != nil {
+		return nil, fmt.Errorf("vsock conn syscall: %w", err)
+	}
+
+	return raw, nil
 }

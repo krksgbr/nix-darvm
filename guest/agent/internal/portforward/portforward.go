@@ -54,7 +54,7 @@ func RunOnListener(ctx context.Context, ln net.Listener) error {
 			}
 		}
 
-		go handleConn(conn)
+		go handleConn(ctx, conn)
 	}
 }
 
@@ -69,7 +69,7 @@ func Run(ctx context.Context) error {
 	return RunOnListener(ctx, ln)
 }
 
-func handleConn(vsockConn net.Conn) {
+func handleConn(ctx context.Context, vsockConn net.Conn) {
 	defer closeConn(vsockConn)
 
 	// Read 2-byte target port with timeout to prevent hung connections.
@@ -101,7 +101,7 @@ func handleConn(vsockConn net.Conn) {
 		}
 	}
 
-	tcpConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", targetPort))
+	tcpConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", targetPort))
 	if err != nil {
 		log.Printf("port forward dial 127.0.0.1:%d: %v", targetPort, err)
 
@@ -168,7 +168,7 @@ func shutdownVsockWrite(conn net.Conn) {
 	var shutdownErr error
 
 	if err := raw.Control(func(fd uintptr) {
-		shutdownErr = unix.Shutdown(int(fd), unix.SHUT_WR)
+		shutdownErr = unix.Shutdown(int(fd), unix.SHUT_WR) //nolint:gosec // G115: file descriptors fit in int
 	}); err != nil {
 		log.Printf("port forward vsock Control: %v", err)
 

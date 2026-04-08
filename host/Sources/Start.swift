@@ -46,7 +46,8 @@ struct Start: AsyncParsableCommand {
     registerRuntimeHandlers(
       controlSocket: prepared.controlSocket,
       services: running.services,
-      netstackSupervisor: prepared.netstackSupervisor
+      netstackSupervisor: prepared.netstackSupervisor,
+      effectiveMounts: configured.effectiveMounts
     )
     await finishRunningSession(
       guestIP: running.guestIP,
