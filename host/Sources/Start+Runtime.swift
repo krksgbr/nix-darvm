@@ -8,6 +8,7 @@ extension Start {
     services: StartedGuestServices,
     controlSocket: ControlSocket,
     effectiveMounts: [MountConfig],
+    homeLinks: [HomeLink],
     nfsMACAddress: VZMACAddress?,
     guestIP: GuestIP
   ) async throws -> NFSExportManager? {
@@ -35,9 +36,30 @@ extension Start {
     if mountExitCode != 0 {
       DVMLog.log(phase: .mounting, level: "error", "one or more runtime mounts failed")
       tprint("ERROR: One or more runtime mounts failed.")
-    } else {
-      DVMLog.log(phase: .mounting, "all mounts succeeded")
+      throw DVMError.setupFailed("one or more runtime mounts failed (see mount logs above)")
     }
+    DVMLog.log(phase: .mounting, "all mounts succeeded")
+
+    // Install HomeLinks: symlinks from ~/subpath to their targets.
+    // Runs after mounts so that mount-backed targets are ready.
+    if !homeLinks.isEmpty {
+      DVMLog.log(phase: .mounting, "installing \(homeLinks.count) home links")
+      tprint("Installing home links...")
+      let homeLinkScript = makeHomeLinkInstallScript(
+        homeLinks: homeLinks,
+        guestHome: guestHome
+      )
+      let linkExitCode = try await services.agentClient.exec(
+        command: ["sudo", "sh", "-c", homeLinkScript]
+      )
+      if linkExitCode != 0 {
+        DVMLog.log(phase: .mounting, level: "error", "one or more home links failed")
+        tprint("ERROR: One or more home links failed to install.")
+        throw DVMError.setupFailed("one or more home links failed to install (see mount logs above)")
+      }
+      DVMLog.log(phase: .mounting, "all home links installed")
+    }
+
     return preparation.nfsExportManager
   }
 
@@ -136,27 +158,12 @@ extension Start {
   }
 
   func runtimeMountSetupLines(mount: MountConfig, mountPathRaw: String) -> String {
-    let guestPath = mount.guestPath.rawValue
-    guard guestPath.hasPrefix(guestHome + "/") else {
-      let quotedPath = shellQuote(guestPath)
-      return "[ -L \(quotedPath) ] && rm -f \(quotedPath); mkdir -p \(quotedPath)"
-    }
-    let mountPath = shellQuote(mountPathRaw)
-    let quotedPath = shellQuote(guestPath)
-    let parentDir = shellQuote(URL(fileURLWithPath: guestPath).deletingLastPathComponent().path)
-    return [
-      "mkdir -p \(mountPath)",
-      "mkdir -p \(parentDir)",
-      """
-      if [ -L \(quotedPath) ]; then ln -sfn \(mountPath) \(quotedPath); \
-      elif [ -d \(quotedPath) ]; then \
-        if [ -z \"$(ls -A \(quotedPath) 2>/dev/null)\" ]; then \
-          rmdir \(quotedPath) && ln -sfn \(mountPath) \(quotedPath); \
-        else echo \"WARNING: \(quotedPath) is a non-empty directory, expected symlink.\" >&2; \
-          echo \"Remove it manually: rm -rf \(quotedPath)\" >&2; fi; \
-      else ln -sfn \(mountPath) \(quotedPath); fi
-      """
-    ].joined(separator: "\n")
+    // Ensure the mount point directory exists. For home-relative mounts,
+    // mountPathRaw is already redirected to /var/dvm-mounts/<tag> by
+    // runtimeMountPath(). Symlinks from ~/subpath are handled separately
+    // by the HomeLink system.
+    let quotedPath = shellQuote(mountPathRaw)
+    return "[ -L \(quotedPath) ] && rm -f \(quotedPath); mkdir -p \(quotedPath)"
   }
 
   func makeRuntimeMountFunction(

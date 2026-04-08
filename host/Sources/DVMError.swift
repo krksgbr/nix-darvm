@@ -7,6 +7,7 @@ enum DVMError: Error, CustomStringConvertible {
   case activationFailed(String)
   case alreadyRunning
   case portBindFailed(port: UInt16)
+  case setupFailed(String)
 
   var description: String {
     switch self {
@@ -27,6 +28,9 @@ enum DVMError: Error, CustomStringConvertible {
 
     case .portBindFailed(let port):
       return "Port forwarding failed: could not bind localhost:\(port). Is another process using it?"
+
+    case .setupFailed(let message):
+      return "VM setup failed: \(message)"
     }
   }
 }

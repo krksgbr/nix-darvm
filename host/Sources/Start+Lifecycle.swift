@@ -368,10 +368,15 @@ extension Start {
         runner: configured.runner,
         controlSocket: prepared.controlSocket
       )
+      // Derive HomeLinks from the post-filter effectiveMounts so we never install
+      // a symlink pointing at an absent host share (VMConfigurator skips mounts whose
+      // host path doesn't exist; computing links here ensures they stay in sync).
+      let homeLinks = try homeLinksForEffectiveMounts(configured.effectiveMounts)
       let nfsExportManager = try await mountRuntimeShares(
         services: services,
         controlSocket: prepared.controlSocket,
         effectiveMounts: configured.effectiveMounts,
+        homeLinks: homeLinks,
         nfsMACAddress: configured.nfsMACAddress,
         guestIP: guestIP
       )

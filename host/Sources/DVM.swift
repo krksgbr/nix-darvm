@@ -133,6 +133,9 @@ let guestHome = "/Users/admin"
 /// - home dirs: mounted relative to the guest user's home (config/data dirs, read-write)
 /// - system dirs: mounted at the same absolute path in the guest (toolchains, read-only)
 ///
+/// HomeLinks are NOT computed here — call `homeLinksForEffectiveMounts` with the post-filter
+/// mount list from VMConfigurator to avoid installing links for mounts whose host paths are absent.
+///
 /// WARNING: Do NOT mount ~/.config/dvm — it contains user configuration.
 /// A writable mount would let a rogue guest modify host settings.
 func buildMounts(
@@ -143,6 +146,20 @@ func buildMounts(
   systemDirs: [String] = []
 ) throws -> [MountConfig] {
   var mounts = try defaultMounts(hostHome: hostHome)
+
+  // Validate that no user-provided home dir conflicts with reserved local paths,
+  // and that all home dirs are strictly inside the host home directory.
+  for directory in homeDirs {
+    let homeRelative = homeRelativePortion(directory: directory, hostHome: hostHome)
+    if homeRelative.hasPrefix("/") {
+      throw HomeLinkError.notUnderHome(directory)
+    }
+    let topLevel = String(homeRelative.prefix(while: { $0 != "/" }))
+    if HomeRelativePath.reservedLocalPaths.contains(topLevel) {
+      throw HomeLinkError.reservedPath(homeRelative)
+    }
+  }
+
   let resolvedMirrorTransport = try resolveMirrorTransport(
     mirrorDirs: mirrorDirs,
     mirrorTransport: mirrorTransport
@@ -170,6 +187,20 @@ func buildMounts(
   }
 
   return mounts
+}
+
+/// Derives HomeLinks from the post-filter effective mounts plus built-in local links.
+/// Must be called with `effectiveMounts` from VMConfigurator (after host-path filtering),
+/// not with the raw requested mount list, to avoid installing links for absent host paths.
+func homeLinksForEffectiveMounts(_ mounts: [MountConfig]) throws -> [HomeLink] {
+  var links: [HomeLink] = []
+  for mount in mounts {
+    if let link = try homeLinkForMount(mount) {
+      links.append(link)
+    }
+  }
+  links += try builtInLocalHomeLinks()
+  return links
 }
 
 private func defaultMounts(hostHome: String) throws -> [MountConfig] {
@@ -245,6 +276,29 @@ private func makeSystemMount(index: Int, directory: String) throws -> MountConfi
     access: .readOnly,
     transport: .virtiofs
   )
+}
+
+/// Derives a HomeLink from a mount whose guest path is under the guest home.
+/// Returns nil for non-home-relative mounts.
+func homeLinkForMount(_ mount: MountConfig) throws -> HomeLink? {
+  let gp = mount.guestPath.rawValue
+  guard gp.hasPrefix(guestHome + "/") else { return nil }
+  let subpath = String(gp.dropFirst(guestHome.count + 1))
+  return HomeLink(
+    subpath: try HomeRelativePath(subpath),
+    target: try AbsolutePath("/var/dvm-mounts/\(mount.tag.rawValue)")
+  )
+}
+
+/// Extracts the home-relative portion of a directory path. Handles both
+/// absolute paths (with host home prefix) and already-relative paths.
+private func homeRelativePortion(directory: String, hostHome: String) -> String {
+  let expanded = expandTilde(in: directory)
+  let standardized = URL(fileURLWithPath: expanded).standardizedFileURL.path
+  if standardized.hasPrefix(hostHome + "/") {
+    return String(standardized.dropFirst(hostHome.count + 1))
+  }
+  return standardized
 }
 
 func printStoppedStatus(_ payload: ControlSocket.StatusPayload) throws {
