@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	pb "github.com/unbody/darvm/agent/gen"
+	"github.com/unbody/darvm/agent/internal/listeners"
 )
 
 const (
@@ -17,11 +18,26 @@ const (
 
 func (rpc *RPC) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResponse, error) {
 	return &pb.StatusResponse{
-		Mounts:           gatherMounts(ctx),
-		Activation:       gatherActivation(),
-		Services:         gatherServices(ctx),
-		PortForwardReady: rpc.portForwardReady.Load(),
+		Mounts:             gatherMounts(ctx),
+		Activation:         gatherActivation(),
+		Services:           gatherServices(ctx),
+		PortForwardReady:   rpc.portForwardReady.Load(),
+		LoopbackListeners:  gatherLoopbackListeners(ctx),
 	}, nil
+}
+
+func gatherLoopbackListeners(ctx context.Context) []uint32 {
+	ports := listeners.Scan(ctx)
+	if ports == nil {
+		return nil
+	}
+
+	result := make([]uint32, len(ports))
+	for i, p := range ports {
+		result[i] = uint32(p)
+	}
+
+	return result
 }
 
 func gatherMounts(ctx context.Context) []string {

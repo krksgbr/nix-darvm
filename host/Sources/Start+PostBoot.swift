@@ -61,17 +61,20 @@ extension Start {
         return "\(error)"
       }
     }
-    controlSocket.guestHealthHandler = { [agentClient = services.agentClient] in
+    controlSocket.guestHealthHandler = {
+      [agentClient = services.agentClient, portForwarder = services.portForwarder] in
       final class Box: @unchecked Sendable { var value: GuestHealthPayload? }
       let box = Box()
       let semaphore = DispatchSemaphore(value: 0)
-      Task {
+      Task { @MainActor in
         defer { semaphore.signal() }
         if let status = try? await agentClient.status() {
           box.value = GuestHealthPayload(
             mounts: status.mounts,
             activation: status.activation,
-            services: status.services.reduce(into: [:]) { $0[$1.key] = $1.value }
+            services: status.services.reduce(into: [:]) { $0[$1.key] = $1.value },
+            forwardedPorts: portForwarder?.publishedPorts.sorted() ?? [],
+            portConflicts: portForwarder?.conflicts.sorted() ?? []
           )
         }
       }
@@ -120,7 +123,11 @@ extension Start {
     netstackSupervisor.shutdown()
     controlSocket.cleanup()
     services.agentProxy.cleanup()
-    services.portForwarder?.stop()
+    if let reconciler = services.portForwardReconciler {
+      await reconciler.stop()
+    } else {
+      await services.portForwarder?.stop()
+    }
     tprint("VM stopped.")
   }
 

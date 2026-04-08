@@ -280,6 +280,14 @@ func printGuestHealthSummary() {
         .joined(separator: ", ")
       print("  Services:   \(serviceSummary)")
     }
+    if !health.forwardedPorts.isEmpty {
+      let portList = health.forwardedPorts.map(String.init).joined(separator: ", ")
+      print("  Ports:      \(portList)")
+    }
+    if !health.portConflicts.isEmpty {
+      let conflictList = health.portConflicts.map { "\($0) (host in use)" }.joined(separator: ", ")
+      print("  Conflicts:  \(conflictList)")
+    }
 
   case .success(.error(let message)):
     print("  Guest:      unavailable (\(message))")

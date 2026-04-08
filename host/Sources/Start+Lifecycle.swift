@@ -247,36 +247,6 @@ extension Start {
     )
   }
 
-  func startHostPortForwarding(
-    runner: VMRunner,
-    forwardPorts: [UInt16]
-  ) async throws -> PortForwarder? {
-    guard !forwardPorts.isEmpty else {
-      return nil
-    }
-
-    let mappings = forwardPorts.map {
-      PortForwarder.PortMapping(hostPort: $0, guestPort: $0)
-    }
-    let forwarder = try PortForwarder(
-      virtualMachine: runner.virtualMachine,
-      mappings: mappings
-    )
-
-    do {
-      try await forwarder.start()
-    } catch {
-      forwarder.stop()
-      throw error
-    }
-
-    for port in forwardPorts {
-      tprint("Port forwarding: localhost:\(port) → guest:\(port)")
-    }
-
-    return forwarder
-  }
-
   func startInitialHostCommandBridge(
     runner: VMRunner,
     hostCommandBridgeBox: HostCommandBridgeBox
@@ -352,6 +322,7 @@ extension Start {
     configured: ConfiguredStartContext
   ) async throws -> RunningStartContext {
     let config = try DVMConfig.load()
+    let portPolicy = config.portPolicy
     let signalSources = installSignalHandlers(
       controlSocket: prepared.controlSocket,
       runner: configured.runner
@@ -377,13 +348,20 @@ extension Start {
         controlSocket: prepared.controlSocket,
         bootErrorMonitor: bootErrorMonitor,
         stateDir: prepared.stateDir,
-        requirePortForwardReady: !config.forwardPorts.isEmpty
+        requirePortForwardReady: portPolicy.autoForward
       )
 
-      services.portForwarder = try await startHostPortForwarding(
-        runner: configured.runner,
-        forwardPorts: config.forwardPorts
-      )
+      if portPolicy.autoForward {
+        let forwarder = try PortForwarder(virtualMachine: configured.runner.virtualMachine)
+        let reconciler = PortForwardReconciler(
+          portForwarder: forwarder,
+          policy: portPolicy
+        )
+        reconciler.start()
+        services.portForwarder = forwarder
+        services.portForwardReconciler = reconciler
+        tprint("Auto port forwarding enabled.")
+      }
 
       let guestIP = try await resolveGuestIP(
         services: services,
@@ -426,6 +404,10 @@ extension Start {
     try? await runner.stop()
     controlSocket.cleanup()
     services.agentProxy.cleanup()
-    services.portForwarder?.stop()
+    if let reconciler = services.portForwardReconciler {
+      await reconciler.stop()
+    } else {
+      await services.portForwarder?.stop()
+    }
   }
 }

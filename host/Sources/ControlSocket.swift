@@ -27,6 +27,8 @@ struct GuestHealthPayload: Codable, Sendable {
   let mounts: [String]
   let activation: String
   let services: [String: String]
+  let forwardedPorts: [UInt16]
+  let portConflicts: [UInt16]
 }
 
 /// Unix domain socket for CLI coordination.

@@ -25,6 +25,7 @@ struct StartedGuestServices {
   let agentClient: AgentClient
   let hostCommandBridgeBox: HostCommandBridgeBox
   var portForwarder: PortForwarder?
+  var portForwardReconciler: PortForwardReconciler?
 }
 
 struct SignalSources {

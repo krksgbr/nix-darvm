@@ -42,6 +42,8 @@ enum ControlSocketResponse: Codable {
     case mounts = "mounts"
     case activation = "activation"
     case services = "services"
+    case forwardedPorts = "forwarded_ports"
+    case portConflicts = "port_conflicts"
   }
 
   init(from decoder: Decoder) throws {
@@ -54,11 +56,15 @@ enum ControlSocketResponse: Codable {
       let mounts = try container.decode([String].self, forKey: .mounts)
       let activation = try container.decode(String.self, forKey: .activation)
       let services = try container.decode([String: String].self, forKey: .services)
+      let forwardedPorts = try container.decodeIfPresent([UInt16].self, forKey: .forwardedPorts) ?? []
+      let portConflicts = try container.decodeIfPresent([UInt16].self, forKey: .portConflicts) ?? []
       self = .guestHealth(
         GuestHealthPayload(
           mounts: mounts,
           activation: activation,
-          services: services
+          services: services,
+          forwardedPorts: forwardedPorts,
+          portConflicts: portConflicts
         )
       )
     } else {
@@ -97,6 +103,8 @@ enum ControlSocketResponse: Codable {
       try container.encode(payload.mounts, forKey: .mounts)
       try container.encode(payload.activation, forKey: .activation)
       try container.encode(payload.services, forKey: .services)
+      try container.encode(payload.forwardedPorts, forKey: .forwardedPorts)
+      try container.encode(payload.portConflicts, forKey: .portConflicts)
 
     case .error(let message):
       try container.encode(message, forKey: .error)

@@ -10,20 +10,15 @@ private let portForwardHalfCloseConfig = NIOAsyncChannel<ByteBuffer, ByteBuffer>
 /// Forwards TCP connections from host localhost ports to guest localhost ports
 /// via vsock port 6177.
 ///
-/// For each configured port mapping, a TCP listener binds on the host.
-/// When a client connects, we dial vsock 6177, write a 2-byte big-endian
-/// target port header, then proxy bidirectionally.
+/// Supports dynamic publish/unpublish of individual ports at runtime.
+/// When a client connects to a published port, we dial vsock 6177,
+/// write a 2-byte big-endian target port header, then proxy bidirectionally.
 ///
 /// IMPORTANT: The `VZVirtioSocketConnection` must be retained for the full
 /// session duration. Deallocation tears down the vsock channel immediately.
 @MainActor
 final class PortForwarder {
   static let vsockPort: UInt32 = 6_177
-
-  struct PortMapping {
-    let hostPort: UInt16
-    let guestPort: UInt16
-  }
 
   /// Holds a vsock connection and its raw fd together.
   /// The connection object MUST be retained for the session duration —
@@ -33,40 +28,60 @@ final class PortForwarder {
     let fileDescriptor: Int32
   }
 
-  /// A bound server channel paired with its port mapping.
-  private struct BoundListener: Sendable {
-    let channel: NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>
-    let mapping: PortMapping
+  /// Tracks listeners for a single published port.
+  /// We bind both IPv4 (127.0.0.1) and IPv6 (::1) loopback to fully claim
+  /// the port and prevent host processes from shadowing the guest service.
+  private struct ActiveListener {
+    let channels: [NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>]
+    let tasks: [Task<Void, Error>]
+    let port: UInt16
   }
 
-  let mappings: [PortMapping]
   let socketDevice: VZVirtioSocketDevice
   private let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-  private var serverTasks: [Task<Void, Error>] = []
 
-  init(
-    virtualMachine: VZVirtualMachine,
-    mappings: [PortMapping]
-  ) throws {
+  /// Currently published port listeners.
+  private var activeListeners: [UInt16: ActiveListener] = [:]
+
+  /// Ports where the most recent bind attempt failed (host conflict).
+  /// Cleared when a port is successfully published.
+  private(set) var conflicts: Set<UInt16> = []
+
+  /// The set of currently forwarded host ports.
+  var publishedPorts: Set<UInt16> {
+    Set(activeListeners.keys)
+  }
+
+  init(virtualMachine: VZVirtualMachine) throws {
     guard let device = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
       throw BridgeError.noSocketDevice
     }
     self.socketDevice = device
-    self.mappings = mappings
   }
 
-  /// Start TCP listeners for all configured port mappings.
-  /// Binds all ports synchronously first — if any bind fails, all already-bound
-  /// listeners are closed and the error is propagated. Accept loops are only
-  /// spawned after all binds succeed.
-  func start() async throws {
-    var boundListeners: [BoundListener] = []
+  // MARK: - Dynamic publish/unpublish
+
+  /// Bind a single host port and start an accept loop forwarding to the
+  /// same port in the guest.
+  ///
+  /// Returns true if the port was newly published. Returns false if already
+  /// active or if the bind failed (conflict). Bind failures are recorded in
+  /// `conflicts` and logged.
+  /// Addresses to bind for each published port.
+  /// Both IPv4 and IPv6 loopback so that host processes cannot shadow the
+  /// guest service by binding on the other address family.
+  private static let bindAddresses = ["127.0.0.1", "::1"]
+
+  @discardableResult
+  func publish(port: UInt16) async -> Bool {
+    guard activeListeners[port] == nil else { return false }
+
+    var channels: [NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>] = []
 
     do {
-      for mapping in mappings {
+      for host in Self.bindAddresses {
         let serverChannel = try await ServerBootstrap(group: eventLoopGroup)
-          .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
-          .bind(host: "127.0.0.1", port: Int(mapping.hostPort)) { childChannel in
+          .bind(host: host, port: Int(port)) { childChannel in
             childChannel.eventLoop.makeCompletedFuture {
               try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
                 wrappingChannelSynchronously: childChannel,
@@ -74,36 +89,60 @@ final class PortForwarder {
               )
             }
           }
-        boundListeners.append(BoundListener(channel: serverChannel, mapping: mapping))
+        channels.append(serverChannel)
       }
     } catch {
-      // Close all already-bound listeners on failure.
-      for listener in boundListeners {
-        try? await listener.channel.channel.close()
+      // Roll back any channels that did bind.
+      for channel in channels {
+        try? await channel.channel.close()
       }
-      throw error
+      let isNew = conflicts.insert(port).inserted
+      DVMLog.log(level: "warn", "port forward: publish localhost:\(port) failed: \(error)")
+      if isNew {
+        tprint("Port conflict: localhost:\(port) — host port already in use")
+      }
+      return false
     }
 
-    // All binds succeeded — spawn the accept loops.
-    for listener in boundListeners {
-      DVMLog.log(
-        phase: nil,
-        "port forward: localhost:\(listener.mapping.hostPort) -> guest:\(listener.mapping.guestPort)"
-      )
-      let task = Task {
-        try await self.runAcceptLoop(listener: listener)
+    let tasks = channels.map { channel in
+      Task {
+        try await self.runAcceptLoop(serverChannel: channel, guestPort: port)
       }
-      serverTasks.append(task)
     }
+
+    activeListeners[port] = ActiveListener(channels: channels, tasks: tasks, port: port)
+    let recovered = conflicts.remove(port) != nil
+    DVMLog.log("port forward: published localhost:\(port)")
+    if recovered {
+      tprint("Port forwarding recovered: localhost:\(port) → guest:\(port)")
+    } else {
+      tprint("Port forwarding: localhost:\(port) → guest:\(port)")
+    }
+    return true
   }
 
-  func stop() {
-    for task in serverTasks {
+  /// Stop forwarding a single port. Idempotent.
+  func unpublish(port: UInt16) async {
+    guard let listener = activeListeners.removeValue(forKey: port) else { return }
+    for task in listener.tasks {
       task.cancel()
     }
-    serverTasks.removeAll()
-    try? eventLoopGroup.syncShutdownGracefully()
+    for channel in listener.channels {
+      try? await channel.channel.close()
+    }
+    DVMLog.log("port forward: unpublished localhost:\(port)")
+    tprint("Port forwarding stopped: localhost:\(port)")
   }
+
+  /// Stop all published ports and shut down the event loop group.
+  func stop() async {
+    for port in Array(activeListeners.keys) {
+      await unpublish(port: port)
+    }
+    try? await eventLoopGroup.shutdownGracefully()
+  }
+
+  // MARK: - Vsock connection
 
   /// Connect to the guest's port-forward vsock service.
   /// Must be called on MainActor since VZVirtioSocketDevice requires it.
@@ -125,12 +164,17 @@ final class PortForwarder {
     }
   }
 
-  private func runAcceptLoop(listener: BoundListener) async throws {
+  // MARK: - Accept loop and client handling
+
+  private func runAcceptLoop(
+    serverChannel: NIOAsyncChannel<NIOAsyncChannel<ByteBuffer, ByteBuffer>, Never>,
+    guestPort: UInt16
+  ) async throws {
     try await withThrowingDiscardingTaskGroup { group in
-      try await listener.channel.executeThenClose { serverInbound in
+      try await serverChannel.executeThenClose { serverInbound in
         for try await clientChannel in serverInbound {
           group.addTask {
-            await self.handleClient(clientChannel, guestPort: listener.mapping.guestPort)
+            await self.handleClient(clientChannel, guestPort: guestPort)
           }
         }
       }

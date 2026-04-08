@@ -167,7 +167,11 @@ extension Start {
       try? await runner.stop()
       controlSocket.cleanup()
       services.agentProxy.cleanup()
-      services.portForwarder?.stop()
+      if let reconciler = services.portForwardReconciler {
+        await reconciler.stop()
+      } else {
+        await services.portForwarder?.stop()
+      }
       throw DVMError.activationFailed(message)
     }
 

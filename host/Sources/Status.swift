@@ -68,6 +68,8 @@ struct Status: AsyncParsableCommand {
     result["mounts"] = health.mounts
     result["activation"] = health.activation
     result["services"] = health.services
+    result["forwarded_ports"] = health.forwardedPorts
+    result["port_conflicts"] = health.portConflicts
   }
 
   private func outputHuman() throws {

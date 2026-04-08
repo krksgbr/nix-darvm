@@ -68,5 +68,8 @@ struct Start: AsyncParsableCommand {
     withExtendedLifetime(running.services.portForwarder) {
       // Keep port forwarder alive until teardown completes.
     }
+    withExtendedLifetime(running.services.portForwardReconciler) {
+      // Keep reconciler alive until teardown completes.
+    }
   }
 }

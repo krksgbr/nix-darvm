@@ -10,12 +10,16 @@ struct DVMConfig: Codable {
   var mounts: Mounts?
   /// Path to the user's dvm flake (fallback when no --flake flag or CWD flake).
   var flake: String?
-  /// Port forwarding rules: host localhost:port → guest localhost:port.
+  /// Port forwarding policy for dynamic auto-forwarding.
   var ports: Ports?
 
   struct Ports: Codable {
-    /// Ports to forward from host to guest (same port on both sides).
-    var forward: [UInt16]
+    /// Enable auto-forwarding of guest loopback listeners (default: true).
+    var auto_forward: Bool?
+    /// Inclusive port ranges to auto-forward, e.g. ["3000-5000"].
+    var ranges: [String]?
+    /// Explicit ports to auto-forward outside the ranges.
+    var allow: [UInt16]?
   }
 
   struct MirrorMounts: Codable {
@@ -40,7 +44,7 @@ struct DVMConfig: Codable {
   var mirrorDirs: [String] { mounts?.mirror?.dirs ?? [] }
   var mirrorTransport: MountTransport? { mounts?.mirror?.transport }
   var homeDirs: [String] { mounts?.home?.dirs ?? [] }
-  var forwardPorts: [UInt16] { ports?.forward ?? [] }
+  var portPolicy: PortPolicy { PortPolicy(from: ports) }
 
   static let empty = Self(mounts: nil, flake: nil, ports: nil)
 
@@ -131,7 +135,9 @@ private struct RawHomeMounts: Decodable {
 }
 
 private struct RawPorts: Decodable {
-  var forward: [UInt16]
+  var auto_forward: Bool?
+  var ranges: [String]?
+  var allow: [UInt16]?
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: DynamicCodingKey.self)
@@ -140,18 +146,35 @@ private struct RawPorts: Decodable {
       known: knownPortsKeys,
       section: "ports"
     )
-    forward = try container.decode([UInt16].self, forKey: .named("forward"))
+    auto_forward = try container.decodeIfPresent(Bool.self, forKey: .named("auto_forward"))
+    ranges = try container.decodeIfPresent([String].self, forKey: .named("ranges"))
+    allow = try container.decodeIfPresent([UInt16].self, forKey: .named("allow"))
 
-    // Reject port 0 — ephemeral on host, nonsensical for guest dial.
-    for port in forward where port == 0 {
-      throw ConfigError.invalidPort(port: 0)
+    // Validate range format: each must be "NNN-MMM" with valid uint16 bounds.
+    if let ranges {
+      for range in ranges {
+        let parts = range.split(separator: "-")
+        guard parts.count == 2,
+          let lo = UInt16(parts[0]),
+          let hi = UInt16(parts[1]),
+          lo > 0, lo <= hi
+        else {
+          throw ConfigError.invalidField(
+            "Invalid range '\(range)' in [ports].ranges — expected \"LOW-HIGH\" (1-65535)")
+        }
+      }
     }
 
-    // Reject duplicates — would cause bind conflicts.
-    let unique = Set(forward)
-    if unique.count != forward.count {
-      let duplicates = forward.filter { port in forward.filter { $0 == port }.count > 1 }
-      throw ConfigError.duplicatePort(port: duplicates.first!)
+    // Reject port 0 in allow list.
+    if let allow {
+      for port in allow where port == 0 {
+        throw ConfigError.invalidPort(port: 0)
+      }
+      let unique = Set(allow)
+      if unique.count != allow.count {
+        let duplicates = allow.filter { port in allow.filter { $0 == port }.count > 1 }
+        throw ConfigError.duplicatePort(port: duplicates.first!)
+      }
     }
   }
 }
@@ -160,7 +183,7 @@ private let knownTopLevelKeys: Set<String> = ["flake", "mounts", "ports"]
 private let knownMountsKeys: Set<String> = ["mirror", "home"]
 private let knownMirrorKeys: Set<String> = ["dirs", "transport"]
 private let knownHomeKeys: Set<String> = ["dirs"]
-private let knownPortsKeys: Set<String> = ["forward"]
+private let knownPortsKeys: Set<String> = ["auto_forward", "ranges", "allow"]
 
 private struct DynamicCodingKey: CodingKey {
   let stringValue: String
