@@ -118,6 +118,7 @@
                 # agents.codex.package = llmPkgs.codex;
                 integrations.direnv.enable = true;
                 xcode.enable = true;
+                nodejs.enable = true;
               };
             }
           ];
@@ -132,6 +133,7 @@
         codex = ./guest/modules/codex.nix;
         direnv = ./guest/modules/direnv.nix;
         xcode = ./guest/modules/xcode.nix;
+        nodejs = ./guest/modules/nodejs.nix;
       };
 
       packages.${system} = {

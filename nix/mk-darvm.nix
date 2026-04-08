@@ -28,6 +28,7 @@ nix-darwin.lib.darwinSystem {
     ../guest/modules/direnv.nix
     ../guest/modules/agents.nix
     ../guest/modules/xcode.nix
+    ../guest/modules/nodejs.nix
   ]
   ++ modules;
   specialArgs = {
