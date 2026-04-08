@@ -12,6 +12,9 @@ struct Exec: AsyncParsableCommand {
   @Option(name: .long, help: "Path to credentials.toml manifest")
   var credentials: String?
 
+  @Flag(name: .long, help: "Skip credential resolution and injection")
+  var noCredentials: Bool = false
+
   @Argument(help: "Command and arguments to execute")
   var command: [String] = []
 
@@ -23,8 +26,13 @@ struct Exec: AsyncParsableCommand {
       throw CleanExit.helpRequest(self)
     }
 
-    let credentialEnv = try resolveAndPushCredentials(
-      credentialsFlag: credentials, cwd: cwd)
+    let credentialEnv: [String: String]
+    if noCredentials {
+      credentialEnv = [:]
+    } else {
+      credentialEnv = try resolveAndPushCredentials(
+        credentialsFlag: credentials, cwd: cwd)
+    }
 
     let exitCode: Int32
     if tty {

@@ -252,7 +252,7 @@ pkgs.writeShellApplication {
       LOG_OFFSET=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)
 
       echo "Activating..."
-      "$DVM_CORE" exec -- sudo sh -c "printf '%s' '$CLOSURE' > /var/run/dvm-state/closure-path; printf '%s' '$RUN_ID' > /var/run/dvm-state/run-id; touch /var/run/dvm-state/trigger"
+      "$DVM_CORE" exec --no-credentials -- sudo sh -c "printf '%s' '$CLOSURE' > /var/run/dvm-state/closure-path; printf '%s' '$RUN_ID' > /var/run/dvm-state/run-id; touch /var/run/dvm-state/trigger"
 
       # Poll via host filesystem (state dir is VirtioFS-mounted).
       # We use wc -c + tail -c rather than `tail -F`: VirtioFS writes from the

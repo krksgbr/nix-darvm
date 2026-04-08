@@ -60,8 +60,8 @@ func NewInterceptor(secrets []control.SecretRule, caPool *CAPool) *Interceptor {
 	i.proxy = &httputil.ReverseProxy{
 		Rewrite:       i.rewriteRequest,
 		FlushInterval: -1, // immediate flush — no buffering surprises for SSE/streaming
-		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
-			log.Printf("proxy error forwarding request: %v", err)
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("proxy error forwarding request to %q: %v", r.Host, err) //nolint:gosec // G706: %q escapes control characters, preventing log injection
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}
@@ -126,7 +126,7 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 
 	if i.caPool == nil {
 		// No CA — can't MITM. TCP passthrough.
-		i.tcpPassthrough(guestConn, dstIP, dstPort)
+		i.tcpPassthrough(guestConn, dstIP, dstPort, "")
 
 		return
 	}
@@ -142,7 +142,7 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 	if serverName == "" {
 		// No SNI (IP-based request, non-TLS traffic, or malformed ClientHello).
 		// Pass through instead of attempting MITM without a hostname.
-		i.tcpPassthrough(bc, dstIP, dstPort)
+		i.tcpPassthrough(bc, dstIP, dstPort, "")
 
 		return
 	}
@@ -150,7 +150,7 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 	secrets := i.secretsForHost(serverName)
 	if secrets == nil {
 		// Not intercepted — TCP passthrough.
-		i.tcpPassthrough(bc, dstIP, dstPort)
+		i.tcpPassthrough(bc, dstIP, dstPort, serverName)
 
 		return
 	}
@@ -167,7 +167,7 @@ func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int)
 	defer cancelHandshake()
 
 	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
-		log.Printf("https: TLS handshake failed: %v", err)
+		log.Printf("https: TLS handshake failed for %s: %v", serverName, err)
 
 		return
 	}
@@ -229,8 +229,13 @@ func (i *Interceptor) replaceSecrets(req *http.Request, secrets []control.Secret
 }
 
 // tcpPassthrough does a bidirectional byte relay without any inspection.
-func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort int) {
+// serverName is the SNI hostname if known, empty string otherwise.
+func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort int, serverName string) {
 	target := net.JoinHostPort(dstIP, strconv.Itoa(dstPort))
+	displayTarget := target
+	if serverName != "" {
+		displayTarget = serverName
+	}
 	dialer := &net.Dialer{Timeout: passthroughDialTimeout}
 
 	realConn, err := dialer.DialContext(context.Background(), "tcp", target)
@@ -239,8 +244,8 @@ func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort i
 	}
 
 	defer func() {
-		if err := realConn.Close(); err != nil {
-			log.Printf("tcp passthrough: close upstream conn: %v", err)
+		if err := realConn.Close(); err != nil && !isConnCloseError(err) {
+			log.Printf("tcp passthrough: close upstream conn (%s): %v", displayTarget, err)
 		}
 	}()
 
@@ -248,14 +253,14 @@ func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort i
 
 	go func() {
 		if _, err := io.Copy(realConn, guestConn); err != nil && !isConnCloseError(err) {
-			log.Printf("tcp passthrough: guest to upstream copy: %v", err)
+			log.Printf("tcp passthrough: guest to upstream copy (%s): %v", displayTarget, err)
 		}
 
 		close(done)
 	}()
 
 	if _, err := io.Copy(guestConn, realConn); err != nil && !isConnCloseError(err) {
-		log.Printf("tcp passthrough: upstream to guest copy: %v", err)
+		log.Printf("tcp passthrough: upstream to guest copy (%s): %v", displayTarget, err)
 	}
 
 	<-done

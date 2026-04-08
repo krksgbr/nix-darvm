@@ -114,13 +114,23 @@
               dvm = {
                 agents.claude.enable = true;
                 agents.claude.package = llmPkgs.claude-code;
-                # agents.codex.enable = true;
-                # agents.codex.package = llmPkgs.codex;
+                agents.codex.enable = true;
+                agents.codex.package = null;
                 integrations.direnv.enable = true;
                 xcode.enable = true;
                 nodejs.enable = true;
               };
             }
+            (
+              { pkgs, ... }:
+              {
+                nixpkgs.config.allowUnfree = true;
+                environment.systemPackages = with pkgs; [
+                  google-chrome
+                  jujutsu
+                ];
+              }
+            )
           ];
         };
       };
