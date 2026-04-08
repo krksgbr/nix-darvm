@@ -247,18 +247,38 @@ func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort i
 	done := make(chan struct{})
 
 	go func() {
-		if _, err := io.Copy(realConn, guestConn); err != nil {
+		if _, err := io.Copy(realConn, guestConn); err != nil && !isConnCloseError(err) {
 			log.Printf("tcp passthrough: guest to upstream copy: %v", err)
 		}
 
 		close(done)
 	}()
 
-	if _, err := io.Copy(guestConn, realConn); err != nil {
+	if _, err := io.Copy(guestConn, realConn); err != nil && !isConnCloseError(err) {
 		log.Printf("tcp passthrough: upstream to guest copy: %v", err)
 	}
 
 	<-done
+}
+
+// isConnCloseError reports whether err is an expected error from a connection
+// being torn down mid-copy: EOF, reset by peer, closed endpoint, broken pipe.
+// These are normal in a bidirectional proxy when one side closes first.
+//
+// None of these can mask data corruption or security failures — they are all
+// connection-state signals, not data-plane errors. The one observability cost:
+// a premature teardown caused by a proxy or netstack bug would also match
+// "endpoint is closed" and go unlogged. The client still sees the dropped
+// connection; only the proxy-side log entry is suppressed.
+func isConnCloseError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "endpoint is closed") ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "broken pipe")
 }
 
 // serveConn runs an http.Server over a single connection, using the shared
