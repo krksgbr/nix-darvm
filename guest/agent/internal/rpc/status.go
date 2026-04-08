@@ -18,11 +18,11 @@ const (
 
 func (rpc *RPC) Status(ctx context.Context, _ *pb.StatusRequest) (*pb.StatusResponse, error) {
 	return &pb.StatusResponse{
-		Mounts:             gatherMounts(ctx),
-		Activation:         gatherActivation(),
-		Services:           gatherServices(ctx),
-		PortForwardReady:   rpc.portForwardReady.Load(),
-		LoopbackListeners:  gatherLoopbackListeners(ctx),
+		Mounts:            gatherMounts(ctx),
+		Activation:        gatherActivation(),
+		Services:          gatherServices(ctx),
+		PortForwardReady:  rpc.portForwardReady.Load(),
+		LoopbackListeners: gatherLoopbackListeners(ctx),
 	}, nil
 }
 

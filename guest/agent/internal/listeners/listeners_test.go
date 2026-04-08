@@ -8,9 +8,9 @@ import (
 func TestParseLsofOutput(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		input  string
-		want   []uint16
+		name  string
+		input string
+		want  []uint16
 	}{
 		{
 			name: "ipv4 loopback",

@@ -240,29 +240,29 @@ extension Start {
     let privateMountPathRaw =
       mountPathRaw.hasPrefix("/private/") ? mountPathRaw : "/private" + mountPathRaw
     return """
-    \(functionName)() {
-      log_mount() { printf '%s\\n' "$1" >> \(tagLogPath); }
-      current_mount_line() {
-        /sbin/mount | grep " on \(mountPathRaw) " | tail -n 1 || \
-        /sbin/mount | grep " on \(privateMountPathRaw) " | tail -n 1
-      }
-      wait_for_mount_line() {
-        line=""
-        for _ in 1 2 3 4 5; do
-          line=$(current_mount_line)
-          [ -n "$line" ] && { printf '%s' "$line"; return 0; }
-          sleep 0.2
-        done
-        return 1
-      }
-      log_mount "[BEGIN] \
-      tag=\(mount.tag.rawValue) \
-      transport=\(mount.transport.rawValue) \
-      guest=\(mount.guestPath.rawValue) \
-      host=\(mount.hostPath.rawValue)"
-      log_mount "[CMD] \(command)"
-      LINE=$(current_mount_line)
-    """
+      \(functionName)() {
+        log_mount() { printf '%s\\n' "$1" >> \(tagLogPath); }
+        current_mount_line() {
+          /sbin/mount | grep " on \(mountPathRaw) " | tail -n 1 || \
+          /sbin/mount | grep " on \(privateMountPathRaw) " | tail -n 1
+        }
+        wait_for_mount_line() {
+          line=""
+          for _ in 1 2 3 4 5; do
+            line=$(current_mount_line)
+            [ -n "$line" ] && { printf '%s' "$line"; return 0; }
+            sleep 0.2
+          done
+          return 1
+        }
+        log_mount "[BEGIN] \
+        tag=\(mount.tag.rawValue) \
+        transport=\(mount.transport.rawValue) \
+        guest=\(mount.guestPath.rawValue) \
+        host=\(mount.hostPath.rawValue)"
+        log_mount "[CMD] \(command)"
+        LINE=$(current_mount_line)
+      """
   }
 
   func runtimeMountAlreadyMountedBlock(
