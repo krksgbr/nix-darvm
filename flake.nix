@@ -116,6 +116,8 @@
                 agents.claude.package = llmPkgs.claude-code;
                 agents.codex.enable = true;
                 agents.codex.package = null;
+                agents.pi.enable = true;
+
                 integrations.direnv.enable = true;
                 xcode.enable = true;
                 nodejs.enable = true;
@@ -141,6 +143,8 @@
         agents = ./guest/modules/agents.nix;
         claude = ./guest/modules/claude.nix;
         codex = ./guest/modules/codex.nix;
+        opencode = ./guest/modules/opencode.nix;
+        pi = ./guest/modules/pi.nix;
         direnv = ./guest/modules/direnv.nix;
         xcode = ./guest/modules/xcode.nix;
         nodejs = ./guest/modules/nodejs.nix;
