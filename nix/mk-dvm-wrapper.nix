@@ -173,16 +173,24 @@ pkgs.writeShellApplication {
     }
 
     cmd_start() {
-      # Ensure base VM exists. Skip if any darvm-* VM is already available —
-      # a stale hash just means guest/image-minimal changed; the existing VM
-      # still works and dvm switch delivers the new config via nix-darwin.
+      # Ensure base VM exists.
       if ! tart list --format json 2>/dev/null | python3 -c 'import json,sys; vms=json.load(sys.stdin); sys.exit(0 if any(v["Name"].startswith("darvm-") for v in vms) else 1)'; then
         "$CREATE_VM"
       fi
 
-      # Find the actual darvm-* VM name
+      # Find the actual darvm-* VM name.
       ACTUAL_VM=$(tart list --format json | python3 -c 'import json,sys;vms=json.load(sys.stdin);ms=[v["Name"]for v in vms if v["Name"].startswith("darvm-")];print(ms[0])if ms else None' 2>/dev/null)
       ACTUAL_VM="''${ACTUAL_VM:-${escapeShellArg vmName}}"
+
+      # Warn if the running image is outdated. An image built from an older
+      # guest/image-minimal may be incompatible with this version of dvm-core
+      # (e.g., the boot script expects infrastructure that no longer exists).
+      # Run 'dvm init' to rebuild.
+      if [ "$ACTUAL_VM" != ${escapeShellArg vmName} ]; then
+        echo "Warning: VM image '$ACTUAL_VM' is outdated (current: ${escapeShellArg vmName})."
+        echo "         The boot script may be incompatible with this version of dvm-core."
+        echo "         Run 'dvm init' to rebuild the image."
+      fi
 
       # Build closure from user's flake
       CLOSURE=$(build_closure)

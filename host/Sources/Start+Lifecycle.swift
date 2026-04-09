@@ -19,7 +19,7 @@ extension Start {
       ProcessInfo.processInfo.environment["DVM_NETSTACK"] ?? "/usr/local/bin/dvm-netstack"
     let netstackSupervisor = try makeNetstackSupervisor(netstackBinary: netstackBinary)
     let stateDir = try makeStateDir()
-    let homeDataDir = try makeHomeDataDir(from: stateDir)
+    let config = try DVMConfig.load()
     try writeActivationFilesIfNeeded(stateDir: stateDir)
     controlSocket.update(.configuring)
     DVMLog.log(phase: .configuring, "configuring VM from \(vmDirectory.path)")
@@ -30,8 +30,9 @@ extension Start {
       mounts: mounts,
       netstackSupervisor: netstackSupervisor,
       stateDir: stateDir,
-      homeDataDir: homeDataDir,
-      netstackBinary: netstackBinary
+      netstackBinary: netstackBinary,
+      cpuOverride: config.cpuOverride,
+      memoryOverride: config.memoryOverride
     )
   }
 
@@ -89,18 +90,6 @@ extension Start {
     // closure-path, boot-error, log tail offsets, etc. It is intentionally
     // wiped on every dvm start so the new session starts from a clean slate
     // and never reads stale state left by a previous (possibly crashed) run.
-    //
-    // CRITICAL INVARIANT: homeDataDir (~/.local/state/dvm/home/) must NOT
-    // be nested under stateDir. If it is, the wipe here silently destroys
-    // the persistent guest home on every boot — the `if !fileExists` guard
-    // in makeHomeDataDir() cannot protect it because stateDir is wiped first.
-    //
-    // Historical note: this wipe predates homeDataDir. When host-backed home
-    // was introduced (commit 4b307ea), home/ was placed inside stateDir by
-    // mistake, creating a silent persistence bug. The guard in makeHomeDataDir
-    // reveals the original intent was persistence. The two concerns —
-    // ephemeral run state and persistent home backing — must live at separate
-    // host paths.
     let dvmLocalDir = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".local/state/dvm")
     let stateDir = URL(fileURLWithPath: dvmLocalDir.path)
@@ -108,26 +97,6 @@ extension Start {
     try FileManager.default.createDirectory(at: stateDir, withIntermediateDirectories: true)
     DVMLog.log(phase: .configuring, "state dir: \(stateDir.path)")
     return stateDir
-  }
-
-  func makeHomeDataDir(from stateDir: URL) throws -> URL {
-    // NOTE: the path arithmetic below (delete two components, re-append
-    // "state/dvm/home") resolves to ~/.local/state/dvm/home — which is
-    // a subdirectory of stateDir. This means the wipe in makeStateDir()
-    // destroys the guest home on every boot, defeating the `if !fileExists`
-    // persistence guard below. This is a known bug; homeDataDir should be
-    // moved to a path outside stateDir (e.g. ~/.local/share/dvm/home/).
-    let homeDataDir =
-      stateDir
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .appendingPathComponent("state/dvm/home")
-    if !FileManager.default.fileExists(atPath: homeDataDir.path) {
-      try FileManager.default.createDirectory(at: homeDataDir, withIntermediateDirectories: true)
-      DVMLog.log(phase: .configuring, "created home data dir: \(homeDataDir.path)")
-    }
-    DVMLog.log(phase: .configuring, "home data dir: \(homeDataDir.path)")
-    return homeDataDir
   }
 
   func writeActivationFilesIfNeeded(stateDir: URL) throws {
@@ -151,7 +120,8 @@ extension Start {
     let configured = try VMConfigurator.create(
       vmDir: prepared.vmDirectory,
       mounts: prepared.mounts,
-      homeDataDir: prepared.homeDataDir,
+      cpuOverride: prepared.cpuOverride,
+      memoryOverride: prepared.memoryOverride,
       netstackFD: prepared.netstackSupervisor.vmFD,
       stateDir: prepared.stateDir
     )

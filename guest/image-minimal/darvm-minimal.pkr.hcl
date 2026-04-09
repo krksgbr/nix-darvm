@@ -26,7 +26,7 @@ source "tart-cli" "minimal" {
   vm_name      = var.vm_name
   cpu_count    = 4
   memory_gb    = 8
-  disk_size_gb = 50
+  disk_size_gb = 150
   ssh_username = "admin"
   ssh_password = "admin"
   ssh_timeout  = "180s"

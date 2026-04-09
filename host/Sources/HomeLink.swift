@@ -3,10 +3,9 @@ import Foundation
 /// A path relative to the guest home directory. Rejects empty strings,
 /// absolute paths, and paths that start with `..`.
 struct HomeRelativePath: CustomStringConvertible {
-  /// Top-level home subdirectories that are backed by the guest's local APFS
-  /// disk (not VirtioFS). These cannot be user-mounted because VirtioFS does
-  /// not provide the fsync semantics that databases and other stateful
-  /// applications require.
+  /// Top-level home subdirectories that must not be mounted from the host.
+  /// `.local` contains state shared across tools (databases, caches, logs)
+  /// and must live on the guest's native APFS for correct fsync semantics.
   static let reservedLocalPaths: Set<String> = [".local"]
 
   let rawValue: String
@@ -26,9 +25,7 @@ struct HomeRelativePath: CustomStringConvertible {
   }
 }
 
-/// A symlink from `~/subpath` to an absolute target path. The target may be
-/// a VirtioFS mount point (e.g., `/var/dvm-mounts/home-0`) or a local APFS
-/// directory (e.g., `/var/dvm-local/.local`).
+/// A symlink from `~/subpath` to a VirtioFS mount point (e.g., `/var/dvm-mounts/home-0`).
 struct HomeLink: CustomStringConvertible {
   let subpath: HomeRelativePath
   let target: AbsolutePath
@@ -58,34 +55,11 @@ enum HomeLinkError: Error, CustomStringConvertible {
   }
 }
 
-/// The guest-local directory root for APFS-backed home subdirectories.
-let dvmLocalDir = "/var/dvm-local"
-
-/// Returns the built-in HomeLinks for directories that must live on the
-/// guest's local APFS disk rather than VirtioFS.
-func builtInLocalHomeLinks() throws -> [HomeLink] {
-  [
-    HomeLink(
-      subpath: try HomeRelativePath(".local"),
-      target: try AbsolutePath("\(dvmLocalDir)/.local")
-    )
-  ]
-}
-
 /// Generates a shell script that installs HomeLinks as symlinks under the
-/// guest home directory.
-///
-/// The script:
-/// 1. Creates local APFS target directories under `/var/dvm-local/`
-/// 2. For each HomeLink, creates or updates the symlink at `~/subpath`
-/// 3. Handles migration: existing symlinks are updated, empty directories
-///    are replaced, non-empty directories trigger a warning
+/// guest home directory. For each HomeLink it creates or updates the symlink
+/// at `~/subpath`, replacing empty directories and updating existing symlinks.
 func makeHomeLinkInstallScript(homeLinks: [HomeLink], guestHome: String) -> String {
-  var parts: [String] = [
-    "# HomeLink installation",
-    "mkdir -p \(shellQuote(dvmLocalDir))",
-    "chown 501:20 \(shellQuote(dvmLocalDir))"
-  ]
+  var parts: [String] = ["# HomeLink installation"]
 
   for link in homeLinks {
     let fullGuestPath = "\(guestHome)/\(link.subpath.rawValue)"
@@ -96,10 +70,6 @@ func makeHomeLinkInstallScript(homeLinks: [HomeLink], guestHome: String) -> Stri
     )
 
     parts.append("mkdir -p \(quotedTarget)")
-    // Only chown APFS-backed local dirs; VirtioFS mount points are managed by the daemon.
-    if link.target.rawValue.hasPrefix(dvmLocalDir + "/") {
-      parts.append("chown 501:20 \(quotedTarget)")
-    }
     parts.append("mkdir -p \(parentDir)")
     parts.append(
       """

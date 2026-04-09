@@ -8,8 +8,9 @@ struct PreparedStartContext {
   let mounts: [MountConfig]
   let netstackSupervisor: NetstackSupervisor
   let stateDir: URL
-  let homeDataDir: URL
   let netstackBinary: String
+  let cpuOverride: Int?
+  let memoryOverride: UInt64?
 }
 
 struct ConfiguredStartContext {

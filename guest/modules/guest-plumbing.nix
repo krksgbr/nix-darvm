@@ -102,14 +102,6 @@ in
     # Determinate Nix creates /nix/var/nix/daemon-socket/socket -> /var/run/nix-daemon.socket.
     # We replace /var/run/nix-daemon.socket with a symlink to our bridge socket so
     # nix clients connect through the vsock bridge without any env var overrides.
-    # Rename files from the base image's Determinate Nix installer so
-    # nix-darwin's determinateNix module can manage them.
-    system.activationScripts.preActivation.text = ''
-      if [ -e /etc/nix/nix.custom.conf ] && [ ! -e /etc/nix/nix.custom.conf.before-nix-darwin ]; then
-        mv /etc/nix/nix.custom.conf /etc/nix/nix.custom.conf.before-nix-darwin
-      fi
-    '';
-
     system.activationScripts.postActivation.text = ''
       rm -f /var/run/nix-daemon.socket
       ln -s ${daemonSock} /var/run/nix-daemon.socket

@@ -199,7 +199,6 @@ func homeLinksForEffectiveMounts(_ mounts: [MountConfig]) throws -> [HomeLink] {
       links.append(link)
     }
   }
-  links += try builtInLocalHomeLinks()
   return links
 }
 

@@ -12,6 +12,22 @@ struct DVMConfig: Codable {
   var flake: String?
   /// Port forwarding policy for dynamic auto-forwarding.
   var ports: Ports?
+  /// VM resource overrides applied at boot time. When absent, Tart's stored
+  /// config.json values are used (set when the VM was created via `tart create`).
+  var vmConfig: VMConfig?
+
+  struct VMConfig: Codable {
+    /// CPU core count. Overrides the value stored in the Tart VM config.json.
+    var cpu: Int?
+    /// Memory in megabytes (≥ 1024). Overrides the value stored in the Tart VM config.json.
+    var memory: Int?
+
+    init(from decoder: Decoder) throws {
+      let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+      cpu = try container.decodeIfPresent(Int.self, forKey: .named("cpu"))
+      memory = try container.decodeIfPresent(Int.self, forKey: .named("memory"))
+    }
+  }
 
   struct Ports: Codable {
     /// Enable auto-forwarding of guest loopback listeners (default: true).
@@ -52,8 +68,10 @@ struct DVMConfig: Codable {
   var mirrorTransport: MountTransport? { mounts?.mirror?.transport }
   var homeDirs: [String] { mounts?.home?.dirs ?? [] }
   var portPolicy: PortPolicy { PortPolicy(from: ports) }
+  var cpuOverride: Int? { vmConfig?.cpu }
+  var memoryOverride: UInt64? { vmConfig?.memory.map { UInt64($0) * 1_024 * 1_024 } }
 
-  static let empty = Self(mounts: nil, flake: nil, ports: nil)
+  static let empty = Self(mounts: nil, flake: nil, ports: nil, vmConfig: nil)
 
   // Known keys per level — used to reject typos and misplaced keys.
   /// Load config from the default path. Returns empty config if file doesn't exist.
@@ -81,6 +99,7 @@ private struct RawConfig: Decodable {
   var mounts: RawMounts?
   var flake: String?
   var ports: RawPorts?
+  var vmConfig: RawVM?
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: DynamicCodingKey.self)
@@ -92,6 +111,27 @@ private struct RawConfig: Decodable {
     mounts = try container.decodeIfPresent(RawMounts.self, forKey: .named("mounts"))
     flake = try container.decodeIfPresent(String.self, forKey: .named("flake"))
     ports = try container.decodeIfPresent(RawPorts.self, forKey: .named("ports"))
+    vmConfig = try container.decodeIfPresent(RawVM.self, forKey: .named("vm"))
+  }
+}
+
+private struct RawVM: Decodable {
+  var cpu: Int?
+  var memory: Int?
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+    try validateKeys(container.allKeys, known: knownVMKeys, section: "vm")
+    cpu = try container.decodeIfPresent(Int.self, forKey: .named("cpu"))
+    memory = try container.decodeIfPresent(Int.self, forKey: .named("memory"))
+
+    if let cpu, cpu < 1 {
+      throw ConfigError.invalidField("[vm].cpu must be ≥ 1")
+    }
+    // VZ requires memory ≥ 1 GB in practice; 1024 MB is the safe floor.
+    if let memory, memory < 1_024 {
+      throw ConfigError.invalidField("[vm].memory must be ≥ 1024 (in MB)")
+    }
   }
 }
 
@@ -184,7 +224,8 @@ private struct RawPorts: Decodable {
   }
 }
 
-private let knownTopLevelKeys: Set<String> = ["flake", "mounts", "ports"]
+private let knownTopLevelKeys: Set<String> = ["flake", "mounts", "ports", "vm"]
+private let knownVMKeys: Set<String> = ["cpu", "memory"]
 private let knownMountsKeys: Set<String> = ["mirror", "home"]
 private let knownMirrorKeys: Set<String> = ["dirs", "transport"]
 private let knownHomeKeys: Set<String> = ["dirs"]

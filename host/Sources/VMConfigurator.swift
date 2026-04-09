@@ -42,19 +42,18 @@ enum VMConfigurator {
   /// - Parameters:
   ///   - vmDir: Path to the Tart VM directory
   ///   - mounts: VirtioFS mount configurations
+  ///   - cpuOverride: When non-nil, overrides the CPU count from Tart's config.json.
+  ///   - memoryOverride: When non-nil, overrides the memory size (bytes) from Tart's config.json.
   ///   - netstackFD: When non-nil, use VZFileHandleNetworkDeviceAttachment with
   ///     this file descriptor instead of NAT. The FD is the VM-side of a socketpair
   ///     shared with the dvm-netstack sidecar for transparent credential injection.
   ///   - stateDir: When non-nil, expose this host directory as VirtioFS device
   ///     `dvm-state` for activation state exchange between host and guest.
-  ///   - homeDataDir: Host directory backing the guest user's home (`/Users/admin`).
-  ///     Exposed as VirtioFS device `dvm-home`, mounted by the guest's boot script
-  ///     before any launchd services touch `~/`. This is infrastructure — always
-  ///     presented, never skipped. The guest halts if this mount fails.
   static func create(
     vmDir: URL,
     mounts: [MountConfig],
-    homeDataDir: URL,
+    cpuOverride: Int? = nil,
+    memoryOverride: UInt64? = nil,
     netstackFD: Int32? = nil,
     stateDir: URL? = nil
   ) throws -> ConfiguredVM {
@@ -62,8 +61,8 @@ enum VMConfigurator {
     let config = try TartConfig(fromURL: paths.config)
 
     let vzConfig = VZVirtualMachineConfiguration()
-    vzConfig.cpuCount = config.cpuCount
-    vzConfig.memorySize = config.memorySize
+    vzConfig.cpuCount = cpuOverride ?? config.cpuCount
+    vzConfig.memorySize = memoryOverride ?? config.memorySize
 
     configurePlatform(vzConfig, tartConfig: config, paths: paths)
     try configureStorage(vzConfig, diskURL: paths.disk)
@@ -75,8 +74,7 @@ enum VMConfigurator {
     vzConfig.networkDevices = network.devices
     let directoryShares = makeDirectorySharingDevices(
       mounts: mounts,
-      stateDir: stateDir,
-      homeDataDir: homeDataDir
+      stateDir: stateDir
     )
     vzConfig.directorySharingDevices = directoryShares.devices
     configureAuxiliaryDevices(vzConfig)
@@ -155,8 +153,7 @@ enum VMConfigurator {
 
   private static func makeDirectorySharingDevices(
     mounts: [MountConfig],
-    stateDir: URL?,
-    homeDataDir: URL
+    stateDir: URL?
   ) -> (devices: [VZDirectorySharingDeviceConfiguration], effectiveMounts: [MountConfig]) {
     var devices: [VZDirectorySharingDeviceConfiguration] = []
     var effectiveMounts: [MountConfig] = []
@@ -170,7 +167,6 @@ enum VMConfigurator {
       devices.append(makeSharedDirectoryDevice(tag: "dvm-state", directoryURL: stateDir, readOnly: false))
     }
 
-    devices.append(makeSharedDirectoryDevice(tag: "dvm-home", directoryURL: homeDataDir, readOnly: false))
     return (devices, effectiveMounts)
   }
 

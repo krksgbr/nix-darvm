@@ -41,7 +41,7 @@ extension Start {
     homeLinks: [HomeLink],
     nfsMACAddress: VZMACAddress?
   ) async throws -> NFSExportManager? {
-    let remainingMounts = effectiveMounts.filter { !["nix-store", "dvm-home"].contains($0.tag.rawValue) }
+    let remainingMounts = effectiveMounts.filter { $0.tag.rawValue != "nix-store" }
     let preparation = try await prepareRuntimeMounts(
       remainingMounts: remainingMounts,
       nfsMACAddress: nfsMACAddress
