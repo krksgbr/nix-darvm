@@ -17,7 +17,22 @@ extension AgentClient {
     command.interactive = true
     command.tty = tty
     if let workingDirectory { command.workingDirectory = workingDirectory }
-    command.environment = env.map { key, value in
+    var effectiveEnv = env
+    if tty {
+      // Forward terminal capability vars from the host so the guest sees the
+      // same colour support. Caller-supplied values take precedence.
+      let hostEnv = ProcessInfo.processInfo.environment
+      // Forward COLORTERM only — apps use this to detect true colour support.
+      // TERM is left as the xterm-256color fallback in the guest; forwarding
+      // the host TERM (e.g. "xterm-ghostty") breaks keys when the guest has
+      // no matching terminfo entry.
+      for key in ["COLORTERM"] {
+        if effectiveEnv[key] == nil, let val = hostEnv[key] {
+          effectiveEnv[key] = val
+        }
+      }
+    }
+    command.environment = effectiveEnv.map { key, value in
       var envVar = Darvm_EnvVar()
       envVar.name = key
       envVar.value = value
