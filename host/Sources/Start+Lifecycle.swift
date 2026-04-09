@@ -85,6 +85,22 @@ extension Start {
   }
 
   func makeStateDir() throws -> URL {
+    // stateDir (~/.local/state/dvm/) holds EPHEMERAL per-run files only:
+    // closure-path, boot-error, log tail offsets, etc. It is intentionally
+    // wiped on every dvm start so the new session starts from a clean slate
+    // and never reads stale state left by a previous (possibly crashed) run.
+    //
+    // CRITICAL INVARIANT: homeDataDir (~/.local/state/dvm/home/) must NOT
+    // be nested under stateDir. If it is, the wipe here silently destroys
+    // the persistent guest home on every boot — the `if !fileExists` guard
+    // in makeHomeDataDir() cannot protect it because stateDir is wiped first.
+    //
+    // Historical note: this wipe predates homeDataDir. When host-backed home
+    // was introduced (commit 4b307ea), home/ was placed inside stateDir by
+    // mistake, creating a silent persistence bug. The guard in makeHomeDataDir
+    // reveals the original intent was persistence. The two concerns —
+    // ephemeral run state and persistent home backing — must live at separate
+    // host paths.
     let dvmLocalDir = FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".local/state/dvm")
     let stateDir = URL(fileURLWithPath: dvmLocalDir.path)
@@ -95,6 +111,12 @@ extension Start {
   }
 
   func makeHomeDataDir(from stateDir: URL) throws -> URL {
+    // NOTE: the path arithmetic below (delete two components, re-append
+    // "state/dvm/home") resolves to ~/.local/state/dvm/home — which is
+    // a subdirectory of stateDir. This means the wipe in makeStateDir()
+    // destroys the guest home on every boot, defeating the `if !fileExists`
+    // persistence guard below. This is a known bug; homeDataDir should be
+    // moved to a path outside stateDir (e.g. ~/.local/share/dvm/home/).
     let homeDataDir =
       stateDir
       .deletingLastPathComponent()
