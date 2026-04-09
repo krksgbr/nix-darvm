@@ -12,16 +12,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/unbody/darvm/netstack/internal/control"
+	"github.com/unbody/darvm/netstack/internal/logger"
 	"golang.org/x/net/http2"
 )
 
@@ -36,7 +37,10 @@ const (
 	tlsRecordLengthShift    = 8
 )
 
-var errSNIExtracted = errors.New("sni extracted")
+var (
+	errSNIExtracted = errors.New("sni extracted")
+	log             = logger.New(os.Stderr, "dvm-netstack: ") //nolint:gochecknoglobals
+)
 
 type connInfo struct {
 	scheme  string
@@ -61,7 +65,7 @@ func NewInterceptor(secrets []control.SecretRule, caPool *CAPool) *Interceptor {
 		Rewrite:       i.rewriteRequest,
 		FlushInterval: -1, // immediate flush — no buffering surprises for SSE/streaming
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			log.Printf("proxy error forwarding request to %q: %v", r.Host, err) //nolint:gosec // G706: %q escapes control characters, preventing log injection
+			log.Printf("proxy error forwarding request to %q: %v", r.Host, err)
 			w.WriteHeader(http.StatusBadGateway)
 		},
 	}

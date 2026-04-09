@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
+	"os"
 	"strconv"
 	"sync"
+
+	"github.com/unbody/darvm/netstack/internal/logger"
 
 	"github.com/containers/gvisor-tap-vsock/pkg/services/dhcp"
 	gvdns "github.com/containers/gvisor-tap-vsock/pkg/services/dns"
@@ -43,6 +45,7 @@ const (
 var (
 	errCreateNIC  = errors.New("create NIC")
 	errAddAddress = errors.New("add protocol address")
+	log           = logger.New(os.Stderr, "dvm-netstack: ") //nolint:gochecknoglobals
 )
 
 // Config configures the network stack.

@@ -7,7 +7,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"math"
 	"net"
 	"os"
@@ -15,10 +14,13 @@ import (
 	"syscall"
 
 	"github.com/unbody/darvm/netstack/internal/control"
+	"github.com/unbody/darvm/netstack/internal/logger"
 	"github.com/unbody/darvm/netstack/internal/stack"
 )
 
 const defaultMTU = 1500
+
+var log = logger.New(os.Stderr, "dvm-netstack: ") //nolint:gochecknoglobals
 
 func main() {
 	frameFD := flag.Int("frame-fd", -1, "file descriptor for the socketpair carrying raw Ethernet frames")
@@ -35,9 +37,6 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: --control-sock is required")
 		os.Exit(1)
 	}
-
-	log.SetPrefix("dvm-netstack: ")
-	log.SetFlags(log.Ltime | log.Lmsgprefix)
 
 	// Wrap the inherited FD into a net.Conn immediately to prevent the GC
 	// from finalizing the os.File and closing the FD before we use it.

@@ -8,13 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"os"
 	"sync"
+
+	"github.com/unbody/darvm/netstack/internal/logger"
 )
 
-var errPlaceholderCollision = errors.New("load placeholder collision")
+var (
+	errPlaceholderCollision = errors.New("load placeholder collision")
+	log                     = logger.New(os.Stderr, "dvm-netstack: ") //nolint:gochecknoglobals
+)
 
 // SecretRule is a resolved secret passed from dvm-core.
 // The proxy replaces Placeholder with Value in HTTPS request headers for
