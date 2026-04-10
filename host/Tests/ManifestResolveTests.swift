@@ -109,6 +109,71 @@ final class ManifestResolveTests: XCTestCase {
     }
   }
 
+  func testResolveTolerantModeSkipsMissingEnvSecrets() throws {
+    let proxyVar = "DVM_TEST_PROXY_\(UUID().uuidString.prefix(8).uppercased())"
+    let passthroughVar = "DVM_TEST_PT_\(UUID().uuidString.prefix(8).uppercased())"
+    setenv(proxyVar, "proxy-value", 1)
+    unsetenv(passthroughVar)
+
+    let manifest = CredentialManifest(
+      project: "test",
+      secrets: [
+        SecretDecl(
+          envVar: proxyVar,
+          mode: .proxy,
+          source: .env(name: proxyVar),
+          hosts: ["example.com"]
+        ),
+        SecretDecl(
+          envVar: passthroughVar,
+          mode: .passthrough,
+          source: .env(name: passthroughVar),
+          hosts: []
+        ),
+      ]
+    )
+    defer {
+      unsetenv(proxyVar)
+    }
+
+    let result = try manifest.resolve(
+      hostKey: testKey,
+      tolerateMissingHostValues: true
+    )
+
+    XCTAssertEqual(result.resolved.count, 1)
+    XCTAssertEqual(result.resolved[0].name, proxyVar)
+    XCTAssertEqual(result.warnings.count, 1)
+    if case let .envVarNotSet(secret: secret, envVar: envVar) = result.warnings[0] {
+      XCTAssertEqual(secret, passthroughVar)
+      XCTAssertEqual(envVar, passthroughVar)
+    } else {
+      XCTFail("Expected missing host env warning: \(result.warnings[0])")
+    }
+  }
+
+  func testResolveTolerantModeDoesNotSuppressCommandErrors() {
+    let envVar = "DVM_TEST_MISSING_CMD_\(UUID().uuidString.prefix(8).uppercased())"
+    let manifest = CredentialManifest(
+      project: "test",
+      secrets: [
+        SecretDecl(
+          envVar: envVar,
+          mode: .proxy,
+          source: .command(argv: ["/bin/sh", "-c", "exit 42"]),
+          hosts: ["example.com"]
+        ),
+      ]
+    )
+
+    XCTAssertThrowsError(
+      try manifest.resolve(hostKey: testKey, tolerateMissingHostValues: true)
+    ) { error in
+      let description = String(describing: error)
+      XCTAssertTrue(description.contains("exit 42"))
+    }
+  }
+
   func testResolveEmptyEnvVar() {
     let envVar = "DVM_TEST_EMPTY_\(UUID().uuidString.prefix(8).uppercased())"
     setenv(envVar, "  \n  ", 1)  // whitespace-only

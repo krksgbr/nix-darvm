@@ -77,8 +77,16 @@ func makeHomeLinkInstallScript(homeLinks: [HomeLink], guestHome: String) -> Stri
       elif [ -d \(quotedGuestPath) ]; then \
         if [ -z \"$(ls -A \(quotedGuestPath) 2>/dev/null)\" ]; then \
           rmdir \(quotedGuestPath) && ln -sfn \(quotedTarget) \(quotedGuestPath); \
-        else echo \"ERROR: \(quotedGuestPath) is a non-empty directory; cannot install home link.\" >&2; \
-          echo \"Remove it manually: rm -rf \(quotedGuestPath)\" >&2; exit 1; fi; \
+        else \
+          backup_path=\"$(printf '%s' \(quotedGuestPath).dvm-backup-$(date +%Y%m%d-%H%M%S)-$$)\"; \
+          if mv \(quotedGuestPath) \"$backup_path\"; then \
+            echo \"WARN: moved existing non-empty directory \(quotedGuestPath) to $backup_path; \" \
+              \"installed home link instead.\" >&2; \
+            ln -sfn \(quotedTarget) \(quotedGuestPath); \
+          else \
+            echo \"ERROR: \(quotedGuestPath) is a non-empty directory and could not be moved aside.\" >&2; \
+            echo \"Remove it manually: rm -rf \(quotedGuestPath)\" >&2; exit 1; \
+          fi; fi; \
       else ln -sfn \(quotedTarget) \(quotedGuestPath); fi
       """)
   }

@@ -46,7 +46,12 @@ func resolveAndPushCredentials(
   do {
     let manifest = try CredentialManifest.loadLocal(from: path)
     let hostKey = try HostKey.loadOrCreate()
-    let secrets = try manifest.resolve(hostKey: hostKey)
+    let (secrets, resolutionWarnings) = try manifest.resolve(
+      hostKey: hostKey,
+      tolerateMissingHostValues: true)
+    for warning in resolutionWarnings {
+      fputs("Warning: credential resolution warning: \(warning)\n", stderr)
+    }
     let proxySecrets = secrets.filter { $0.mode == .proxy }
 
     if let error = ControlSocket.sendLoadCredentials(

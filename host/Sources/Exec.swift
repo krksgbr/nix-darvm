@@ -30,8 +30,18 @@ struct Exec: AsyncParsableCommand {
     if noCredentials {
       credentialEnv = [:]
     } else {
-      credentialEnv = try resolveAndPushCredentials(
-        credentialsFlag: credentials, cwd: cwd)
+      do {
+        credentialEnv = try resolveAndPushCredentials(
+          credentialsFlag: credentials, cwd: cwd)
+      } catch let error as SecretConfigError {
+        switch error {
+        case .envVarNotSet, .envVarEmpty:
+          fputs("Warning: credential resolution warning: \(error)\n", stderr)
+          credentialEnv = [:]
+        default:
+          throw error
+        }
+      }
     }
 
     let exitCode: Int32

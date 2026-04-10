@@ -93,6 +93,10 @@ just logs               # Stream guest agent logs
 
 ## End-to-end testing
 
+Prefer the cheapest verification that matches the risk. Use `nix eval`, narrow
+builds, and direct inspection of generated scripts/config first; reserve full
+end-to-end flows for changes that actually require activation/runtime proof.
+
 After changes to host code, guest modules, or the Packer template, run through
 these checks using the same commands a user would.
 
@@ -162,6 +166,8 @@ VM failed to start, the status will never change and the loop blocks forever.
 **`dvm init --confirm` for non-interactive use.** Without a TTY, `dvm init`
 aborts at prompts. Pass `--confirm` (or `-y`) to skip prompts. Packer
 plugins persist in `~/.packer.d/` across reboots.
+
+**Temporary guest services for tests/harnesses must use launchd, not `nohup ... &` through `dvm exec`.** `dvm exec` is a foreground command channel; shell backgrounding and detachment semantics are brittle across non-interactive shells, TTY-less sessions, and root-vs-user boundaries. For any guest helper that must survive beyond one exec call, create a temporary `LaunchDaemon`, start it with `launchctl bootstrap`/`kickstart`, verify readiness with the same privileged probe as the real code path (for example `sudo lsof` if the agent's status scan runs as root), and clean it up with `launchctl bootout`.
 
 ## Conventions
 

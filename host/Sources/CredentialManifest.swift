@@ -411,36 +411,59 @@ extension CredentialManifest {
 extension CredentialManifest {
   /// Resolve secrets from host environment or explicit command sources.
   func resolve(hostKey: HostKey) throws -> [ResolvedSecret] {
+    return try resolve(hostKey: hostKey, tolerateMissingHostValues: false).resolved
+  }
+
+  func resolve(
+    hostKey: HostKey,
+    tolerateMissingHostValues: Bool
+  ) throws -> (resolved: [ResolvedSecret], warnings: [SecretConfigError]) {
     var resolved: [ResolvedSecret] = []
+    var warnings: [SecretConfigError] = []
+
     for decl in secrets {
-      let trimmed = try resolveValue(for: decl)
+      do {
+        let trimmed = try resolveValue(for: decl)
 
-      switch decl.mode {
-      case .proxy:
-        let placeholder = derivePlaceholder(
-          project: project, envVar: decl.envVar, hostKey: hostKey)
-        resolved.append(
-          ResolvedSecret(
-            name: decl.envVar,
-            mode: .proxy,
-            placeholder: placeholder,
-            value: trimmed,
-            hosts: decl.hosts
-          ))
+        switch decl.mode {
+        case .proxy:
+          let placeholder = derivePlaceholder(
+            project: project, envVar: decl.envVar, hostKey: hostKey)
+          resolved.append(
+            ResolvedSecret(
+              name: decl.envVar,
+              mode: .proxy,
+              placeholder: placeholder,
+              value: trimmed,
+              hosts: decl.hosts
+            ))
 
-      case .passthrough:
-        // Passthrough: real value injected directly, no proxy interception
-        resolved.append(
-          ResolvedSecret(
-            name: decl.envVar,
-            mode: .passthrough,
-            placeholder: trimmed,
-            value: trimmed,
-            hosts: []
-          ))
+        case .passthrough:
+          // Passthrough: real value injected directly, no proxy interception
+          resolved.append(
+            ResolvedSecret(
+              name: decl.envVar,
+              mode: .passthrough,
+              placeholder: trimmed,
+              value: trimmed,
+              hosts: []
+            ))
+        }
+      } catch let error as SecretConfigError {
+        if tolerateMissingHostValues {
+          switch error {
+          case .envVarNotSet, .envVarEmpty:
+            warnings.append(error)
+            continue
+          default:
+            break
+          }
+        }
+        throw error
       }
     }
-    return resolved
+
+    return (resolved: resolved, warnings: warnings)
   }
 
   private func resolveValue(for decl: SecretDecl) throws -> String {

@@ -14,8 +14,19 @@ struct SSH: AsyncParsableCommand {
     let agentClient = AgentClient()
     let cwd = FileManager.default.currentDirectoryPath
 
-    let credentialEnv = try resolveAndPushCredentials(
-      credentialsFlag: credentials, cwd: cwd)
+    let credentialEnv: [String: String]
+    do {
+      credentialEnv = try resolveAndPushCredentials(
+        credentialsFlag: credentials, cwd: cwd)
+    } catch let error as SecretConfigError {
+      switch error {
+      case .envVarNotSet, .envVarEmpty:
+        fputs("Warning: credential resolution warning: \(error)\n", stderr)
+        credentialEnv = [:]
+      default:
+        throw error
+      }
+    }
 
     let exitCode = try await agentClient.execInteractive(
       command: ["/bin/zsh", "-l"],

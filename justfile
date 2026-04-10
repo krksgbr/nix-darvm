@@ -71,6 +71,14 @@ _test-credentials-fast:
 _test-credentials-e2e *flags:
     ./scripts/e2e-credentials.sh {{flags}}
 
+# Stress the host auto-port-forward path and collect per-run artifacts.
+repro-port-forward *flags:
+    ./scripts/repro-port-forward.sh {{flags}}
+
+# Run the real VM-backed port-forward regression test.
+test-port-forward-regression *flags:
+    ./scripts/test-port-forward-regression.sh {{flags}}
+
 # Run configured formatters through the flake formatter.
 fmt:
     nix fmt

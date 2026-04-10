@@ -68,6 +68,36 @@ scripts rather than nested inline `sh -lc '...'` strings. That keeps the
 assertions aligned with the real product path and avoids host-side quoting
 artifacts.
 
+## Temporary guest services in harnesses
+
+When an e2e or repro harness needs a guest-local service that must outlive a
+single `dvm exec` call, **do not** start it with shell backgrounding such as:
+
+```sh
+dvm exec -- sh -c 'nohup nc -lk 127.0.0.1 4321 >/tmp/x 2>&1 &'
+```
+
+That pattern is brittle here because `dvm exec` is a foreground RPC path, while
+`nohup ... &` relies on shell detachment semantics that vary with TTY,
+launchd, and user/root context. A printed PID does not prove the service is
+still alive, listening, or discoverable by the real product path.
+
+Use a temporary `launchd` job instead:
+
+1. generate a temporary plist for the guest helper
+2. install it under `/Library/LaunchDaemons/<label>.plist`
+3. start it with `sudo launchctl bootstrap system ...` and
+   `sudo launchctl kickstart -k system/<label>`
+4. write stdout/stderr into `/var/run/dvm-state/...` so the host can capture
+   artifacts
+5. verify readiness with the **same command and privilege level** the product
+   uses (for example `sudo lsof ...` if the guest agent runs the listener scan
+   as root)
+6. stop it with `sudo launchctl bootout system/<label>` and remove the plist
+
+Rule of thumb: use `dvm exec` for foreground commands, and use `launchd` for
+long-lived guest helpers.
+
 Output is flat and explicit:
 
 ```text
