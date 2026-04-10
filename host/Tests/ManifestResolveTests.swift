@@ -13,9 +13,15 @@ final class ManifestResolveTests: XCTestCase {
     defer { unsetenv(envVar) }
 
     let manifest = CredentialManifest(
-      version: 1,
       project: "test",
-      secrets: [SecretDecl(envVar: envVar, mode: .proxy, hosts: ["example.com"])]
+      secrets: [
+        SecretDecl(
+          envVar: envVar,
+          mode: .proxy,
+          source: .env(name: envVar),
+          hosts: ["example.com"]
+        )
+      ]
     )
 
     let resolved = try manifest.resolve(hostKey: testKey)
@@ -34,9 +40,15 @@ final class ManifestResolveTests: XCTestCase {
     defer { unsetenv(envVar) }
 
     let manifest = CredentialManifest(
-      version: 1,
       project: "test",
-      secrets: [SecretDecl(envVar: envVar, mode: .passthrough, hosts: [])]
+      secrets: [
+        SecretDecl(
+          envVar: envVar,
+          mode: .passthrough,
+          source: .env(name: envVar),
+          hosts: []
+        )
+      ]
     )
 
     let resolved = try manifest.resolve(hostKey: testKey)
@@ -54,9 +66,15 @@ final class ManifestResolveTests: XCTestCase {
     unsetenv(envVar)
 
     let manifest = CredentialManifest(
-      version: 1,
       project: "test",
-      secrets: [SecretDecl(envVar: envVar, mode: .proxy, hosts: ["example.com"])]
+      secrets: [
+        SecretDecl(
+          envVar: envVar,
+          mode: .proxy,
+          source: .env(name: envVar),
+          hosts: ["example.com"]
+        )
+      ]
     )
 
     XCTAssertThrowsError(try manifest.resolve(hostKey: testKey)) { error in
@@ -71,9 +89,15 @@ final class ManifestResolveTests: XCTestCase {
     unsetenv(envVar)
 
     let manifest = CredentialManifest(
-      version: 1,
       project: "test",
-      secrets: [SecretDecl(envVar: envVar, mode: .passthrough, hosts: [])]
+      secrets: [
+        SecretDecl(
+          envVar: envVar,
+          mode: .passthrough,
+          source: .env(name: envVar),
+          hosts: []
+        )
+      ]
     )
 
     XCTAssertThrowsError(try manifest.resolve(hostKey: testKey)) { error in
@@ -89,9 +113,15 @@ final class ManifestResolveTests: XCTestCase {
     defer { unsetenv(envVar) }
 
     let manifest = CredentialManifest(
-      version: 1,
       project: "test",
-      secrets: [SecretDecl(envVar: envVar, mode: .proxy, hosts: ["example.com"])]
+      secrets: [
+        SecretDecl(
+          envVar: envVar,
+          mode: .proxy,
+          source: .env(name: envVar),
+          hosts: ["example.com"]
+        )
+      ]
     )
 
     XCTAssertThrowsError(try manifest.resolve(hostKey: testKey)) { error in
@@ -107,9 +137,15 @@ final class ManifestResolveTests: XCTestCase {
     defer { unsetenv(envVar) }
 
     let manifest = CredentialManifest(
-      version: 1,
       project: "test",
-      secrets: [SecretDecl(envVar: envVar, mode: .proxy, hosts: ["example.com"])]
+      secrets: [
+        SecretDecl(
+          envVar: envVar,
+          mode: .proxy,
+          source: .env(name: envVar),
+          hosts: ["example.com"]
+        )
+      ]
     )
 
     let resolved = try manifest.resolve(hostKey: testKey)
@@ -122,9 +158,15 @@ final class ManifestResolveTests: XCTestCase {
     defer { unsetenv(envVar) }
 
     let manifest = CredentialManifest(
-      version: 1,
       project: "my-project",
-      secrets: [SecretDecl(envVar: envVar, mode: .proxy, hosts: ["example.com"])]
+      secrets: [
+        SecretDecl(
+          envVar: envVar,
+          mode: .proxy,
+          source: .env(name: envVar),
+          hosts: ["example.com"]
+        )
+      ]
     )
 
     let resolved = try manifest.resolve(hostKey: testKey)
@@ -143,11 +185,10 @@ final class ManifestResolveTests: XCTestCase {
     }
 
     let manifest = CredentialManifest(
-      version: 1,
       project: "test",
       secrets: [
-        SecretDecl(envVar: var1, mode: .proxy, hosts: ["a.com"]),
-        SecretDecl(envVar: var2, mode: .proxy, hosts: ["b.com"])
+        SecretDecl(envVar: var1, mode: .proxy, source: .env(name: var1), hosts: ["a.com"]),
+        SecretDecl(envVar: var2, mode: .proxy, source: .env(name: var2), hosts: ["b.com"])
       ]
     )
 
@@ -167,11 +208,10 @@ final class ManifestResolveTests: XCTestCase {
     }
 
     let manifest = CredentialManifest(
-      version: 1,
       project: "test",
       secrets: [
-        SecretDecl(envVar: proxyVar, mode: .proxy, hosts: ["a.com"]),
-        SecretDecl(envVar: ptVar, mode: .passthrough, hosts: [])
+        SecretDecl(envVar: proxyVar, mode: .proxy, source: .env(name: proxyVar), hosts: ["a.com"]),
+        SecretDecl(envVar: ptVar, mode: .passthrough, source: .env(name: ptVar), hosts: [])
       ]
     )
 
@@ -186,6 +226,66 @@ final class ManifestResolveTests: XCTestCase {
 
     XCTAssertEqual(passthrough.placeholder, "passthrough-val")
     XCTAssertEqual(passthrough.value, "passthrough-val")
+  }
+
+  func testResolveExplicitEnvSource() throws {
+    let secretName = "OPENAI_API_KEY"
+    let hostEnv = "HOST_OPENAI_TOKEN_\(UUID().uuidString.prefix(8).uppercased())"
+    setenv(hostEnv, "mapped-secret", 1)
+    defer { unsetenv(hostEnv) }
+
+    let manifest = CredentialManifest(
+      project: "test",
+      secrets: [
+        SecretDecl(
+          envVar: secretName,
+          mode: .proxy,
+          source: .env(name: hostEnv),
+          hosts: ["api.openai.com"]
+        )
+      ]
+    )
+
+    let resolved = try manifest.resolve(hostKey: testKey)
+    XCTAssertEqual(resolved[0].name, secretName)
+    XCTAssertEqual(resolved[0].value, "mapped-secret")
+  }
+
+  func testResolveCommandSource() throws {
+    let manifest = CredentialManifest(
+      project: "test",
+      secrets: [
+        SecretDecl(
+          envVar: "OPENAI_API_KEY",
+          mode: .proxy,
+          source: .command(argv: ["/bin/sh", "-c", "printf 'command-secret\\n'"]),
+          hosts: ["api.openai.com"]
+        )
+      ]
+    )
+
+    let resolved = try manifest.resolve(hostKey: testKey)
+    XCTAssertEqual(resolved[0].value, "command-secret")
+  }
+
+  func testResolveCommandFailure() {
+    let manifest = CredentialManifest(
+      project: "test",
+      secrets: [
+        SecretDecl(
+          envVar: "OPENAI_API_KEY",
+          mode: .proxy,
+          source: .command(argv: ["/bin/sh", "-c", "echo 'boom' >&2; exit 7"]),
+          hosts: ["api.openai.com"]
+        )
+      ]
+    )
+
+    XCTAssertThrowsError(try manifest.resolve(hostKey: testKey)) { error in
+      let desc = String(describing: error)
+      XCTAssertTrue(desc.contains("exit code 7"), "Error should preserve exit code: \(desc)")
+      XCTAssertTrue(desc.contains("boom"), "Error should preserve stderr: \(desc)")
+    }
   }
 }
 

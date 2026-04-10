@@ -11,6 +11,7 @@
 
 let
   daemonSock = "/tmp/nix-daemon.sock";
+  globalCredentialsEnv = "/var/run/dvm-state/global-credentials.env";
 in
 {
   # Agents declare home-relative directories they need mounted from the host.
@@ -72,7 +73,10 @@ in
         ProgramArguments = [
           "/bin/sh"
           "-c"
-          "while [ ! -x '${darvm-agent}/bin/darvm-agent' ]; do sleep 1; done; exec '${darvm-agent}/bin/darvm-agent' '--run-rpc'"
+          ''
+            while [ ! -x '${darvm-agent}/bin/darvm-agent' ]; do sleep 1; done
+            exec '${darvm-agent}/bin/darvm-agent' '--run-rpc'
+          ''
         ];
         RunAtLoad = true;
         KeepAlive = true;
@@ -89,7 +93,10 @@ in
         ProgramArguments = [
           "/bin/sh"
           "-c"
-          "while [ ! -x '${darvm-agent}/bin/darvm-agent' ]; do sleep 1; done; exec '${darvm-agent}/bin/darvm-agent' '--run-bridge'"
+          ''
+            while [ ! -x '${darvm-agent}/bin/darvm-agent' ]; do sleep 1; done
+            exec '${darvm-agent}/bin/darvm-agent' '--run-bridge'
+          ''
         ];
         RunAtLoad = true;
         KeepAlive = true;
@@ -275,6 +282,10 @@ in
         . '/nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh'
       fi
       export PATH="$HOME/.local/bin:$PATH"
+
+      if [ -f ${lib.escapeShellArg globalCredentialsEnv} ]; then
+        . ${lib.escapeShellArg globalCredentialsEnv}
+      fi
     '';
 
     system.stateVersion = 6;

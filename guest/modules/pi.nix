@@ -24,16 +24,23 @@ let
   direnvEnabled = config.dvm.integrations.direnv.enable;
   direnvPrefix = lib.optionalString direnvEnabled "direnv exec . ";
   flagsStr = lib.concatStringsSep " " cfg.extraArgs;
+  globalCredentialsEnv = "/var/run/dvm-state/global-credentials.env";
 
   # When package is set: bake the nix store path into the wrapper.
   # When null: resolve from npm/pnpm global paths at runtime.
   piWrapper =
     if cfg.package != null then
       pkgs.writeShellScriptBin "pi" ''
+        if [ -f ${lib.escapeShellArg globalCredentialsEnv} ]; then
+          . ${lib.escapeShellArg globalCredentialsEnv}
+        fi
         exec ${direnvPrefix}${cfg.package}/bin/pi ${flagsStr} "$@"
       ''
     else
       pkgs.writeShellScriptBin "pi" ''
+        if [ -f ${lib.escapeShellArg globalCredentialsEnv} ]; then
+          . ${lib.escapeShellArg globalCredentialsEnv}
+        fi
         _bin=""
         for _dir in \
           "''${NPM_CONFIG_PREFIX:-$HOME/.npm-global}/bin" \

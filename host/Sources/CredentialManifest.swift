@@ -15,9 +15,15 @@ enum SecretMode: String, Sendable {
 
 /// A single secret declaration from `.dvm/credentials.toml`.
 /// The TOML table determines the mode (`[proxy.*]` or `[passthrough.*]`).
+enum SecretSource: Sendable, Equatable {
+  case env(name: String)
+  case command(argv: [String])
+}
+
 struct SecretDecl: Sendable {
   let envVar: String
   let mode: SecretMode
+  let source: SecretSource
   let hosts: [String]  // non-empty for proxy, empty for passthrough
 }
 
@@ -35,7 +41,6 @@ struct ResolvedSecret: Sendable {
 
 /// Parsed per-project credential manifest (`.dvm/credentials.toml`).
 struct CredentialManifest: Sendable {
-  let version: Int
   let project: String
   let secrets: [SecretDecl]
 }
@@ -163,32 +168,42 @@ func normalizeHost(_ host: String) -> String {
   return normalizedHost
 }
 
-// MARK: - TOML Parsing (v2 format)
+// MARK: - TOML Parsing
 
 /// Raw Codable shapes for TOMLDecoder.
 /// Format:
 /// ```toml
-/// version = 1
+/// version = 0
 /// project = "my-project"
 ///
 /// [proxy.ANTHROPIC_API_KEY]
 /// hosts = ["api.anthropic.com"]
+/// from.command = ["op", "read", "op://Engineering/Anthropic/api key"]
 ///
 /// [passthrough.DB_PASSWORD]
+/// from.env = "DATABASE_PASSWORD"
 /// ```
 private struct RawManifest: Codable {
   let version: Int
-  let project: String
+  let project: String?
   let proxy: [String: RawProxyEntry]?
   let passthrough: [String: RawPassthroughEntry]?
 }
 
 private struct RawProxyEntry: Codable {
   let hosts: [String]
+  let from: RawSource?
 }
 
 /// Empty struct for passthrough entries (TOML empty tables decode to this).
-private struct RawPassthroughEntry: Codable {}
+private struct RawPassthroughEntry: Codable {
+  let from: RawSource?
+}
+
+private struct RawSource: Codable {
+  let env: String?
+  let command: [String]?
+}
 
 // MARK: - Errors
 
@@ -200,15 +215,21 @@ enum SecretConfigError: Error, CustomStringConvertible {
   case duplicateSecret(secret: String)
   case envVarNotSet(secret: String, envVar: String)
   case envVarEmpty(secret: String, envVar: String)
+  case invalidSource(secret: String)
+  case sourceEnvNameEmpty(secret: String)
+  case commandEmpty(secret: String)
+  case commandFailed(secret: String, command: String, exitCode: Int32, output: String)
+  case commandProducedEmptyValue(secret: String, command: String)
   case manifestNotFound(String)
   case manifestUnreadable(String, Error)
   case invalidHostKey(String, Int)
   case hostKeyGenerationFailed(OSStatus)
+  case globalPassthroughUnsupported
 
   var description: String {
     switch self {
     case .unsupportedVersion(let version):
-      return "Unsupported credentials.toml version: \(version) (expected 1)"
+      return "Unsupported credentials.toml version: \(version) (expected 0)"
 
     case .missingProjectName:
       return "credentials.toml missing required 'project' field"
@@ -228,6 +249,22 @@ enum SecretConfigError: Error, CustomStringConvertible {
     case let .envVarEmpty(secret, envVar):
       return "Secret '\(secret)': environment variable '\(envVar)' is set but empty"
 
+    case let .invalidSource(secret):
+      return "Secret '\(secret)': 'from' must specify exactly one of 'env' or 'command'"
+
+    case let .sourceEnvNameEmpty(secret):
+      return "Secret '\(secret)': 'from.env' must not be empty"
+
+    case let .commandEmpty(secret):
+      return "Secret '\(secret)': 'from.command' must contain at least one argument"
+
+    case let .commandFailed(secret, command, exitCode, output):
+      let suffix = output.isEmpty ? "" : " (\(output))"
+      return "Secret '\(secret)': command \(command) failed with exit code \(exitCode)\(suffix)"
+
+    case let .commandProducedEmptyValue(secret, command):
+      return "Secret '\(secret)': command \(command) produced an empty value"
+
     case .manifestNotFound(let path):
       return "Credential manifest not found: \(path)"
 
@@ -239,6 +276,12 @@ enum SecretConfigError: Error, CustomStringConvertible {
 
     case .hostKeyGenerationFailed(let status):
       return "Failed to generate host key: SecRandomCopyBytes status \(status)"
+
+    case .globalPassthroughUnsupported:
+      return
+        "Global credential manifests (~/.config/dvm/credentials.toml) only support "
+        + "[proxy.*] entries. Global [passthrough.*] secrets are not supported "
+        + "for security reasons."
     }
   }
 }
@@ -246,8 +289,20 @@ enum SecretConfigError: Error, CustomStringConvertible {
 // MARK: - Manifest Loading
 
 extension CredentialManifest {
-  /// Parse a `.dvm/credentials.toml` file into a typed manifest.
-  static func load(from path: String) throws -> CredentialManifest {
+  static func loadLocal(from path: String) throws -> CredentialManifest {
+    let raw = try loadRawManifest(from: path)
+    guard let project = raw.project else {
+      throw SecretConfigError.missingProjectName
+    }
+    return try buildManifest(raw: raw, projectValue: project, allowPassthrough: true)
+  }
+
+  static func loadGlobal(from path: String) throws -> CredentialManifest {
+    let raw = try loadRawManifest(from: path)
+    return try buildManifest(raw: raw, projectValue: "__global__", allowPassthrough: false)
+  }
+
+  private static func loadRawManifest(from path: String) throws -> RawManifest {
     guard FileManager.default.fileExists(atPath: path) else {
       throw SecretConfigError.manifestNotFound(path)
     }
@@ -259,11 +314,18 @@ extension CredentialManifest {
     }
     let raw = try TOMLDecoder().decode(RawManifest.self, from: contents)
 
-    guard raw.version == 1 else {
+    guard raw.version == 0 else {
       throw SecretConfigError.unsupportedVersion(raw.version)
     }
+    return raw
+  }
 
-    let normalizedProject = normalizeProjectName(raw.project)
+  private static func buildManifest(
+    raw: RawManifest,
+    projectValue: String,
+    allowPassthrough: Bool
+  ) throws -> CredentialManifest {
+    let normalizedProject = normalizeProjectName(projectValue)
     guard !normalizedProject.isEmpty else {
       throw SecretConfigError.missingProjectName
     }
@@ -274,6 +336,10 @@ extension CredentialManifest {
     let duplicates = proxyKeys.intersection(passthroughKeys)
     if let first = duplicates.min() {
       throw SecretConfigError.duplicateSecret(secret: first)
+    }
+
+    if !allowPassthrough, !passthroughKeys.isEmpty {
+      throw SecretConfigError.globalPassthroughUnsupported
     }
 
     // Parse proxy entries
@@ -287,50 +353,67 @@ extension CredentialManifest {
       return SecretDecl(
         envVar: envVar,
         mode: .proxy,
+        source: try source(for: envVar, rawSource: entry.from),
         hosts: entry.hosts.map { normalizeHost($0) }
       )
     }
 
     // Parse passthrough entries
-    decls += (raw.passthrough ?? [:]).map { envVar, _ in
-      SecretDecl(envVar: envVar, mode: .passthrough, hosts: [])
+    decls += try (raw.passthrough ?? [:]).map { envVar, entry in
+      SecretDecl(
+        envVar: envVar,
+        mode: .passthrough,
+        source: try source(for: envVar, rawSource: entry.from),
+        hosts: []
+      )
     }
 
     decls.sort { $0.envVar < $1.envVar }  // deterministic order
 
     return CredentialManifest(
-      version: raw.version,
       project: normalizedProject,
       secrets: decls
     )
+  }
+
+  private static func source(for secret: String, rawSource: RawSource?) throws -> SecretSource {
+    guard let rawSource else {
+      return .env(name: secret)
+    }
+
+    switch (rawSource.env, rawSource.command) {
+    case (nil, nil), (.some, .some):
+      throw SecretConfigError.invalidSource(secret: secret)
+
+    case let (.some(envName), nil):
+      let trimmed = envName.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty else {
+        throw SecretConfigError.sourceEnvNameEmpty(secret: secret)
+      }
+      return .env(name: trimmed)
+
+    case let (nil, .some(argv)):
+      return try parseCommandSource(secret: secret, argv: argv)
+    }
+  }
+
+  private static func parseCommandSource(secret: String, argv: [String]) throws -> SecretSource {
+    let trimmedArgv = argv.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    guard let executable = trimmedArgv.first, !executable.isEmpty else {
+      throw SecretConfigError.commandEmpty(secret: secret)
+    }
+    return .command(argv: trimmedArgv)
   }
 }
 
 // MARK: - Resolution
 
 extension CredentialManifest {
-  /// Resolve secrets from host environment.
-  /// Missing or empty env vars are skipped with a per-secret warning.
-  /// Structural errors (bad format, duplicate secrets) still throw.
+  /// Resolve secrets from host environment or explicit command sources.
   func resolve(hostKey: HostKey) throws -> [ResolvedSecret] {
     var resolved: [ResolvedSecret] = []
     for decl in secrets {
-      guard let value = ProcessInfo.processInfo.environment[decl.envVar] else {
-        fputs(
-          "Warning: skipping credential '\(decl.envVar)': environment variable '\(decl.envVar)' is not set\n",
-          stderr)
-        continue
-      }
-      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !trimmed.isEmpty else {
-        let warning =
-          "Warning: skipping credential '\(decl.envVar)': environment variable '\(decl.envVar)'"
-          + " is set but empty\n"
-        fputs(
-          warning,
-          stderr)
-        continue
-      }
+      let trimmed = try resolveValue(for: decl)
 
       switch decl.mode {
       case .proxy:
@@ -358,5 +441,82 @@ extension CredentialManifest {
       }
     }
     return resolved
+  }
+
+  private func resolveValue(for decl: SecretDecl) throws -> String {
+    switch decl.source {
+    case .env(let name):
+      return try resolveEnvironmentValue(secret: decl.envVar, envVar: name)
+
+    case .command(let argv):
+      return try resolveCommandValue(secret: decl.envVar, argv: argv)
+    }
+  }
+
+  private func resolveEnvironmentValue(secret: String, envVar: String) throws -> String {
+    guard let value = ProcessInfo.processInfo.environment[envVar] else {
+      throw SecretConfigError.envVarNotSet(secret: secret, envVar: envVar)
+    }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      throw SecretConfigError.envVarEmpty(secret: secret, envVar: envVar)
+    }
+    return trimmed
+  }
+
+  private func resolveCommandValue(secret: String, argv: [String]) throws -> String {
+    let process = makeSourceProcess(argv: argv)
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    let commandString = argv.map(shellQuote).joined(separator: " ")
+    do {
+      try process.run()
+    } catch {
+      throw SecretConfigError.commandFailed(
+        secret: secret,
+        command: commandString,
+        exitCode: -1,
+        output: error.localizedDescription
+      )
+    }
+    process.waitUntilExit()
+
+    let stdoutString =
+      String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    let stderrString =
+      String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+
+    guard process.terminationStatus == 0 else {
+      let output = stderrString.trimmingCharacters(in: .whitespacesAndNewlines)
+      throw SecretConfigError.commandFailed(
+        secret: secret,
+        command: commandString,
+        exitCode: process.terminationStatus,
+        output: output
+      )
+    }
+
+    let trimmed = stdoutString.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      throw SecretConfigError.commandProducedEmptyValue(secret: secret, command: commandString)
+    }
+    return trimmed
+  }
+
+  private func makeSourceProcess(argv: [String]) -> Process {
+    let process = Process()
+    let executable = argv[0]
+    if executable.contains("/") {
+      process.executableURL = URL(fileURLWithPath: executable)
+      process.arguments = Array(argv.dropFirst())
+    } else {
+      process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+      process.arguments = argv
+    }
+    process.environment = ProcessInfo.processInfo.environment
+    return process
   }
 }

@@ -176,7 +176,7 @@
               export HOME="$TMPDIR"
               export XDG_CACHE_HOME="$TMPDIR/cache"
               cd "$src"
-              swiftlint lint --strict --quiet --no-cache --config .swiftlint.yml
+              swiftlint lint --strict --quiet --no-cache
               touch "$out"
             '';
 

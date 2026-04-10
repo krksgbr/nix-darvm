@@ -102,7 +102,6 @@ only_rules:
   - legacy_nsgeometry_functions
   - legacy_random
   - let_var_whitespace
-  - line_length
   - large_tuple
   - literal_expression_end_indentation
   - local_doc_comment
@@ -236,10 +235,6 @@ file_length:
   warning: 800
   error: 800
 
-line_length:
-  warning: 120
-  error: 120
-
 opening_brace:
   ignore_multiline_statement_conditions: true
   ignore_multiline_function_signatures: true
@@ -255,3 +250,11 @@ type_contents_order:
     - [type_alias, associated_type, subtype, type_property, instance_property, ib_inspectable, ib_outlet, initializer, type_method]
     - [view_life_cycle_method, ib_action, ib_segue_action, other_method, subscript]
     - [deinitializer]
+
+function_body_length:
+  warning: 50
+  error: 50
+
+type_body_length:
+  warning: 350
+  error: 350

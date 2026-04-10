@@ -35,6 +35,35 @@ extension Start {
     }
   }
 
+  func pushGlobalCredentials(prepared: PreparedStartContext, netstackSupervisor: NetstackSupervisor) throws {
+    let globalManifestPath = URL(fileURLWithPath: FileManager.default.homeDirectoryForCurrentUser.path)
+      .appendingPathComponent(".config/dvm/credentials.toml").path
+
+    guard FileManager.default.fileExists(atPath: globalManifestPath) else {
+      return
+    }
+
+    let manifest = try CredentialManifest.loadGlobal(from: globalManifestPath)
+    let hostKey = try HostKey.loadOrCreate()
+    let resolved = try manifest.resolve(hostKey: hostKey)
+
+    let proxySecrets = resolved.filter { $0.mode == .proxy }
+    if !proxySecrets.isEmpty {
+      try netstackSupervisor.loadCredentials(projectName: manifest.project, secrets: proxySecrets)
+    }
+
+    var envFileContent = ""
+    for secret in resolved {
+      envFileContent += "export \(secret.name)=\(shellQuote(secret.placeholder))\n"
+    }
+
+    if !envFileContent.isEmpty {
+      let envFilePath = prepared.stateDir.appendingPathComponent("global-credentials.env").path
+      try envFileContent.write(toFile: envFilePath, atomically: true, encoding: .utf8)
+      DVMLog.log(phase: .mounting, "injected global credentials into \(envFilePath)")
+    }
+  }
+
   func mountRuntimeShares(
     services: StartedGuestServices,
     effectiveMounts: [MountConfig],

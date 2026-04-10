@@ -14,16 +14,23 @@ let
   direnvPrefix = lib.optionalString direnvEnabled "direnv exec . ";
   flags = (lib.optional cfg.fullAccess "--dangerously-skip-permissions") ++ cfg.extraArgs;
   flagsStr = lib.concatStringsSep " " flags;
+  globalCredentialsEnv = "/var/run/dvm-state/global-credentials.env";
 
   # When package is set: bake the nix store path into the wrapper.
   # When null: resolve from npm/pnpm global paths at runtime.
   claudeWrapper =
     if cfg.package != null then
       pkgs.writeShellScriptBin "claude" ''
+        if [ -f ${lib.escapeShellArg globalCredentialsEnv} ]; then
+          . ${lib.escapeShellArg globalCredentialsEnv}
+        fi
         exec ${direnvPrefix}${cfg.package}/bin/claude ${flagsStr} "$@"
       ''
     else
       pkgs.writeShellScriptBin "claude" ''
+        if [ -f ${lib.escapeShellArg globalCredentialsEnv} ]; then
+          . ${lib.escapeShellArg globalCredentialsEnv}
+        fi
         _bin=""
         for _dir in \
           "''${NPM_CONFIG_PREFIX:-$HOME/.npm-global}/bin" \

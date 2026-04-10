@@ -25,19 +25,21 @@ flake = "/path/to/your-dvm-flake"   # or omit to use PWD/flake.nix
 ## 2. Secrets — `<project>/.dvm/credentials.toml`
 
 ```toml
-version = 1
+version = 0
 project = "my-project"
 
-[secrets.OPENAI_KEY]
+[proxy.OPENAI_KEY]
 hosts = ["api.openai.com"]
 
-[secrets.GITHUB_TOKEN]
+[proxy.GITHUB_TOKEN]
 hosts = ["api.github.com", "uploads.github.com"]
+from.command = ["op", "read", "op://Engineering/GitHub/token"]
 ```
 
-The manifest declares which env vars to use and which hosts they apply to.
-Real values are read from the host environment at exec time — never stored
-in the manifest.
+The manifest declares which guest env vars to inject, which hosts they apply
+to, and optionally how the host resolves them. If `from` is omitted, DVM reads
+the same-named host env var at exec time. Real values are never stored in the
+manifest.
 
 ## 3. Launch
 
@@ -63,6 +65,9 @@ just dvm exec --credentials /path/to/credentials.toml -- env
 # Via env var:
 DVM_CREDENTIALS=/path/to/credentials.toml just dvm exec -- env
 ```
+
+If the manifest uses `from.command`, `dvm exec` resolves that secret directly
+and no host shell export is needed for that entry.
 
 Discovery priority: `--credentials` flag > `DVM_CREDENTIALS` env > `.dvm/credentials.toml` in cwd.
 No directory walking. Explicit sources fail loudly on missing files.
@@ -101,3 +106,4 @@ just dvm stop
 - **Image stability** — hash only changes when `guest/image-minimal/` changes; code/module changes go through `dvm switch`
 - **HTTPS only** — placeholder replacement only happens on HTTPS requests; HTTP passes through as-is
 - **Exec-time resolution** — credentials are read from host env and pushed to sidecar on each `dvm exec`/`dvm ssh`, not at VM startup
+- **Optional explicit sources** — `from.command` can resolve individual secrets without pre-exporting them in the host shell

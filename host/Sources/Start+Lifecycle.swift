@@ -130,6 +130,7 @@ extension Start {
       netstackSupervisor: prepared.netstackSupervisor,
       netstackBinary: prepared.netstackBinary
     )
+    try pushGlobalCredentials(prepared: prepared, netstackSupervisor: prepared.netstackSupervisor)
     return ConfiguredStartContext(
       runner: VMRunner(configured),
       effectiveMounts: configured.effectiveMounts,

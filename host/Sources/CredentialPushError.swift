@@ -36,10 +36,6 @@ func resolveAndPushCredentials(
   credentialsFlag: String?,
   cwd: String
 ) throws -> [String: String] {
-  let explicit =
-    credentialsFlag != nil
-    || ProcessInfo.processInfo.environment["DVM_CREDENTIALS"] != nil
-
   guard
     let path = try discoverManifestPath(
       credentialsFlag: credentialsFlag, cwd: cwd)
@@ -48,7 +44,7 @@ func resolveAndPushCredentials(
   }
 
   do {
-    let manifest = try CredentialManifest.load(from: path)
+    let manifest = try CredentialManifest.loadLocal(from: path)
     let hostKey = try HostKey.loadOrCreate()
     let secrets = try manifest.resolve(hostKey: hostKey)
     let proxySecrets = secrets.filter { $0.mode == .proxy }
@@ -64,10 +60,6 @@ func resolveAndPushCredentials(
       env[secret.name] = secret.placeholder
     }
     return env
-  } catch {
-    if explicit { throw error }
-    fputs("Warning: credential resolution failed, running without injection: \(error)\n", stderr)
-    return [:]
   }
 }
 

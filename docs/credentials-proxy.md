@@ -150,7 +150,7 @@ determines the delivery mode — invalid combinations are structurally impossibl
 ### Manifest format
 
 ```toml
-version = 1
+version = 0
 project = "my-project"
 
 [proxy.OPENROUTER_API_KEY]
@@ -158,16 +158,21 @@ hosts = ["openrouter.ai"]
 
 [proxy.LANGFUSE_SECRET_KEY]
 hosts = ["langfuse.unbody.io"]
+from.command = ["op", "read", "op://Observability/langfuse/secret key"]
 
 [passthrough.DB_PASSWORD]
+from.command = ["security", "find-generic-password", "-a", "db", "-s", "dvm", "-w"]
 [passthrough.BETTER_AUTH_SECRET]
 [passthrough.VAPID_PRIVATE_KEY]
+from.env = "VAPID_KEY"
 ```
 
 Why this shape:
 
 - **Invalid states are unrepresentable** — passthrough can't have `hosts`, proxy
   can't omit them
+- **Resolution stays explicit without another file** — each secret can optionally
+  say where its value comes from
 - **Less verbose** — no `mode = "..."` field on every entry
 - **TOML prevents duplicates** — a secret can't appear in both tables
 - **Scannable** — immediately see which secrets are exposed to the guest
@@ -175,10 +180,13 @@ Why this shape:
 ### Validation rules
 
 - `proxy.*` entries require non-empty `hosts`
-- `passthrough.*` entries must be empty tables (no fields)
+- `passthrough.*` entries may only specify `from.*`
+- `from` is optional; omission defaults to reading the same-named host env var
+- `from.env` and `from.command` are mutually exclusive
+- `from.command` must be a non-empty argv array; stdout is the secret value
 - A secret name must not appear in both `proxy` and `passthrough`
-- All declared secrets must be present in the host environment before any are
-  resolved (fail-closed, not best-effort)
+- All declared secrets must resolve to non-empty values before any are resolved
+  (fail-closed, not best-effort)
 - Never silently fall back from proxy to passthrough
 - Log secret names and delivery modes at resolution time; never log values
 
@@ -517,8 +525,7 @@ control-plane commands were design exploration that was not built.
 
 What was built:
 
-- Simple `[secrets.X]` TOML format with `hosts` only (being updated to the
-  `[proxy.*]` / `[passthrough.*]` schema described above)
+- Explicit `version = 0` manifests with `[proxy.*]` / `[passthrough.*]` tables
 - Environment variable provider only (not keychain or command providers — the
   host environment is the interface boundary)
 - Placeholder-based MITM substitution in a gVisor userspace TCP/IP stack

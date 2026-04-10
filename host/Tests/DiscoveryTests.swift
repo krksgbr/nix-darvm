@@ -41,7 +41,7 @@ final class DiscoveryTests: XCTestCase {
     try FileManager.default.createDirectory(
       atPath: dvmDir, withIntermediateDirectories: true)
     let manifestPath = dvmDir + "/credentials.toml"
-    try "version = 1\nproject = \"test\"".write(
+    try "version = 0\nproject = \"test\"".write(
       toFile: manifestPath, atomically: true, encoding: .utf8)
 
     unsetenv("DVM_CREDENTIALS")
@@ -59,7 +59,7 @@ final class DiscoveryTests: XCTestCase {
     let dvmDir = parentDir + "/.dvm"
     try FileManager.default.createDirectory(
       atPath: dvmDir, withIntermediateDirectories: true)
-    try "version = 1\nproject = \"test\"".write(
+    try "version = 0\nproject = \"test\"".write(
       toFile: dvmDir + "/credentials.toml", atomically: true, encoding: .utf8)
 
     unsetenv("DVM_CREDENTIALS")
@@ -71,7 +71,7 @@ final class DiscoveryTests: XCTestCase {
 
   func testFlag_absolutePath() throws {
     let manifestPath = tempDir + "/custom.toml"
-    try "version = 1\nproject = \"test\"".write(
+    try "version = 0\nproject = \"test\"".write(
       toFile: manifestPath, atomically: true, encoding: .utf8)
 
     let path = try discoverManifestPath(credentialsFlag: manifestPath, cwd: "/tmp")
@@ -80,7 +80,7 @@ final class DiscoveryTests: XCTestCase {
 
   func testFlag_relativePath() throws {
     let manifestPath = tempDir + "/custom.toml"
-    try "version = 1\nproject = \"test\"".write(
+    try "version = 0\nproject = \"test\"".write(
       toFile: manifestPath, atomically: true, encoding: .utf8)
 
     // Relative to cwd
@@ -102,11 +102,11 @@ final class DiscoveryTests: XCTestCase {
     let dvmDir = tempDir + "/.dvm"
     try FileManager.default.createDirectory(
       atPath: dvmDir, withIntermediateDirectories: true)
-    try "version = 1\nproject = \"cwd-project\"".write(
+    try "version = 0\nproject = \"cwd-project\"".write(
       toFile: dvmDir + "/credentials.toml", atomically: true, encoding: .utf8)
 
     let flagManifest = tempDir + "/flag-manifest.toml"
-    try "version = 1\nproject = \"flag-project\"".write(
+    try "version = 0\nproject = \"flag-project\"".write(
       toFile: flagManifest, atomically: true, encoding: .utf8)
 
     let path = try discoverManifestPath(credentialsFlag: flagManifest, cwd: tempDir)
@@ -115,11 +115,11 @@ final class DiscoveryTests: XCTestCase {
 
   func testFlag_takesPriorityOverEnvVar() throws {
     let flagManifest = tempDir + "/flag.toml"
-    try "version = 1\nproject = \"flag\"".write(
+    try "version = 0\nproject = \"flag\"".write(
       toFile: flagManifest, atomically: true, encoding: .utf8)
 
     let envManifest = tempDir + "/env.toml"
-    try "version = 1\nproject = \"env\"".write(
+    try "version = 0\nproject = \"env\"".write(
       toFile: envManifest, atomically: true, encoding: .utf8)
 
     setenv("DVM_CREDENTIALS", envManifest, 1)
@@ -131,7 +131,7 @@ final class DiscoveryTests: XCTestCase {
 
   func testEnvVar_absolutePath() throws {
     let manifestPath = tempDir + "/env-manifest.toml"
-    try "version = 1\nproject = \"test\"".write(
+    try "version = 0\nproject = \"test\"".write(
       toFile: manifestPath, atomically: true, encoding: .utf8)
 
     setenv("DVM_CREDENTIALS", manifestPath, 1)
@@ -141,7 +141,7 @@ final class DiscoveryTests: XCTestCase {
 
   func testEnvVar_relativePath() throws {
     let manifestPath = tempDir + "/env-manifest.toml"
-    try "version = 1\nproject = \"test\"".write(
+    try "version = 0\nproject = \"test\"".write(
       toFile: manifestPath, atomically: true, encoding: .utf8)
 
     setenv("DVM_CREDENTIALS", "env-manifest.toml", 1)
@@ -172,11 +172,11 @@ final class DiscoveryTests: XCTestCase {
     let dvmDir = tempDir + "/.dvm"
     try FileManager.default.createDirectory(
       atPath: dvmDir, withIntermediateDirectories: true)
-    try "version = 1\nproject = \"cwd\"".write(
+    try "version = 0\nproject = \"cwd\"".write(
       toFile: dvmDir + "/credentials.toml", atomically: true, encoding: .utf8)
 
     let envManifest = tempDir + "/env-manifest.toml"
-    try "version = 1\nproject = \"env\"".write(
+    try "version = 0\nproject = \"env\"".write(
       toFile: envManifest, atomically: true, encoding: .utf8)
 
     setenv("DVM_CREDENTIALS", envManifest, 1)

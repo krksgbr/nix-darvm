@@ -129,10 +129,10 @@ final class NormalizeTests: XCTestCase {
 
 // MARK: - Manifest Loading
 
-final class ManifestLoadTests: XCTestCase {
+final class ManifestLoadCoreTests: XCTestCase {
   func testValidManifest() throws {
     let toml = """
-      version = 1
+      version = 0
       project = "test-project"
 
       [proxy.API_KEY]
@@ -144,19 +144,20 @@ final class ManifestLoadTests: XCTestCase {
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    let manifest = try CredentialManifest.load(from: path)
-    XCTAssertEqual(manifest.version, 1)
+    let manifest = try CredentialManifest.loadLocal(from: path)
     XCTAssertEqual(manifest.project, "test-project")
     XCTAssertEqual(manifest.secrets.count, 2)
     // Sorted by envVar
     XCTAssertEqual(manifest.secrets[0].envVar, "API_KEY")
     XCTAssertEqual(manifest.secrets[0].mode, .proxy)
+    XCTAssertEqual(manifest.secrets[0].source, .env(name: "API_KEY"))
     XCTAssertEqual(manifest.secrets[1].envVar, "OTHER_KEY")
     XCTAssertEqual(manifest.secrets[1].mode, .proxy)
+    XCTAssertEqual(manifest.secrets[1].source, .env(name: "OTHER_KEY"))
   }
 
   func testMissingFile() {
-    XCTAssertThrowsError(try CredentialManifest.load(from: "/nonexistent/path.toml")) { error in
+    XCTAssertThrowsError(try CredentialManifest.loadLocal(from: "/nonexistent/path.toml")) { error in
       guard let secretConfigError = error as? SecretConfigError else {
         return XCTFail("Expected SecretConfigError, got \(error)")
       }
@@ -168,7 +169,7 @@ final class ManifestLoadTests: XCTestCase {
     let path = try writeTempTOML("this is not valid toml {{{")
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    XCTAssertThrowsError(try CredentialManifest.load(from: path))
+    XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path))
   }
 
   func testWrongVersion() {
@@ -179,20 +180,20 @@ final class ManifestLoadTests: XCTestCase {
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
+    XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path)) { error in
       XCTAssertTrue(String(describing: error).contains("version"))
     }
   }
 
   func testMissingProject() {
     let toml = """
-      version = 1
+      version = 0
       project = ""
       """
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
+    XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path)) { error in
       XCTAssertTrue(String(describing: error).contains("project"))
     }
   }
@@ -200,30 +201,30 @@ final class ManifestLoadTests: XCTestCase {
   func testMissingProjectField() {
     // project field absent entirely (not just empty)
     let toml = """
-      version = 1
+      version = 0
       """
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    XCTAssertThrowsError(try CredentialManifest.load(from: path))
+    XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path))
   }
 
   func testWhitespaceOnlyProject() {
     let toml = """
-      version = 1
+      version = 0
       project = "   "
       """
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
+    XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path)) { error in
       XCTAssertTrue(String(describing: error).contains("project"))
     }
   }
 
   func testEmptyHosts() {
     let toml = """
-      version = 1
+      version = 0
       project = "test"
 
       [proxy.KEY]
@@ -232,14 +233,14 @@ final class ManifestLoadTests: XCTestCase {
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
+    XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path)) { error in
       XCTAssertTrue(String(describing: error).contains("empty"))
     }
   }
 
   func testWildcardHost() {
     let toml = """
-      version = 1
+      version = 0
       project = "test"
 
       [proxy.KEY]
@@ -248,14 +249,14 @@ final class ManifestLoadTests: XCTestCase {
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
+    XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path)) { error in
       XCTAssertTrue(String(describing: error).contains("wildcard"))
     }
   }
 
   func testHostsNormalized() throws {
     let toml = """
-      version = 1
+      version = 0
       project = "test"
 
       [proxy.KEY]
@@ -264,37 +265,39 @@ final class ManifestLoadTests: XCTestCase {
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    let manifest = try CredentialManifest.load(from: path)
+    let manifest = try CredentialManifest.loadLocal(from: path)
     XCTAssertEqual(manifest.secrets[0].hosts, ["api.example.com"])
   }
 
   func testNoSecrets() throws {
     let toml = """
-      version = 1
+      version = 0
       project = "test"
       """
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    let manifest = try CredentialManifest.load(from: path)
+    let manifest = try CredentialManifest.loadLocal(from: path)
     XCTAssertTrue(manifest.secrets.isEmpty)
   }
+}
 
+final class ManifestLoadSourceTests: XCTestCase {
   func testProjectNormalized() throws {
     let toml = """
-      version = 1
+      version = 0
       project = "  MY PROJECT  "
       """
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    let manifest = try CredentialManifest.load(from: path)
+    let manifest = try CredentialManifest.loadLocal(from: path)
     XCTAssertEqual(manifest.project, "my project")
   }
 
   func testSecretsSortedByEnvVar() throws {
     let toml = """
-      version = 1
+      version = 0
       project = "test"
 
       [proxy.ZEBRA]
@@ -308,7 +311,7 @@ final class ManifestLoadTests: XCTestCase {
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    let manifest = try CredentialManifest.load(from: path)
+    let manifest = try CredentialManifest.loadLocal(from: path)
     XCTAssertEqual(manifest.secrets.map(\.envVar), ["ALPHA", "MIDDLE", "ZEBRA"])
     XCTAssertEqual(manifest.secrets[0].mode, .proxy)
     XCTAssertEqual(manifest.secrets[1].mode, .passthrough)
@@ -317,7 +320,7 @@ final class ManifestLoadTests: XCTestCase {
 
   func testPassthroughEntries() throws {
     let toml = """
-      version = 1
+      version = 0
       project = "test"
 
       [passthrough.DB_PASSWORD]
@@ -326,7 +329,7 @@ final class ManifestLoadTests: XCTestCase {
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    let manifest = try CredentialManifest.load(from: path)
+    let manifest = try CredentialManifest.loadLocal(from: path)
     XCTAssertEqual(manifest.secrets.count, 2)
     XCTAssertEqual(manifest.secrets[0].mode, .passthrough)
     XCTAssertEqual(manifest.secrets[0].hosts, [])
@@ -336,7 +339,7 @@ final class ManifestLoadTests: XCTestCase {
 
   func testDuplicateSecretAcrossTables() {
     let toml = """
-      version = 1
+      version = 0
       project = "test"
 
       [proxy.MY_KEY]
@@ -347,7 +350,7 @@ final class ManifestLoadTests: XCTestCase {
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    XCTAssertThrowsError(try CredentialManifest.load(from: path)) { error in
+    XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path)) { error in
       let desc = String(describing: error)
       XCTAssertTrue(desc.contains("MY_KEY"), "Error should name the duplicate: \(desc)")
       XCTAssertTrue(desc.contains("both"), "Error should mention both tables: \(desc)")
@@ -356,7 +359,7 @@ final class ManifestLoadTests: XCTestCase {
 
   func testMixedProxyAndPassthrough() throws {
     let toml = """
-      version = 1
+      version = 0
       project = "test"
 
       [proxy.API_KEY]
@@ -367,7 +370,7 @@ final class ManifestLoadTests: XCTestCase {
     let path = try writeTempTOML(toml)
     defer { try? FileManager.default.removeItem(atPath: path) }
 
-    let manifest = try CredentialManifest.load(from: path)
+    let manifest = try CredentialManifest.loadLocal(from: path)
     XCTAssertEqual(manifest.secrets.count, 2)
     let proxySecret = try XCTUnwrap(manifest.secrets.first { $0.envVar == "API_KEY" })
     let passthroughSecret = try XCTUnwrap(manifest.secrets.first { $0.envVar == "DB_PASSWORD" })
@@ -377,9 +380,87 @@ final class ManifestLoadTests: XCTestCase {
     XCTAssertEqual(passthroughSecret.hosts, [])
   }
 
-  private func writeTempTOML(_ content: String) throws -> String {
-    let path = NSTemporaryDirectory() + "dvm-test-\(UUID().uuidString).toml"
-    try content.write(toFile: path, atomically: true, encoding: .utf8)
-    return path
+  func testExplicitEnvSource() throws {
+    let toml = """
+      version = 0
+      project = "test"
+
+      [proxy.OPENAI_API_KEY]
+      hosts = ["api.openai.com"]
+      from.env = "HOST_OPENAI_KEY"
+      """
+    let path = try writeTempTOML(toml)
+    defer { try? FileManager.default.removeItem(atPath: path) }
+
+    let manifest = try CredentialManifest.loadLocal(from: path)
+    XCTAssertEqual(manifest.secrets[0].source, .env(name: "HOST_OPENAI_KEY"))
   }
+
+  func testExplicitCommandSource() throws {
+    let toml = """
+      version = 0
+      project = "test"
+
+      [proxy.OPENAI_API_KEY]
+      hosts = ["api.openai.com"]
+      from.command = ["op", "read", "op://vault/openai"]
+      """
+    let path = try writeTempTOML(toml)
+    defer { try? FileManager.default.removeItem(atPath: path) }
+
+    let manifest = try CredentialManifest.loadLocal(from: path)
+    XCTAssertEqual(manifest.secrets[0].source, .command(argv: ["op", "read", "op://vault/openai"]))
+  }
+
+  func testInvalidSourceWhenEnvAndCommandBothPresent() throws {
+    let toml = """
+      version = 0
+      project = "test"
+
+      [proxy.OPENAI_API_KEY]
+      hosts = ["api.openai.com"]
+      from.env = "HOST_OPENAI_KEY"
+      from.command = ["op", "read", "op://vault/openai"]
+      """
+    let path = try writeTempTOML(toml)
+    defer { try? FileManager.default.removeItem(atPath: path) }
+
+    XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path)) { error in
+      XCTAssertTrue(String(describing: error).contains("exactly one"))
+    }
+  }
+
+  func testGlobalManifestOmitsProject() throws {
+    let toml = """
+      version = 0
+
+      [proxy.ANTHROPIC_API_KEY]
+      hosts = ["api.anthropic.com"]
+      """
+    let path = try writeTempTOML(toml)
+    defer { try? FileManager.default.removeItem(atPath: path) }
+
+    let manifest = try CredentialManifest.loadGlobal(from: path)
+    XCTAssertEqual(manifest.project, "__global__")
+  }
+
+  func testGlobalManifestRejectsPassthrough() throws {
+    let toml = """
+      version = 0
+
+      [passthrough.GITHUB_TOKEN]
+      """
+    let path = try writeTempTOML(toml)
+    defer { try? FileManager.default.removeItem(atPath: path) }
+
+    XCTAssertThrowsError(try CredentialManifest.loadGlobal(from: path)) { error in
+      XCTAssertTrue(String(describing: error).contains("only support [proxy.*]"))
+    }
+  }
+}
+
+private func writeTempTOML(_ content: String) throws -> String {
+  let path = NSTemporaryDirectory() + "dvm-test-\(UUID().uuidString).toml"
+  try content.write(toFile: path, atomically: true, encoding: .utf8)
+  return path
 }
