@@ -2,6 +2,8 @@ import Foundation
 import Security
 import XCTest
 
+@testable import dvm_core
+
 // MARK: - Manifest Resolution
 
 final class ManifestResolveTests: XCTestCase {
@@ -318,7 +320,7 @@ final class HostKeyTests: XCTestCase {
     XCTAssertEqual(key1.bytes, key2.bytes, "Same key should be loaded from disk")
   }
 
-  func testLoadOrCreate_rejectsWrongSize() {
+  func testLoadOrCreate_rejectsWrongSize() throws {
     let dir = NSTemporaryDirectory() + "dvm-hostkey-test-\(UUID().uuidString)"
     let path = dir + "/placeholder.key"
     try FileManager.default.createDirectory(

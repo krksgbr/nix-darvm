@@ -165,14 +165,14 @@ final class ManifestLoadCoreTests: XCTestCase {
     }
   }
 
-  func testMalformedToml() {
+  func testMalformedToml() throws {
     let path = try writeTempTOML("this is not valid toml {{{")
     defer { try? FileManager.default.removeItem(atPath: path) }
 
     XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path))
   }
 
-  func testWrongVersion() {
+  func testWrongVersion() throws {
     let toml = """
       version = 99
       project = "test"
@@ -185,7 +185,7 @@ final class ManifestLoadCoreTests: XCTestCase {
     }
   }
 
-  func testMissingProject() {
+  func testMissingProject() throws {
     let toml = """
       version = 0
       project = ""
@@ -198,7 +198,7 @@ final class ManifestLoadCoreTests: XCTestCase {
     }
   }
 
-  func testMissingProjectField() {
+  func testMissingProjectField() throws {
     // project field absent entirely (not just empty)
     let toml = """
       version = 0
@@ -209,7 +209,7 @@ final class ManifestLoadCoreTests: XCTestCase {
     XCTAssertThrowsError(try CredentialManifest.loadLocal(from: path))
   }
 
-  func testWhitespaceOnlyProject() {
+  func testWhitespaceOnlyProject() throws {
     let toml = """
       version = 0
       project = "   "
@@ -222,7 +222,7 @@ final class ManifestLoadCoreTests: XCTestCase {
     }
   }
 
-  func testEmptyHosts() {
+  func testEmptyHosts() throws {
     let toml = """
       version = 0
       project = "test"
@@ -238,7 +238,7 @@ final class ManifestLoadCoreTests: XCTestCase {
     }
   }
 
-  func testWildcardHost() {
+  func testWildcardHost() throws {
     let toml = """
       version = 0
       project = "test"
@@ -337,7 +337,7 @@ final class ManifestLoadSourceTests: XCTestCase {
     XCTAssertEqual(manifest.secrets[1].hosts, [])
   }
 
-  func testDuplicateSecretAcrossTables() {
+  func testDuplicateSecretAcrossTables() throws {
     let toml = """
       version = 0
       project = "test"

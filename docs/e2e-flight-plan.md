@@ -1,109 +1,92 @@
-# E2E Testing Flight Plan
+# Credential Test Harness
 
-Quick reference for manual e2e testing of DVM with the credential proxy.
-
-## 0. Prerequisites
+The credential proxy now has two supported test entrypoints:
 
 ```bash
-just build          # Swift + Go + netstack
-just dvm init       # Base image (skip if any darvm-* exists)
+just test credentials
+just test credentials --e2e
+just test credentials --all
+just test credentials --e2e --verbose
+just test credentials --e2e --debug
 ```
 
-## 1. Host config — `~/.config/dvm/config.toml`
+## Fast Suite
 
-```toml
-[mounts.mirror]
-dirs = ["/path/to/project-a", "/path/to/project-b"]
-transport = "nfs"
+`just test credentials` is the default regression path.
 
-[mounts.home]
-dirs = ["~/.claude", "~/.unison"]
+It runs:
 
-flake = "/path/to/your-dvm-flake"   # or omit to use PWD/flake.nix
-```
+- host Swift tests for manifest parsing and secret resolution
+- netstack Go tests for proxy and placeholder replacement behavior
 
-## 2. Secrets — `<project>/.dvm/credentials.toml`
+This suite is expected to be fast and side-effect free. Use it for routine
+iteration.
 
-```toml
-version = 0
-project = "my-project"
+## E2E Suite
 
-[proxy.OPENAI_KEY]
-hosts = ["api.openai.com"]
+`just test credentials --e2e` runs only the full VM smoke test via
+`scripts/e2e-credentials.sh`.
 
-[proxy.GITHUB_TOKEN]
-hosts = ["api.github.com", "uploads.github.com"]
-from.command = ["op", "read", "op://Engineering/GitHub/token"]
-```
-
-The manifest declares which guest env vars to inject, which hosts they apply
-to, and optionally how the host resolves them. If `from` is omitted, DVM reads
-the same-named host env var at exec time. Real values are never stored in the
-manifest.
-
-## 3. Launch
+If you want the previous combined behavior, use:
 
 ```bash
-just dvm start      # builds closure -> activates -> sidecar + CA always start -> VM running
+just test credentials --all
 ```
 
-The credential proxy (netstack sidecar) is always-on. CA cert is installed
-in the guest trust store on every boot. No credentials are loaded at startup —
-they're pushed per-exec.
+That runs the fast suite first, then the e2e suite.
 
-## 4. Exec with credentials
+By default, the e2e harness prints colored step-level progress so long boots do
+not look hung.
 
-```bash
-# Credentials discovered from .dvm/credentials.toml in cwd:
-OPENAI_KEY=sk-real-key just dvm exec -- curl -v https://api.openai.com/v1/models
-# Guest sees OPENAI_KEY=SANDBOX_CRED_my-project_openai-key_<hmac>
-# Proxy replaces the placeholder with sk-real-key in the HTTPS request
+Extra observability flags:
 
-# Explicit manifest path:
-just dvm exec --credentials /path/to/credentials.toml -- env
+- `--verbose` streams the live `dvm-core start` log during boot
+- `--debug` preserves temp artifacts and prints extra assertion/probe context
 
-# Via env var:
-DVM_CREDENTIALS=/path/to/credentials.toml just dvm exec -- env
+The e2e harness is self-contained:
+
+- backs up and restores `~/.config/dvm/credentials.toml`
+- creates temporary local and global credential fixtures
+- boots the existing `darvm-*` VM with the local `dvm-core` and `dvm-netstack`
+- refreshes the guest image scripts from the checked-out repo only if the
+  installed copies are stale
+- reboots only when script refresh or legacy guest cleanup made it necessary
+- tears the VM down and removes temp fixtures via shell trap
+
+The e2e suite asserts these invariants:
+
+- `global_env_not_copied_to_etc`
+- `global_env_present_in_state_mount`
+- `global_env_contains_placeholder_only`
+- `global_env_sources_into_shell`
+- `local_exec_injects_placeholders`
+- `global_https_substitution_works`
+- `local_https_substitution_works`
+
+The shell-sourcing and global HTTPS checks run through mounted guest probe
+scripts rather than nested inline `sh -lc '...'` strings. That keeps the
+assertions aligned with the real product path and avoids host-side quoting
+artifacts.
+
+Output is flat and explicit:
+
+```text
+PASS global_env_not_copied_to_etc
+PASS global_env_present_in_state_mount
+...
+RESULT: PASS (7/7)
 ```
 
-If the manifest uses `from.command`, `dvm exec` resolves that secret directly
-and no host shell export is needed for that entry.
+Failures name the broken invariant directly and report the captured start log
+path when boot failed.
 
-Discovery priority: `--credentials` flag > `DVM_CREDENTIALS` env > `.dvm/credentials.toml` in cwd.
-No directory walking. Explicit sources fail loudly on missing files.
+## Prerequisites
 
-## 5. Verify proxy
+The e2e suite expects:
 
-```bash
-just dvm exec -- curl -v https://api.openai.com/v1/models
-# Authorization: Bearer <real-key> injected via placeholder replacement
-# Guest never sees the real secret — only the SANDBOX_CRED_... placeholder
+- an existing `darvm-*` VM, or `just init` run beforehand
+- host tools: `tart`, `curl`, `python3`
+- network reachability to `https://httpbin.org/anything`
 
-just logs           # stream netstack + agent logs
-just dvm status     # phase, mounts, services
-```
-
-HTTP requests pass placeholders through unmodified (replacement is HTTPS-only).
-
-## 6. Switch config on live VM
-
-```bash
-just dvm switch     # rebuilds closure, activates in-place, no reboot
-```
-
-Works even mid-boot (waits for running phase, up to 120s).
-
-## 7. Teardown
-
-```bash
-# Ctrl-C in the start terminal, or:
-just dvm stop
-```
-
-## Key invariants
-
-- **Fail closed** — if netstack crashes, networking is down (no silent fallback to NAT)
-- **Image stability** — hash only changes when `guest/image-minimal/` changes; code/module changes go through `dvm switch`
-- **HTTPS only** — placeholder replacement only happens on HTTPS requests; HTTP passes through as-is
-- **Exec-time resolution** — credentials are read from host env and pushed to sidecar on each `dvm exec`/`dvm ssh`, not at VM startup
-- **Optional explicit sources** — `from.command` can resolve individual secrets without pre-exporting them in the host shell
+If any prerequisite is missing, the harness fails loudly instead of trying to
+guess around it.

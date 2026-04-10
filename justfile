@@ -8,6 +8,69 @@ build config="debug":
     cd host && swift build -c {{config}} --scratch-path ../build/swift {{swift_sandbox_flag}}
     codesign --force --sign - --entitlements {{entitlements}} build/swift/{{config}}/dvm-core
 
+# Run test suites. Supported forms:
+#   just test credentials
+#   just test credentials --e2e [--verbose|--debug]
+#   just test credentials --all [--verbose|--debug]
+test suite *flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{suite}}" in
+      credentials)
+        mode=""
+        passthrough_flags=()
+        for flag in {{flags}}; do
+          case "$flag" in
+            --e2e|--all)
+              if [[ -n "$mode" ]]; then
+                echo "Multiple mode flags provided: $mode and $flag" >&2
+                echo "Usage: just test credentials [--e2e|--all] [--verbose] [--debug]" >&2
+                exit 1
+              fi
+              mode="$flag"
+              ;;
+            --verbose|--debug)
+              passthrough_flags+=("$flag")
+              ;;
+            *)
+              echo "Unsupported test flag: $flag" >&2
+              echo "Usage: just test credentials [--e2e|--all] [--verbose] [--debug]" >&2
+              exit 1
+              ;;
+          esac
+        done
+
+        case "$mode" in
+          "")
+            just _test-credentials-fast
+            ;;
+          --e2e)
+            just _test-credentials-e2e "${passthrough_flags[@]}"
+            ;;
+          --all)
+            just _test-credentials-fast
+            just _test-credentials-e2e "${passthrough_flags[@]}"
+            ;;
+          *)
+            echo "Usage: just test credentials [--e2e|--all] [--verbose] [--debug]" >&2
+            exit 1
+            ;;
+        esac
+        ;;
+      *)
+        echo "Unsupported test suite: {{suite}}" >&2
+        echo "Usage: just test credentials [--e2e|--all] [--verbose] [--debug]" >&2
+        exit 1
+        ;;
+    esac
+
+_test-credentials-fast:
+    cd host && swift test --scratch-path ../build/swift {{swift_sandbox_flag}}
+    cd host/netstack && go test ./...
+
+_test-credentials-e2e *flags:
+    ./scripts/e2e-credentials.sh {{flags}}
+
 # Run configured formatters through the flake formatter.
 fmt:
     nix fmt
