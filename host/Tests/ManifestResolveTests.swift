@@ -129,7 +129,7 @@ final class ManifestResolveTests: XCTestCase {
           mode: .passthrough,
           source: .env(name: passthroughVar),
           hosts: []
-        ),
+        )
       ]
     )
     defer {
@@ -162,7 +162,7 @@ final class ManifestResolveTests: XCTestCase {
           mode: .proxy,
           source: .command(argv: ["/bin/sh", "-c", "exit 42"]),
           hosts: ["example.com"]
-        ),
+        )
       ]
     )
 

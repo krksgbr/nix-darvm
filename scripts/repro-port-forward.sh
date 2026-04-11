@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/harness-common.sh"
 dvm_core="$repo_root/build/swift/debug/dvm-core"
 dvm_netstack="$repo_root/build/dvm-netstack"
 stress_driver="$repo_root/scripts/port-forward-stress.py"
@@ -81,8 +82,8 @@ Options:
   -h, --help                Show this help
 
 Examples:
-  just repro-port-forward --duration 60 --workers 4 --port 4321
-  just repro-port-forward --duration 600 --workers 16 --port 4321 --verbose
+  just probe run port-forward.crash --duration 60 --workers 4 --port 4321
+  just probe run port-forward.crash --duration 600 --workers 16 --port 4321 --verbose
 
 Artifacts are copied into a dedicated run directory plus a stable 'latest'
 symlink under the artifacts root so they never get mixed with prior runs.
@@ -225,33 +226,19 @@ trap cleanup EXIT
 
 require_tool() {
   local tool="$1"
-  command -v "$tool" >/dev/null 2>&1 || fail preflight "missing required host tool: $tool"
+  harness_require_tool "$tool" || fail preflight "missing required host tool: $tool"
 }
 
 run_from_tmp() {
-  (
-    cd /tmp
-    "$@"
-  )
+  harness_run_from_tmp "$@"
 }
 
 ensure_binary() {
-  local path="$1"
-  local build_cmd="$2"
-  if [[ ! -x "$path" ]]; then
-    (cd "$repo_root" && eval "$build_cmd")
-  fi
+  harness_ensure_binary "$@"
 }
 
 discover_vm_name() {
-  tart list --format json | python3 -c '
-import json, sys
-vms = json.load(sys.stdin)
-names = [vm["Name"] for vm in vms if vm["Name"].startswith("darvm-") and not vm["Name"].endswith("-snap")]
-if not names:
-    sys.exit(1)
-print(names[0])
-'
+  harness_discover_vm_name
 }
 
 assert_positive_integer() {
@@ -342,40 +329,25 @@ wait_for_process_exit() {
 }
 
 wait_for_running() {
-  local deadline=$((SECONDS + start_timeout))
-  local next_heartbeat=$((SECONDS + 10))
-  while (( SECONDS < deadline )); do
-    if [[ -n "${start_pid:-}" ]] && ! kill -0 "$start_pid" >/dev/null 2>&1; then
-      if wait "$start_pid" >/dev/null 2>&1; then
-        start_exit_code=0
-      else
-        start_exit_code=$?
-      fi
-      run_result="crashed"
-      fail vm_start "dvm-core start exited before the VM reached running state (exit=${start_exit_code})"
+  local status=0
+  harness_wait_for_running "$dvm_core" "${start_pid:-}" "$start_timeout" "$verbose" log_info "Waiting for VM to reach running state..." || status=$?
+  if [[ "$status" == "0" ]]; then
+    return
+  fi
+  if [[ "$status" == "1" && -n "${start_pid:-}" ]] && ! kill -0 "$start_pid" >/dev/null 2>&1; then
+    if wait "$start_pid" >/dev/null 2>&1; then
+      start_exit_code=0
+    else
+      start_exit_code=$?
     fi
-
-    if capture_status_snapshot boot; then
-      if python3 - "$last_status_json" <<'PY'
-import json, sys
-payload = json.loads(sys.argv[1])
-sys.exit(0 if payload.get("running") and payload.get("phase") == "running" else 1)
-PY
-      then
-        return
-      fi
-    fi
-
-    if [[ "$verbose" -eq 0 ]] && (( SECONDS >= next_heartbeat )); then
-      log_info "Waiting for VM to reach running state... ${SECONDS}s elapsed"
-      next_heartbeat=$((SECONDS + 10))
-    fi
-    sleep 2
-  done
-
-  fail vm_start "timed out waiting for VM to reach running state"
+    run_result="crashed"
+    fail vm_start "dvm-core start exited before the VM reached running state (exit=${start_exit_code})"
+  fi
+  if [[ "$status" == "2" ]]; then
+    fail vm_start "timed out waiting for VM to reach running state"
+  fi
+  fail vm_start "failed to determine VM running state"
 }
-
 wait_for_forwarded_port() {
   local deadline=$((SECONDS + forward_timeout))
   local started=$SECONDS
@@ -586,12 +558,7 @@ EOF
 
 start_vm() {
   log_step "boot vm"
-  : >"$start_log"
-  (
-    cd "$repo_root"
-    exec env DVM_NETSTACK="$dvm_netstack" "$dvm_core" start --debug --vm-name "$vm_name" >"$start_log" 2>&1
-  ) &
-  start_pid=$!
+  harness_start_vm start_pid "$dvm_core" "$vm_name" "$start_log" "$dvm_netstack"
   dvm_json_log="/tmp/dvm-${start_pid}.log"
   if [[ "$verbose" -eq 1 ]]; then
     log_info "Streaming start log: $start_log"
@@ -603,7 +570,6 @@ start_vm() {
   wait_for_running
   capture_status_snapshot running || true
 }
-
 capture_guest_listener_state() {
   run_from_tmp "$dvm_core" exec --no-credentials -- /bin/sh -c "sudo /usr/sbin/lsof -nP -iTCP:${port} -sTCP:LISTEN || true" >"$guest_listener_lsof" 2>&1 || true
   run_from_tmp "$dvm_core" exec --no-credentials -- /bin/sh -c "sudo launchctl print system/${guest_listener_label} 2>&1 || true" >"$guest_listener_launchctl" 2>&1 || true
@@ -776,7 +742,7 @@ assert_positive_integer "$port" "--port"
 assert_duration "$duration" || fail preflight "--duration must be greater than zero"
 
 log_step "preflight"
-ensure_binary "$dvm_core" "just build"
+ensure_binary "$dvm_core" "just build" "harness_dvm_core_has_virtualization_entitlement \"$dvm_core\""
 ensure_binary "$dvm_netstack" "just build-netstack"
 [[ -x "$stress_driver" ]] || fail preflight "stress driver is not executable: $stress_driver"
 

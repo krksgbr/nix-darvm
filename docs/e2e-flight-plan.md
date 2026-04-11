@@ -1,44 +1,40 @@
 # Credential Test Harness
 
-The credential proxy now has two supported test entrypoints:
+The project now exposes VM-backed QA cases through a tiny dispatcher:
+
+- `just test list|show|run ...`
+- `just probe list|show|run ...`
+
+Use them with this intent:
+
+- `test`: pass/fail assertions — these are the cases that should pass once the
+  behavior is correct
+- `probe`: exploratory repro/stress runs — these are for exercising a path,
+  reproducing a bug, or collecting artifacts under load
+
+The credential harness specifically is driven through the `test` side:
+
+- `just test list`
+- `just test show <id>`
+- `just test run <id> [args]`
+
+Current credential cases:
+
+- `credentials.fast`: host-only Swift/Go regression checks
+- `credentials.e2e`: full VM-backed credential e2e harness
+
+Example:
 
 ```bash
-just test credentials
-just test credentials --e2e
-just test credentials --all
-just test credentials --e2e --verbose
-just test credentials --e2e --debug
+just test run credentials.fast
+just test run credentials.e2e --verbose --debug
 ```
 
-## Fast Suite
-
-`just test credentials` is the default regression path.
-
-It runs:
-
-- host Swift tests for manifest parsing and secret resolution
-- netstack Go tests for proxy and placeholder replacement behavior
-
-This suite is expected to be fast and side-effect free. Use it for routine
-iteration.
-
-## E2E Suite
-
-`just test credentials --e2e` runs only the full VM smoke test via
-`scripts/e2e-credentials.sh`.
-
-If you want the previous combined behavior, use:
-
-```bash
-just test credentials --all
-```
-
-That runs the fast suite first, then the e2e suite.
-
-By default, the e2e harness prints colored step-level progress so long boots do
-not look hung.
+`credentials.e2e` invokes the same full VM smoke path as before, via the
+`scripts/tests/credentials.e2e.sh` case entrypoint.
 
 Extra observability flags:
+
 
 - `--verbose` streams the live `dvm-core start` log during boot
 - `--debug` preserves temp artifacts and prints extra assertion/probe context

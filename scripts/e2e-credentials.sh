@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repo_root/scripts/harness-common.sh"
 dvm_core="$repo_root/build/swift/debug/dvm-core"
 dvm_netstack="$repo_root/build/dvm-netstack"
 state_dir="$HOME/.local/state/dvm"
@@ -142,72 +143,43 @@ trap cleanup EXIT
 
 require_tool() {
   local tool="$1"
-  command -v "$tool" >/dev/null 2>&1 || fail preflight "missing required host tool: $tool"
+  harness_require_tool "$tool" || fail preflight "missing required host tool: $tool"
 }
 
 run_from_tmp() {
-  (
-    cd /tmp
-    "$@"
-  )
+  harness_run_from_tmp "$@"
 }
 
 ensure_binary() {
-  local path="$1"
-  local build_cmd="$2"
-  if [[ ! -x "$path" ]]; then
-    (cd "$repo_root" && eval "$build_cmd")
-  fi
+  harness_ensure_binary "$@"
 }
 
 discover_vm_name() {
-  tart list --format json | python3 -c '
-import json, sys
-vms = json.load(sys.stdin)
-names = [vm["Name"] for vm in vms if vm["Name"].startswith("darvm-") and not vm["Name"].endswith("-snap")]
-if not names:
-    sys.exit(1)
-print(names[0])
-'
+  harness_discover_vm_name
 }
 
 wait_for_running() {
-  local deadline=$((SECONDS + 180))
-  local next_heartbeat=$((SECONDS + 10))
-  while (( SECONDS < deadline )); do
-    if [[ -n "${start_pid:-}" ]] && ! kill -0 "$start_pid" 2>/dev/null; then
+  local status=0
+  harness_wait_for_running "$dvm_core" "${start_pid:-}" 180 "$verbose" log_info "Waiting for VM to reach running state..." || status=$?
+  case "$status" in
+    0)
+      return
+      ;;
+    1)
       fail vm_start "dvm-core start exited before the VM reached running state"
-    fi
-
-    if status_json="$("$dvm_core" status --json 2>/dev/null)"; then
-      if python3 - "$status_json" <<'PY'
-import json, sys
-payload = json.loads(sys.argv[1])
-sys.exit(0 if payload.get("running") and payload.get("phase") == "running" else 1)
-PY
-      then
-        return
-      fi
-    fi
-
-    if [[ "$verbose" -eq 0 ]] && (( SECONDS >= next_heartbeat )); then
-      log_info "Waiting for VM to reach running state... ${SECONDS}s elapsed"
-      next_heartbeat=$((SECONDS + 10))
-    fi
-    sleep 2
-  done
-
-  fail vm_start "timed out waiting for VM to reach running state"
+      ;;
+    2)
+      fail vm_start "timed out waiting for VM to reach running state"
+      ;;
+    *)
+      fail vm_start "failed to determine VM running state"
+      ;;
+  esac
 }
 
 start_vm() {
   log_step "boot vm"
-  : >"$start_log"
-  (
-    cd "$repo_root"
-    DVM_NETSTACK="$dvm_netstack" "$dvm_core" start --debug --vm-name "$vm_name" >"$start_log" 2>&1
-  ) &
-  start_pid=$!
+  harness_start_vm start_pid "$dvm_core" "$vm_name" "$start_log" "$dvm_netstack"
   if [[ "$verbose" -eq 1 ]]; then
     log_info "Streaming start log: $start_log"
     tail -n +1 -f "$start_log" &
@@ -265,7 +237,7 @@ require_tool python3
 require_tool just
 
 log_step "preflight"
-ensure_binary "$dvm_core" "just build"
+ensure_binary "$dvm_core" "just build" "harness_dvm_core_has_virtualization_entitlement \"$dvm_core\""
 ensure_binary "$dvm_netstack" "just build-netstack"
 
 curl -fsS "$httpbin_url" >/dev/null || fail preflight "httpbin.org is unreachable"

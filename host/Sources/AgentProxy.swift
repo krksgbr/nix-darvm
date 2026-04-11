@@ -116,11 +116,17 @@ final class AgentProxy {
 
         // Connect to VM vsock — retain the handle for the entire session
         let vsockHandle = try await self.connectToVM()
+        defer {
+          // Keep the VZ connection alive until this proxy session fully exits.
+          // Passing only the raw fd into NIO is not enough: VZ tears down the
+          // transport when the connection object is deallocated.
+          withExtendedLifetime(vsockHandle.connection) {}
+        }
         DVMLog.log(
           level: "debug", "proxy[\(connId)]: vsock connected (fd=\(vsockHandle.fileDescriptor))")
 
         let vmChannel = try await ClientBootstrap(group: self.eventLoopGroup)
-          .withConnectedSocket(vsockHandle.fileDescriptor) { childChannel in
+          .withConnectedSocket(try duplicateOwnedSocketDescriptor(vsockHandle.fileDescriptor)) { childChannel in
             childChannel.eventLoop.makeCompletedFuture {
               try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
                 wrappingChannelSynchronously: childChannel
@@ -149,10 +155,6 @@ final class AgentProxy {
           }
         }
 
-        // Prevent vsockHandle from being optimized away before session ends
-        withExtendedLifetime(vsockHandle) {
-          // Keep the vsock handle alive until the proxy session finishes.
-        }
         DVMLog.log(level: "debug", "proxy[\(connId)]: session complete")
       }
     } catch {

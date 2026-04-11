@@ -48,8 +48,8 @@ Options:
   -h, --help                Show this help.
 
 Examples:
-  just test-port-forward-regression
-  just test-port-forward-regression --verbose
+  just test run port-forward.regression
+  just test run port-forward.regression --verbose
   ./scripts/test-port-forward-regression.sh --port 4321 --duration 10
 EOF
 }

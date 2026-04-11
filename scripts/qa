@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  just test list
+  just test show <case-id>
+  just test run <case-id> [args]
+
+  just probe list
+  just probe show <case-id>
+  just probe run <case-id> [args]
+
+Meaning:
+  test   Pass/fail assertions. Use these when a case represents a contract that
+         should pass once the behavior is correct.
+
+  probe  Exploratory repro/stress runs. Use these when you want to exercise a
+         path, reproduce a bug, or collect artifacts under load.
+
+Examples:
+  just test list
+  just test show port-forward.regression
+  just test run credentials.e2e --verbose
+  just probe run port-forward.crash --duration 120 --workers 4
+EOF
+}
+
+if (($# < 1)); then
+  usage
+  exit 1
+fi
+
+mode="$1"
+shift
+
+case "$mode" in
+  test)
+    cases_dir="$repo_root/tests"
+    ;;
+  probe)
+    cases_dir="$repo_root/probes"
+    ;;
+  -h|--help|help)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "Unsupported qa mode: $mode" >&2
+    usage
+    exit 1
+    ;;
+esac
+
+if (($# < 1)); then
+  usage
+  exit 1
+fi
+
+cmd="$1"
+shift
+
+if [[ ! -d "$cases_dir" ]]; then
+  echo "No case directory found for '$mode': $cases_dir" >&2
+  exit 1
+fi
+
+case_ids=()
+case_files=()
+case_descs=()
+
+load_cases() {
+  for case_file in "$cases_dir"/*.sh; do
+    [[ -f "$case_file" ]] || continue
+
+    local case_id=""
+    local case_desc=""
+
+    while IFS= read -r line; do
+      if [[ -z "$case_id" && "$line" == "# qa:id="* ]]; then
+        case_id="${line#"# qa:id="}"
+      fi
+      if [[ -z "$case_desc" && "$line" == "# qa:description="* ]]; then
+        case_desc="${line#"# qa:description="}"
+      fi
+      if [[ -n "$case_id" && -n "$case_desc" ]]; then
+        break
+      fi
+    done <"$case_file"
+
+    [[ -z "$case_id" ]] && continue
+
+    if case_index "$case_id" >/dev/null; then
+      echo "Duplicate case id '$case_id':" >&2
+      local existing_idx
+      existing_idx="$(case_index "$case_id")"
+      echo "  ${case_files[$existing_idx]}" >&2
+      echo "  $case_file" >&2
+      exit 1
+    fi
+
+    case_ids+=("$case_id")
+    case_files+=("$case_file")
+    case_descs+=("$case_desc")
+  done
+}
+
+case_index() {
+  local target="$1"
+  local index=0
+  for existing_id in "${case_ids[@]}"; do
+    if [[ "$existing_id" == "$target" ]]; then
+      printf '%s\n' "$index"
+      return 0
+    fi
+    index=$((index + 1))
+  done
+  return 1
+}
+
+case_file_for() {
+  local case_id="$1"
+  local idx
+  idx="$(case_index "$case_id")" || return 1
+  printf '%s\n' "${case_files[$idx]}"
+}
+
+case_description_for() {
+  local case_id="$1"
+  local idx
+  idx="$(case_index "$case_id")" || return 1
+  printf '%s\n' "${case_descs[$idx]}"
+}
+
+run_case() {
+  local case_id="$1"
+  shift
+
+  local case_file
+  case_file="$(case_file_for "$case_id" || true)"
+  if [[ -z "$case_file" ]]; then
+    echo "Unknown case: $case_id" >&2
+    echo "Run '$0 $mode list' to see available cases." >&2
+    exit 1
+  fi
+
+  exec "$case_file" "$@"
+}
+
+load_cases
+
+case "$cmd" in
+  list)
+    if (( ${#case_ids[@]} == 0 )); then
+      echo "No cases found for $mode." >&2
+      exit 0
+    fi
+
+    for case_id in $(printf '%s\n' "${case_ids[@]}" | sort); do
+      idx="$(case_index "$case_id")"
+      printf '%-28s %s\n' "$case_id" "${case_descs[$idx]:-(no description)}"
+    done
+    ;;
+
+  show)
+    if (($# != 1)); then
+      echo "Usage: $0 $mode show <case-id>" >&2
+      exit 1
+    fi
+    idx="$(case_index "$1" || true)"
+    if [[ -z "$idx" ]]; then
+      echo "Unknown case: $1" >&2
+      exit 1
+    fi
+    printf 'Case: %s\n' "$1"
+    printf 'Description: %s\n' "${case_descs[$idx]:-(no description)}"
+    printf 'Script: %s\n' "${case_files[$idx]}"
+    printf 'Run: just %s run %s [args]\n' "$mode" "$1"
+
+    echo
+    if case_help="$(${case_files[$idx]} --help 2>&1)"; then
+      printf '%s\n' "$case_help"
+    else
+      echo "(help unavailable)"
+    fi
+    ;;
+
+  run)
+    if (($# < 1)); then
+      echo "Usage: $0 $mode run <case-id> [args]" >&2
+      exit 1
+    fi
+    run_case "$1" "${@:2}"
+    ;;
+
+  *)
+    echo "Unsupported subcommand: $cmd" >&2
+    usage
+    exit 1
+    ;;
+esac

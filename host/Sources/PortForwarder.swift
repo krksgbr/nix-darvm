@@ -153,7 +153,6 @@ final class PortForwarder {
   }
 
   // MARK: - Vsock connection
-
   /// Connect to the guest's port-forward vsock service.
   /// Must be called on MainActor since VZVirtioSocketDevice requires it.
   func connectToVM() async throws -> VsockHandle {
@@ -205,13 +204,19 @@ final class PortForwarder {
 
         // Connect to guest's port-forward vsock service
         let vsockHandle = try await self.connectToVM()
+        defer {
+          // Keep the VZ connection alive until this client session fully exits.
+          // Passing only the raw fd into NIO is not enough: VZ tears down the
+          // transport when the connection object is deallocated.
+          withExtendedLifetime(vsockHandle.connection) {}
+        }
         DVMLog.log(
           level: "debug",
           "port-fwd[\(connId)]: vsock connected (fd=\(vsockHandle.fileDescriptor))")
 
         let vmChannel = try await ClientBootstrap(group: self.eventLoopGroup)
           .channelOption(.allowRemoteHalfClosure, value: true)
-          .withConnectedSocket(vsockHandle.fileDescriptor) { childChannel in
+          .withConnectedSocket(try duplicateOwnedSocketDescriptor(vsockHandle.fileDescriptor)) { childChannel in
             childChannel.eventLoop.makeCompletedFuture {
               try NIOAsyncChannel<ByteBuffer, ByteBuffer>(
                 wrappingChannelSynchronously: childChannel,
@@ -251,10 +256,6 @@ final class PortForwarder {
           }
         }
 
-        // Prevent vsockHandle from being optimized away before session ends
-        withExtendedLifetime(vsockHandle) {
-          // Keep the vsock handle alive until the proxy session finishes.
-        }
         DVMLog.log(level: "debug", "port-fwd[\(connId)]: session complete")
       }
     } catch {
