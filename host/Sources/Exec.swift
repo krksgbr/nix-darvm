@@ -38,6 +38,7 @@ struct Exec: AsyncParsableCommand {
         case .envVarNotSet, .envVarEmpty:
           fputs("Warning: credential resolution warning: \(error)\n", stderr)
           credentialEnv = [:]
+
         default:
           throw error
         }

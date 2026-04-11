@@ -411,7 +411,7 @@ extension CredentialManifest {
 extension CredentialManifest {
   /// Resolve secrets from host environment or explicit command sources.
   func resolve(hostKey: HostKey) throws -> [ResolvedSecret] {
-    return try resolve(hostKey: hostKey, tolerateMissingHostValues: false).resolved
+    try resolve(hostKey: hostKey, tolerateMissingHostValues: false).resolved
   }
 
   func resolve(
@@ -455,6 +455,7 @@ extension CredentialManifest {
           case .envVarNotSet, .envVarEmpty:
             warnings.append(error)
             continue
+
           default:
             break
           }

@@ -9,8 +9,8 @@ final class VsockOwnedSocketTests: XCTestCase {
     var fds: [Int32] = [0, 0]
     XCTAssertEqual(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds), 0)
     defer {
-      for fd in fds where fd >= 0 {
-        _ = Darwin.close(fd)
+      for fileDescriptor in fds where fileDescriptor >= 0 {
+        _ = Darwin.close(fileDescriptor)
       }
     }
 
