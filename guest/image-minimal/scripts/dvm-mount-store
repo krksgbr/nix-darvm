@@ -20,7 +20,7 @@ mkdir -p /var/run/dvm-state
 
 # Mount nix store from host (mandatory)
 NIX_MOUNTED=0
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
     if mount_virtiofs nix-store /nix/store 2>/dev/null; then
         echo "$(date): mounted nix-store on /nix/store" >> "$LOG"
         NIX_MOUNTED=1

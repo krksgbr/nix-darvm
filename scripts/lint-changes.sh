@@ -50,18 +50,28 @@ declare -A agent_packages=()
 unsupported=()
 swift_files=()
 nix_files=()
+shell_files=()
 lintable_count=0
+
+is_shell_script() {
+  local path="$1"
+  [[ "$path" == *.sh ]] && return 0
+  [[ -f "$path" ]] || return 1
+  local first_line
+  IFS= read -r first_line < "$path" || true
+  [[ "$first_line" =~ ^#!.*(ba)?sh([[:space:]]|$) ]]
+}
 
 for path in "${changed_files[@]}"; do
   [[ -n "$path" ]] || continue
 
   case "$path" in
-    host/netstack/*.go|host/netstack/**/*.go)
+    host/netstack/*.go)
       package=$(nearest_existing_package "$repo_root/host/netstack" "${path#host/netstack/}")
       netstack_packages["$package"]=1
       lintable_count=$((lintable_count + 1))
       ;;
-    guest/agent/*.go|guest/agent/**/*.go)
+    guest/agent/*.go)
       package=$(nearest_existing_package "$repo_root/guest/agent" "${path#guest/agent/}")
       agent_packages["$package"]=1
       lintable_count=$((lintable_count + 1))
@@ -80,6 +90,12 @@ for path in "${changed_files[@]}"; do
         nix_files+=("$path")
       fi
       lintable_count=$((lintable_count + 1))
+      ;;
+    *)
+      if is_shell_script "$path"; then
+        shell_files+=("$path")
+        lintable_count=$((lintable_count + 1))
+      fi
       ;;
   esac
 done
@@ -125,4 +141,10 @@ if [[ ${#nix_files[@]} -gt 0 ]]; then
   echo "lint: deadnix/statix on changed Nix files"
   deadnix "${nix_files[@]}"
   statix check "${nix_files[@]}"
+fi
+
+if [[ ${#shell_files[@]} -gt 0 ]]; then
+  require_tool shellcheck
+  echo "lint: shellcheck on changed shell scripts"
+  shellcheck "${shell_files[@]}"
 fi

@@ -235,6 +235,30 @@
               statix check nix
               touch "$out"
             '';
+
+        shell-lint =
+          pkgs.runCommand "shell-lint"
+            {
+              nativeBuildInputs = [ pkgs.shellcheck ];
+              src = self;
+            }
+            ''
+              cd "$src"
+              shellcheck \
+                guest/image-minimal/scripts/dvm-activator \
+                guest/image-minimal/scripts/dvm-mount-store \
+                scripts/e2e-credentials.sh \
+                scripts/harness-common.sh \
+                scripts/lint-changes.sh \
+                scripts/probes/port-forward.crash.sh \
+                scripts/qa \
+                scripts/repro-port-forward.sh \
+                scripts/test-port-forward-regression.sh \
+                scripts/tests/credentials.e2e.sh \
+                scripts/tests/credentials.fast.sh \
+                scripts/tests/port-forward.regression.sh
+              touch "$out"
+            '';
       };
 
       devShells.${system}.default = pkgs.mkShellNoCC {
@@ -248,6 +272,7 @@
           protobuf
           protoc-gen-go
           protoc-gen-go-grpc
+          shellcheck
           statix
           swiftlint
           treefmtEval.config.build.wrapper

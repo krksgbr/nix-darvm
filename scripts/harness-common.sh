@@ -23,6 +23,7 @@ harness_ensure_binary() {
   local build_cmd="$2"
   local validator="${3:-}"
 
+  # shellcheck disable=SC2154 # repo_root is provided by the calling harness script.
   if [[ ! -x "$path" ]]; then
     (cd "$repo_root" && eval "$build_cmd")
     return

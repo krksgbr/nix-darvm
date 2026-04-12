@@ -31,11 +31,14 @@ if (($# > 0)); then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-swift_sandbox_flag="$(sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null && echo '' || echo '--disable-sandbox')"
+swift_sandbox_flag=()
+if ! sandbox-exec -p '(version 1)(allow default)' /usr/bin/true 2>/dev/null; then
+  swift_sandbox_flag+=(--disable-sandbox)
+fi
 
 (
   cd "$repo_root/host"
-  swift test --scratch-path "$repo_root/build/swift" $swift_sandbox_flag
+  swift test --scratch-path "$repo_root/build/swift" "${swift_sandbox_flag[@]}"
 )
 (
   cd "$repo_root/host/netstack"

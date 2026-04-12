@@ -202,7 +202,8 @@ cleanup() {
     if wait_for_process_exit "$start_pid" "Cleanup: VM shutdown"; then
       [[ -z "${start_exit_code:-}" ]] && start_exit_code=0
     else
-      [[ -z "${start_exit_code:-}" ]] && start_exit_code=$?
+      wait_status=$?
+      [[ -z "${start_exit_code:-}" ]] && start_exit_code=$wait_status
     fi
   elif [[ -n "${start_pid:-}" && -z "${start_exit_code:-}" ]]; then
     log_info "Cleanup: waiting for dvm-core to exit"

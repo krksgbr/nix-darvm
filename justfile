@@ -34,7 +34,8 @@ lint *args:
         .#checks.aarch64-darwin.swift-lint \
         .#checks.aarch64-darwin.go-lint-agent \
         .#checks.aarch64-darwin.go-lint-netstack \
-        .#checks.aarch64-darwin.nix-lint
+        .#checks.aarch64-darwin.nix-lint \
+        .#checks.aarch64-darwin.shell-lint
       exit 0
     fi
     echo "usage: just lint [--all]" >&2
