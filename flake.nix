@@ -33,7 +33,7 @@
       llmPkgs = llm-agents.packages.${system};
       treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
 
-      mkDarvm = import ./nix/mk-darvm.nix {
+      mkDarvmInternal = import ./nix/mk-darvm.nix {
         inherit nix-darwin determinate hjem system;
         aiAgents = inputs.ai-agents;
       };
@@ -87,6 +87,14 @@
 
       createBaseVm = mkCreateBaseVm { };
 
+      mkDarvm = args:
+        mkDarvmInternal (
+          {
+            inherit darvm-agent dvm-host-cmd;
+          }
+          // args
+        );
+
       wrapper = mkDvmWrapper {
         inherit dvm-core dvm-netstack;
         dvm-create-vm = createBaseVm;
@@ -101,12 +109,10 @@
       # falling back to dvmConfigurations.minimal from dvm's own flake.
       dvmConfigurations = {
         minimal = mkDarvm {
-          inherit darvm-agent dvm-host-cmd;
           modules = [ ];
         };
 
         default = mkDarvm {
-          inherit darvm-agent dvm-host-cmd;
           modules = [
             {
               hjem.users.admin.ai.agents = {

@@ -140,7 +140,9 @@ fi
 if [[ ${#nix_files[@]} -gt 0 ]]; then
   echo "lint: deadnix/statix on changed Nix files"
   deadnix "${nix_files[@]}"
-  statix check "${nix_files[@]}"
+  for path in "${nix_files[@]}"; do
+    statix check "$path"
+  done
 fi
 
 if [[ ${#shell_files[@]} -gt 0 ]]; then
