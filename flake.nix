@@ -6,6 +6,7 @@
     nix-darwin.url = "github:LnL7/nix-darwin";
     nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
     llm-agents.url = "github:numtide/llm-agents.nix";
+    ai-agents.url = "path:/Users/gaborkerekes/.config/konfigue/flakes/ai-agents";
     treefmt-nix.url = "github:numtide/treefmt-nix";
     determinate.url = "https://flakehub.com/f/DeterminateSystems/determinate/3";
     hjem = {
@@ -16,7 +17,7 @@
   };
 
   outputs =
-    {
+    inputs@{
       self,
       nixpkgs,
       nix-darwin,
@@ -24,6 +25,7 @@
       treefmt-nix,
       determinate,
       hjem,
+      ...
     }:
     let
       system = "aarch64-darwin";
@@ -32,12 +34,8 @@
       treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
 
       mkDarvm = import ./nix/mk-darvm.nix {
-        inherit
-          nix-darwin
-          determinate
-          hjem
-          system
-          ;
+        inherit nix-darwin determinate hjem system;
+        aiAgents = inputs.ai-agents;
       };
       mkDvmWrapper = import ./nix/mk-dvm-wrapper.nix { inherit nixpkgs system; };
       mkCreateBaseVm = import ./nix/create-base-vm.nix { inherit nixpkgs system; };
@@ -111,13 +109,16 @@
           inherit darvm-agent dvm-host-cmd;
           modules = [
             {
-              dvm = {
-                agents.claude.enable = true;
-                agents.claude.package = llmPkgs.claude-code;
-                agents.codex.enable = true;
-                agents.codex.package = null;
-                agents.pi.enable = true;
+              hjem.users.admin.ai.agents = {
+                claude = {
+                  enable = true;
+                  pkg = llmPkgs.claude-code;
+                };
+                codex.enable = true;
+                pi.enable = true;
+              };
 
+              dvm = {
                 integrations.direnv.enable = true;
                 xcode.enable = true;
                 nodejs.enable = true;
@@ -141,6 +142,7 @@
         guest-plumbing = ./guest/modules/guest-plumbing.nix;
         prelude = ./guest/modules/prelude.nix;
         agents = ./guest/modules/agents.nix;
+        ai-agents = ./guest/modules/ai-agents.nix;
         claude = ./guest/modules/claude.nix;
         codex = ./guest/modules/codex.nix;
         opencode = ./guest/modules/opencode.nix;

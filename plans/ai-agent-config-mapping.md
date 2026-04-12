@@ -288,16 +288,13 @@ but the framework itself should not define wrapper semantics
 
 ### What it contains
 
-- `dvm.agents.claude` options:
-  - `enable`
-  - `package`
-  - `configDir`
+- `dvm.agents.claude` runtime options:
   - `fullAccess`
   - `extraArgs`
 - guest wrapper generation
 - sourcing `/var/run/dvm-state/global-credentials.env`
 - optional npm/pnpm resolution
-- `dvm.mounts.home = [ cfg.configDir ]`
+- mount derivation now comes from rendered agent config
 
 ### Mapping
 
@@ -349,14 +346,11 @@ Same split as Claude.
 
 ### What it contains
 
-- `dvm.agents.pi.enable`
-- `package`
-- `configDir`
-- `extraArgs`
+- `dvm.agents.pi.extraArgs`
 - guest wrapper
 - credential env sourcing
 - npm/pnpm resolution
-- `dvm.mounts.home`
+- mount derivation from rendered agent config
 
 ### Mapping
 
@@ -532,6 +526,7 @@ ai.agents.pi = {
 
 - derive mounts and packages from `ai.renderedAgents`
 - shrink DVM per-agent modules to guest-specific mechanics only
+- status: implemented in `guest/modules/ai-agents.nix` plus runtime-only Claude/Codex/Pi guest modules
 
 ## Phase 5 — remove framework pollution
 

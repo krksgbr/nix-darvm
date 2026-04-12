@@ -1,3 +1,10 @@
+# Claude guest runtime adapter.
+#
+# Shared agent config (enable/pkg/configDir/files) comes from ai-agents via
+# config.hjem.users.<user>.ai.renderedAgents.claude.
+# This module owns only guest runtime behavior: wrapper generation, guest-only
+# flags, credential env sourcing, and npm/pnpm fallback.
+#
 # Requires VM restart when first enabled — VirtioFS home-dir mounts
 # (e.g. ~/.claude) are configured at boot time by the host. dvm switch alone
 # is sufficient for subsequent binary/flag changes.
@@ -5,31 +12,49 @@
   lib,
   config,
   pkgs,
+  username ? "admin",
   ...
 }:
 
 let
   cfg = config.dvm.agents.claude;
+  agent = config.hjem.users.${username}.ai.renderedAgents.claude;
   direnvEnabled = config.dvm.integrations.direnv.enable;
-  direnvPrefix = lib.optionalString direnvEnabled "direnv exec . ";
+  resumeArgs = [ "--continue" ];
   flags = (lib.optional cfg.fullAccess "--dangerously-skip-permissions") ++ cfg.extraArgs;
-  flagsStr = lib.concatStringsSep " " flags;
+  renderedFlagArgs = lib.concatStringsSep "\n" (map (arg: ''args+=(${lib.escapeShellArg arg})'') flags);
+  renderedResumeArgs = lib.concatStringsSep "\n" (map (arg: ''set -- "$@" ${lib.escapeShellArg arg}'') resumeArgs);
   globalCredentialsEnv = "/var/run/dvm-state/global-credentials.env";
 
-  # When package is set: bake the nix store path into the wrapper.
-  # When null: resolve from npm/pnpm global paths at runtime.
+  # When package is set declaratively via ai-agents: bake the nix store path
+  # into the wrapper. When null: resolve from npm/pnpm global paths at runtime.
   claudeWrapper =
-    if cfg.package != null then
+    if agent.pkg != null then
       pkgs.writeShellScriptBin "claude" ''
         if [ -f ${lib.escapeShellArg globalCredentialsEnv} ]; then
           . ${lib.escapeShellArg globalCredentialsEnv}
         fi
-        exec ${direnvPrefix}${cfg.package}/bin/claude ${flagsStr} "$@"
+        if [ "$#" -eq 0 ] && ${if cfg.autoResume then "true" else "false"}; then
+          set --
+          ${renderedResumeArgs}
+        fi
+        args=()
+        ${renderedFlagArgs}
+        args+=("$@")
+        if ${if direnvEnabled then "true" else "false"}; then
+          exec direnv exec . ${agent.pkg}/bin/claude "''${args[@]}"
+        else
+          exec ${agent.pkg}/bin/claude "''${args[@]}"
+        fi
       ''
     else
       pkgs.writeShellScriptBin "claude" ''
         if [ -f ${lib.escapeShellArg globalCredentialsEnv} ]; then
           . ${lib.escapeShellArg globalCredentialsEnv}
+        fi
+        if [ "$#" -eq 0 ] && ${if cfg.autoResume then "true" else "false"}; then
+          set --
+          ${renderedResumeArgs}
         fi
         _bin=""
         for _dir in \
@@ -46,25 +71,22 @@ let
           echo "     pnpm: pnpm add -g @anthropic-ai/claude-code" >&2
           exit 1
         fi
-        exec ${direnvPrefix}"$_bin" ${flagsStr} "$@"
+        args=()
+        ${renderedFlagArgs}
+        args+=("$@")
+        if ${if direnvEnabled then "true" else "false"}; then
+          exec direnv exec . "$_bin" "''${args[@]}"
+        else
+          exec "$_bin" "''${args[@]}"
+        fi
       '';
 in
 {
   options.dvm.agents.claude = {
-    enable = lib.mkEnableOption "Claude Code agent";
-    package = lib.mkOption {
-      type = lib.types.nullOr lib.types.package;
-      default = null;
-      description = ''
-        Claude Code nix package. When null, the wrapper resolves the binary at
-        runtime from npm/pnpm global paths — pair with dvm.nodejs.enable
-        and run: npm install -g @anthropic-ai/claude-code
-      '';
-    };
-    configDir = lib.mkOption {
-      type = lib.types.str;
-      default = ".claude";
-      description = "Config directory name relative to $HOME (mounted from host)";
+    autoResume = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Resume the last Claude session on a bare `claude` invocation inside the guest.";
     };
     fullAccess = lib.mkOption {
       type = lib.types.bool;
@@ -78,13 +100,21 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf agent.enable {
     environment.systemPackages = [
       claudeWrapper
       pkgs.git
       pkgs.ripgrep
       pkgs.fd
     ];
-    dvm.mounts.home = [ cfg.configDir ];
+    assertions = [
+      {
+        assertion = agent.configDir == ".claude";
+        message = ''
+          dvm Claude wrapper currently assumes ai.agents.claude.configDir = ".claude".
+          If you need another path, teach the guest runtime how to point Claude at it.
+        '';
+      }
+    ];
   };
 }

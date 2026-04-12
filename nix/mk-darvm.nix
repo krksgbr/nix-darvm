@@ -8,6 +8,7 @@
   nix-darwin,
   determinate,
   hjem,
+  aiAgents,
   system ? "aarch64-darwin",
 }:
 
@@ -32,7 +33,7 @@ nix-darwin.lib.darwinSystem {
   ]
   ++ modules;
   specialArgs = {
-    inherit username darvm-agent dvm-host-cmd;
+    inherit username darvm-agent dvm-host-cmd aiAgents;
     determinate-nix = determinate.inputs.nix.packages.${system}.default;
   };
 }

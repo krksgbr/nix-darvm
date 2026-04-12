@@ -1,5 +1,13 @@
 # Lessons
 
+- Failure mode: treating `dvm start` / live-VM validation as an ordinary verification step while the user already has an active VM they care about.
+- Detection signal: the user explicitly warned `DO NOT stop it under any circumstances when you start testing this`.
+- Prevention rule: before any DVM runtime verification, check whether a live VM is in use; default to `nix eval`, direct script/config inspection, and other non-disruptive proofs unless the user explicitly authorizes touching the running VM.
+
+- Failure mode: assuming method-call-style attribute access precedence in Nix (`foo.bar { ... }.config`) when extending evaluated systems for synthetic proofs.
+- Detection signal: the synthetic `extendModules` proof failed with `attribute 'config' missing` until the function call was parenthesized.
+- Prevention rule: when calling a function stored in an attribute and then accessing fields on the result, parenthesize the call explicitly: `(foo.bar { ... }).config`.
+
 - 2026-04-02: When a VM-side network stack depends on a static DHCP lease, configure it from the actual VM NIC MAC produced by `VMConfigurator`, not a guessed/default value. Detection signal: the guest gateway/DHCP identity looks wrong or the guest gets the wrong subnet/IP. Prevention rule: create the VM first, then pass the real NIC identity into the sidecar/network config.
 - 2026-04-02: Do not verify mounts by grepping shell-quoted paths or assuming guest-visible `/var/...` paths appear unchanged in `mount` output on macOS. Detection signal: mounts succeed functionally but verification logs `unexpected fs type` or `MISSING`, followed by `Resource busy` on retry. Prevention rule: verify using raw paths, include `/private` aliases for macOS paths, and add a short post-mount settle check before declaring failure.
 - 2026-04-07: Lint-driven refactors on the guest RPC path must preserve blocking `net.Listener` semantics and be validated with a full `dvm start` boot. Detection signal: activation succeeds, but the host agent proxy logs repeated HTTP/2 preface resets while the guest RPC daemon flaps with `accept ... resource temporarily unavailable`. Prevention rule: treat transport/socket code as behavior-sensitive, keep guest daemon logs visible through the shared state directory, and run an end-to-end start/stop cycle after any agent/vsock refactor.

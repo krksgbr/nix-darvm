@@ -57,9 +57,11 @@ guest/image-minimal/   Packer template for minimal base image (Nix + mount + act
 guest/modules/         nix-darwin modules for guest configuration
   guest-plumbing.nix     Core: launchd daemons, nix socket wiring, user setup
   prelude.nix            Defaults: zsh, starship, git, common tools
-  agents.nix             Agent option declarations (dvm.agents.<name>)
-  claude.nix             Claude Code agent config
-  codex.nix              Codex agent config
+  ai-agents.nix          DVM adapter: imports shared ai-agents Hjem module and derives home mounts
+  agents.nix             Agent runtime module umbrella (imports ai-agents + per-agent wrappers)
+  claude.nix             Claude runtime wrapper + guest-only flags
+  codex.nix              Codex runtime wrapper + guest-only flags
+  pi.nix                 Pi runtime wrapper + guest-only args/auto-resume
   direnv.nix             Auto-activate project devShells
 
 nix/
@@ -87,7 +89,7 @@ just logs               # Stream guest agent logs
 
 **DVM_CORE** env var overrides the dvm-core binary path (set automatically by devShell).
 
-**Validating nix module changes:** Use `nix eval` to spot-check module outputs before a full build cycle. For example: `nix eval --impure --json .#dvmConfigurations.default.config.dvm.capabilities` to verify capability definitions, or `nix eval --impure .#dvmConfigurations.default.config.system.build.toplevel` to check the closure builds.
+**Validating nix module changes:** Use `nix eval` to spot-check module outputs before a full build cycle. For example: `nix eval --impure --json .#dvmConfigurations.default.config.dvm.capabilities` to verify capability definitions, `nix eval --json .#dvmConfigurations.default.config.hjem.users.admin.ai.renderedAgents` to inspect shared agent rendering, or `nix eval --impure .#dvmConfigurations.default.config.system.build.toplevel` to check the closure builds.
 
 **Base image** is content-addressed: `darvm-<hash>` where hash covers `guest/image-minimal`. Changes to agent, host-cmd, or modules never trigger an image rebuild — they're delivered by nix-darwin activation.
 

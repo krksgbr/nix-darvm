@@ -1,12 +1,19 @@
+# Pi guest runtime adapter.
+#
+# Shared agent config (enable/pkg/configDir/files) comes from ai-agents via
+# config.hjem.users.<user>.ai.renderedAgents.pi.
+# This module owns only guest runtime behavior: wrapper generation, guest-only
+# args, credential env sourcing, and npm/pnpm fallback.
+#
 # Requires VM restart when first enabled — VirtioFS home-dir mounts
 # (e.g. ~/.pi/agent) are configured at boot time by the host. dvm switch alone
 # is sufficient for subsequent binary/flag changes.
 #
 # Caveats:
 #
-# 1. No auto-approve flag — pi has no equivalent of claude's
-#    --dangerously-skip-permissions or codex's --full-auto. There is no
-#    non-interactive / auto-approve mode at the CLI level.
+# 1. No separate unsafe-mode flag — unlike Claude/Codex, pi does not need an
+#    extra CLI flag here. The guest wrapper just runs pi directly (plus any
+#    configured extraArgs / auto-resume behavior).
 #
 # 2. configDir override — the default (.pi/agent) matches pi's default lookup
 #    path so no env var is needed. If you change configDir, pi won't find the
@@ -16,30 +23,48 @@
   lib,
   config,
   pkgs,
+  username ? "admin",
   ...
 }:
 
 let
   cfg = config.dvm.agents.pi;
+  agent = config.hjem.users.${username}.ai.renderedAgents.pi;
   direnvEnabled = config.dvm.integrations.direnv.enable;
-  direnvPrefix = lib.optionalString direnvEnabled "direnv exec . ";
-  flagsStr = lib.concatStringsSep " " cfg.extraArgs;
+  resumeArgs = [ "--continue" ];
+  renderedFlagArgs = lib.concatStringsSep "\n" (map (arg: ''args+=(${lib.escapeShellArg arg})'') cfg.extraArgs);
+  renderedResumeArgs = lib.concatStringsSep "\n" (map (arg: ''set -- "$@" ${lib.escapeShellArg arg}'') resumeArgs);
   globalCredentialsEnv = "/var/run/dvm-state/global-credentials.env";
 
-  # When package is set: bake the nix store path into the wrapper.
-  # When null: resolve from npm/pnpm global paths at runtime.
+  # When package is set declaratively via ai-agents: bake the nix store path
+  # into the wrapper. When null: resolve from npm/pnpm global paths at runtime.
   piWrapper =
-    if cfg.package != null then
+    if agent.pkg != null then
       pkgs.writeShellScriptBin "pi" ''
         if [ -f ${lib.escapeShellArg globalCredentialsEnv} ]; then
           . ${lib.escapeShellArg globalCredentialsEnv}
         fi
-        exec ${direnvPrefix}${cfg.package}/bin/pi ${flagsStr} "$@"
+        if [ "$#" -eq 0 ] && ${if cfg.autoResume then "true" else "false"}; then
+          set --
+          ${renderedResumeArgs}
+        fi
+        args=()
+        ${renderedFlagArgs}
+        args+=("$@")
+        if ${if direnvEnabled then "true" else "false"}; then
+          exec direnv exec . ${agent.pkg}/bin/pi "''${args[@]}"
+        else
+          exec ${agent.pkg}/bin/pi "''${args[@]}"
+        fi
       ''
     else
       pkgs.writeShellScriptBin "pi" ''
         if [ -f ${lib.escapeShellArg globalCredentialsEnv} ]; then
           . ${lib.escapeShellArg globalCredentialsEnv}
+        fi
+        if [ "$#" -eq 0 ] && ${if cfg.autoResume then "true" else "false"}; then
+          set --
+          ${renderedResumeArgs}
         fi
         _bin=""
         for _dir in \
@@ -56,29 +81,22 @@ let
           echo "     pnpm: pnpm add -g @mariozechner/pi-coding-agent" >&2
           exit 1
         fi
-        exec ${direnvPrefix}"$_bin" ${flagsStr} "$@"
+        args=()
+        ${renderedFlagArgs}
+        args+=("$@")
+        if ${if direnvEnabled then "true" else "false"}; then
+          exec direnv exec . "$_bin" "''${args[@]}"
+        else
+          exec "$_bin" "''${args[@]}"
+        fi
       '';
 in
 {
   options.dvm.agents.pi = {
-    enable = lib.mkEnableOption "Pi coding agent";
-    package = lib.mkOption {
-      type = lib.types.nullOr lib.types.package;
-      default = null;
-      description = ''
-        Pi coding agent nix package. When null, the wrapper resolves the binary at
-        runtime from npm/pnpm global paths — pair with dvm.nodejs.enable
-        and run: npm install -g @mariozechner/pi-coding-agent
-      '';
-    };
-    configDir = lib.mkOption {
-      type = lib.types.str;
-      default = ".pi/agent";
-      description = ''
-        Agent directory relative to $HOME (mounted from host).
-        Stores config, sessions, skills, prompts, and themes.
-        Corresponds to PI_CODING_AGENT_DIR.
-      '';
+    autoResume = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Resume the last Pi session on a bare `pi` invocation inside the guest.";
     };
     extraArgs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
@@ -87,13 +105,21 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf agent.enable {
     environment.systemPackages = [
       piWrapper
       pkgs.git
       pkgs.ripgrep
       pkgs.fd
     ];
-    dvm.mounts.home = [ cfg.configDir ];
+    assertions = [
+      {
+        assertion = agent.configDir == ".pi/agent";
+        message = ''
+          dvm Pi wrapper currently assumes ai.agents.pi.configDir = ".pi/agent".
+          If you need another path, also teach the guest runtime to set PI_CODING_AGENT_DIR.
+        '';
+      }
+    ];
   };
 }
