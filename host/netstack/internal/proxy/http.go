@@ -23,6 +23,7 @@ import (
 
 	"github.com/unbody/darvm/netstack/internal/control"
 	"github.com/unbody/darvm/netstack/internal/logger"
+	"github.com/unbody/darvm/netstack/internal/relay"
 	"golang.org/x/net/http2"
 )
 
@@ -108,7 +109,7 @@ func (i *Interceptor) IsInterceptedHost(host string) bool {
 // request passes through unmodified. Keep-alive is handled by http.Server.
 func (i *Interceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort int) {
 	defer func() {
-		if err := guestConn.Close(); err != nil {
+		if err := guestConn.Close(); err != nil && !relay.IsCloseLike(err) {
 			log.Printf("http: close guest conn: %v", err)
 		}
 	}()
@@ -123,7 +124,7 @@ func (i *Interceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort int) 
 // injection. Non-matching hosts get pure TCP passthrough.
 func (i *Interceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort int) {
 	defer func() {
-		if err := guestConn.Close(); err != nil {
+		if err := guestConn.Close(); err != nil && !relay.IsCloseLike(err) {
 			log.Printf("https: close guest conn: %v", err)
 		}
 	}()
@@ -236,58 +237,33 @@ func (i *Interceptor) replaceSecrets(req *http.Request, secrets []control.Secret
 // serverName is the SNI hostname if known, empty string otherwise.
 func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort int, serverName string) {
 	target := net.JoinHostPort(dstIP, strconv.Itoa(dstPort))
-	displayTarget := target
-	if serverName != "" {
-		displayTarget = serverName
-	}
+	displayTarget := relay.FormatTarget(serverName, target)
 	dialer := &net.Dialer{Timeout: passthroughDialTimeout}
 
 	realConn, err := dialer.DialContext(context.Background(), "tcp", target)
 	if err != nil {
+		log.Printf("tcp passthrough: dial %s: %v", displayTarget, err)
 		return
 	}
 
 	defer func() {
-		if err := realConn.Close(); err != nil && !isConnCloseError(err) {
+		if err := realConn.Close(); err != nil && !relay.IsCloseLike(err) {
 			log.Printf("tcp passthrough: close upstream conn (%s): %v", displayTarget, err)
 		}
 	}()
 
-	done := make(chan struct{})
-
-	go func() {
-		if _, err := io.Copy(realConn, guestConn); err != nil && !isConnCloseError(err) {
-			log.Printf("tcp passthrough: guest to upstream copy (%s): %v", displayTarget, err)
-		}
-
-		close(done)
-	}()
-
-	if _, err := io.Copy(guestConn, realConn); err != nil && !isConnCloseError(err) {
-		log.Printf("tcp passthrough: upstream to guest copy (%s): %v", displayTarget, err)
+	results := relay.Bidirectional(
+		"guest to upstream copy",
+		guestConn,
+		realConn,
+		"upstream to guest copy",
+		realConn,
+		guestConn,
+		0,
+	)
+	for _, result := range relay.ResultsToLog(results) {
+		log.Printf("tcp passthrough: %s (%s): %v", result.Operation, displayTarget, result.Err)
 	}
-
-	<-done
-}
-
-// isConnCloseError reports whether err is an expected error from a connection
-// being torn down mid-copy: EOF, reset by peer, closed endpoint, broken pipe.
-// These are normal in a bidirectional proxy when one side closes first.
-//
-// None of these can mask data corruption or security failures — they are all
-// connection-state signals, not data-plane errors. The one observability cost:
-// a premature teardown caused by a proxy or netstack bug would also match
-// "endpoint is closed" and go unlogged. The client still sees the dropped
-// connection; only the proxy-side log entry is suppressed.
-func isConnCloseError(err error) bool {
-	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-		return true
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "connection reset by peer") ||
-		strings.Contains(msg, "endpoint is closed") ||
-		strings.Contains(msg, "use of closed network connection") ||
-		strings.Contains(msg, "broken pipe")
 }
 
 // serveConn runs an http.Server over a single connection, using the shared

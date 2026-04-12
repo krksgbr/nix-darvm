@@ -21,6 +21,7 @@ import (
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
 	"github.com/unbody/darvm/netstack/internal/control"
 	"github.com/unbody/darvm/netstack/internal/proxy"
+	"github.com/unbody/darvm/netstack/internal/relay"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -288,24 +289,29 @@ func (ns *Stack) handleTCPConnection(r *tcp.ForwarderRequest) {
 }
 
 func (ns *Stack) handlePassthrough(guestConn net.Conn, dstIP string, dstPort int) {
-	defer closeWithLog("passthrough: close guest conn", guestConn)
-
 	target := net.JoinHostPort(dstIP, strconv.Itoa(dstPort))
+	displayTarget := relay.FormatTarget("", target)
+	defer closeWithLog(fmt.Sprintf("passthrough: close guest conn (%s)", displayTarget), guestConn)
+
 	realConn, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", target)
 	if err != nil {
-		log.Printf("passthrough: dial %s: %v", target, err)
+		log.Printf("passthrough: dial %s: %v", displayTarget, err)
 		return
 	}
-	defer closeWithLog("passthrough: close upstream conn", realConn)
+	defer closeWithLog(fmt.Sprintf("passthrough: close upstream conn (%s)", displayTarget), realConn)
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		proxyPassthroughStream("upstream", realConn, "guest", guestConn)
-	}()
-
-	proxyPassthroughStream("guest", guestConn, "upstream", realConn)
-	<-done
+	results := relay.Bidirectional(
+		"guest to upstream copy",
+		guestConn,
+		realConn,
+		"upstream to guest copy",
+		realConn,
+		guestConn,
+		passthroughBufferSize,
+	)
+	for _, result := range relay.ResultsToLog(results) {
+		log.Printf("passthrough: %s (%s): %v", result.Operation, displayTarget, result.Err)
+	}
 }
 
 func startDNSServer(s *gstack.Stack, gatewayAddr tcpip.Address, zones []types.Zone) error {
@@ -350,28 +356,7 @@ func newCAPool(cfg *Config) (*proxy.CAPool, error) {
 }
 
 func closeWithLog(operation string, closer io.Closer) {
-	if err := closer.Close(); err != nil {
+	if err := closer.Close(); err != nil && !relay.IsCloseLike(err) {
 		log.Printf("%s: %v", operation, err)
-	}
-}
-
-func proxyPassthroughStream(srcName string, src io.Reader, dstName string, dst io.Writer) {
-	buf := make([]byte, passthroughBufferSize)
-	for {
-		n, err := src.Read(buf)
-		if n > 0 {
-			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
-				log.Printf("passthrough: write to %s: %v", dstName, writeErr)
-				return
-			}
-		}
-
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, io.EOF) {
-			log.Printf("passthrough: read from %s: %v", srcName, err)
-		}
-		return
 	}
 }
