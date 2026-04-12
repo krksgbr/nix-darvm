@@ -134,9 +134,14 @@
               { pkgs, ... }:
               {
                 nixpkgs.config.allowUnfree = true;
+                environment.variables = {
+                  EDITOR = "nvim";
+                  VISUAL = "nvim";
+                };
                 environment.systemPackages = with pkgs; [
                   google-chrome
                   jujutsu
+                  neovim
                 ];
               }
             )
