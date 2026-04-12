@@ -19,13 +19,26 @@ probe *args:
 fmt:
     nix fmt
 
-# Run language linters for Swift, Go, and Nix.
-lint:
-    nix build --no-link \
+# Run language linters. Defaults to files changed in the current jj changeset;
+# pass `--all` to run the full repo checks unconditionally.
+lint *args:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -- {{args}}
+    if [ "$#" -eq 0 ]; then
+      nix develop --command bash ./scripts/lint-changes.sh
+      exit 0
+    fi
+    if [ "$#" -eq 1 ] && [ "$1" = "--all" ]; then
+      nix build --no-link \
         .#checks.aarch64-darwin.swift-lint \
         .#checks.aarch64-darwin.go-lint-agent \
         .#checks.aarch64-darwin.go-lint-netstack \
         .#checks.aarch64-darwin.nix-lint
+      exit 0
+    fi
+    echo "usage: just lint [--all]" >&2
+    exit 1
 
 # Build dvm-netstack sidecar (Go, host-native)
 build-netstack:
