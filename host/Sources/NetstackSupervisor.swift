@@ -20,6 +20,8 @@ final class NetstackSupervisor: @unchecked Sendable {
   let diagnosticLogPath: String
 
   private let process: Process
+  private let stderrPipe: Pipe
+  private let terminalRenderer: NetstackTerminalRenderer
   private let onCrash: @Sendable () -> Void
 
   /// Set before initiating a controlled shutdown so the monitor doesn't fire onCrash.
@@ -102,12 +104,14 @@ final class NetstackSupervisor: @unchecked Sendable {
     // Swift's Process/NSTask doesn't inherit arbitrary FDs (it uses posix_spawn
     // which closes all non-standard FDs). Passing via stdin is the reliable way.
     let process = Process()
+    let stderrPipe = Pipe()
     process.executableURL = URL(fileURLWithPath: binaryPath)
     process.arguments = [
       "--frame-fd", "0",  // stdin = the socketpair
       "--control-sock", controlPath
     ]
     process.standardInput = FileHandle(fileDescriptor: sidecarFD, closeOnDealloc: false)
+    process.standardError = stderrPipe
 
     // Only pass safe environment variables. The sidecar doesn't need
     // arbitrary host env (which may contain unrelated secrets like AWS keys).
@@ -130,13 +134,17 @@ final class NetstackSupervisor: @unchecked Sendable {
     // Close the sidecar's end in the parent — child owns it now
     close(sidecarFD)
 
-    return NetstackSupervisor(
+    let supervisor = NetstackSupervisor(
       vmFD: vmFD,
       controlSocketPath: controlPath,
       diagnosticLogPath: diagnosticLogPath,
       process: process,
+      stderrPipe: stderrPipe,
+      terminalRenderer: NetstackTerminalRenderer(),
       onCrash: onCrash
     )
+    supervisor.startStreamingLogs()
+    return supervisor
   }
 
   private init(
@@ -144,12 +152,16 @@ final class NetstackSupervisor: @unchecked Sendable {
     controlSocketPath: String,
     diagnosticLogPath: String,
     process: Process,
+    stderrPipe: Pipe,
+    terminalRenderer: NetstackTerminalRenderer,
     onCrash: @escaping @Sendable () -> Void
   ) {
     self.vmFD = vmFD
     self.controlSocketPath = controlSocketPath
     self.diagnosticLogPath = diagnosticLogPath
     self.process = process
+    self.stderrPipe = stderrPipe
+    self.terminalRenderer = terminalRenderer
     self.onCrash = onCrash
   }
 
@@ -188,6 +200,7 @@ final class NetstackSupervisor: @unchecked Sendable {
     DispatchQueue.global(qos: .utility).async {
       proc.waitUntilExit()
       let code = proc.terminationStatus
+      self.stopStreamingLogs()
       if shuttingDown.value {
         DVMLog.log("dvm-netstack exited during shutdown (code \(code))")
       } else {
@@ -218,8 +231,29 @@ final class NetstackSupervisor: @unchecked Sendable {
     }
 
     // Clean up
+    stopStreamingLogs()
     close(vmFD)
     unlink(controlSocketPath)
+  }
+
+  private func startStreamingLogs() {
+    let fileHandle = stderrPipe.fileHandleForReading
+    fileHandle.readabilityHandler = { [terminalRenderer] handle in
+      let data = handle.availableData
+      if data.isEmpty {
+        handle.readabilityHandler = nil
+        terminalRenderer.finish()
+        return
+      }
+      terminalRenderer.append(data)
+    }
+  }
+
+  private func stopStreamingLogs() {
+    let fileHandle = stderrPipe.fileHandleForReading
+    fileHandle.readabilityHandler = nil
+    terminalRenderer.finish()
+    try? fileHandle.close()
   }
 
   /// Push credentials for a project to the sidecar. Same project name

@@ -26,14 +26,19 @@ enum ConsoleStyle {
   }
 
   static func formatTimestampedMessage(
-    elapsed: CFAbsoluteTime,
+    elapsed _: CFAbsoluteTime,
     message: String,
     tone: ConsoleTone = .plain,
-    enabled: Bool = ConsoleStyle.isStdoutEnabled
+    enabled: Bool = Self.isStdoutEnabled
   ) -> String {
-    let secs = Int(elapsed)
-    let milliseconds = Int((elapsed - Double(secs)) * 1_000)
-    let timestamp = String(format: "[%3d.%03ds]", secs, milliseconds)
+    let now = Date()
+    let components = Calendar.current.dateComponents([.hour, .minute, .second], from: now)
+    let timestamp = String(
+      format: "[%02d:%02d:%02d]",
+      components.hour ?? 0,
+      components.minute ?? 0,
+      components.second ?? 0
+    )
     let renderedTimestamp = enabled ? wrap(timestamp, ANSI.dim) : timestamp
     return "\(renderedTimestamp) \(renderMessage(message, tone: tone, enabled: enabled))"
   }
@@ -41,7 +46,7 @@ enum ConsoleStyle {
   static func renderMessage(
     _ message: String,
     tone: ConsoleTone = .plain,
-    enabled: Bool = ConsoleStyle.isStdoutEnabled
+    enabled: Bool = Self.isStdoutEnabled
   ) -> String {
     guard enabled else {
       return message
@@ -50,18 +55,23 @@ enum ConsoleStyle {
     var rendered = message
     rendered = replaceMatches(in: rendered, pattern: #"^\[[^\]]+\]"#, style: ANSI.bold + ANSI.cyan)
     rendered = replaceMatches(in: rendered, pattern: #"'\[[^\]]+\]'"#, style: ANSI.bold + ANSI.cyan)
-    rendered = replaceMatches(in: rendered, pattern: #"(?<=\brun: )[A-Za-z0-9-]+|(?<=\brun_id=)[A-Za-z0-9-]+"#, style: ANSI.bold + ANSI.magenta)
+    rendered = replaceMatches(
+      in: rendered, pattern: #"(?<=\brun: )[A-Za-z0-9-]+|(?<=\brun_id=)[A-Za-z0-9-]+"#, style: ANSI.bold + ANSI.magenta)
     rendered = replaceMatches(in: rendered, pattern: #"\b\d{1,3}(?:\.\d{1,3}){3}\b"#, style: ANSI.bold + ANSI.cyan)
     rendered = replaceMatches(in: rendered, pattern: #"/(?:[^\s,)']+)"#, style: ANSI.blue)
-    rendered = replaceMatches(in: rendered, pattern: #"\b(->|\(--flake flag\)|\(current directory\)|\(config\.toml\))\b"#, style: ANSI.dim)
+    rendered = replaceMatches(
+      in: rendered, pattern: #"\b(->|\(--flake flag\)|\(current directory\)|\(config\.toml\))\b"#, style: ANSI.dim)
 
     switch tone {
     case .plain:
       return rendered
+
     case .success:
       return wrap(rendered, ANSI.bold + ANSI.green)
+
     case .warning:
       return wrap(rendered, ANSI.bold + ANSI.yellow)
+
     case .error:
       return wrap(rendered, ANSI.bold + ANSI.red)
     }

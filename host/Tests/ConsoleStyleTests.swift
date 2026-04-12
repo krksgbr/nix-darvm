@@ -41,7 +41,9 @@ final class ConsoleStyleTests: XCTestCase {
       enabled: true
     )
 
-    XCTAssertTrue(rendered.hasPrefix("\u{001B}[2m[ 33.314s]\u{001B}[0m "))
+    XCTAssertTrue(rendered.hasPrefix("\u{001B}[2m["))
+    XCTAssertTrue(rendered.contains("]\u{001B}[0m "))
+    XCTAssertTrue(rendered.contains(":"))
   }
 
   func testMITMCALineStaysUncoloredApartFromTimestamp() {
