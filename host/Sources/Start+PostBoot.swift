@@ -34,7 +34,7 @@ extension Start {
     let caInstallCode = try await agentClient.exec(command: ["sudo", "sh", "-c", certScript])
     if caInstallCode != 0 {
       DVMLog.log(level: "warn", "failed to install MITM CA in guest trust store")
-      tprint("Warning: failed to install CA cert in guest. HTTPS interception may not work.")
+      tprint("failed to install CA cert in guest. HTTPS interception may not work.", tone: .warning)
     } else {
       DVMLog.log(phase: .activating, "installed MITM CA in guest trust store")
       tprint("MITM CA installed in guest trust store.")
@@ -118,7 +118,7 @@ extension Start {
   ) async {
     controlSocket.update(.running, guestIP: guestIP)
     DVMLog.log(phase: .running, "VM running at \(guestIP)")
-    tprint("VM running. Press Ctrl-C to stop.")
+    tprint("VM running. Press Ctrl-C to stop.", tone: .success)
     await runner.waitUntilStopped()
     controlSocket.update(.stopped)
     DVMLog.log(phase: .stopped, "VM stopped")

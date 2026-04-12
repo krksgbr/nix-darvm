@@ -54,6 +54,31 @@ func TestResultsToLogKeepsFollowOnNonCloseFailure(t *testing.T) {
 	}
 }
 
+func TestIsTimeout(t *testing.T) {
+	t.Parallel()
+
+	if !IsTimeout(timeoutErr{}) {
+		t.Fatal("expected timeout error to be recognized")
+	}
+	if !IsTimeout(errors.New("read tcp: operation timed out")) {
+		t.Fatal("expected timeout string fallback to be recognized")
+	}
+	if IsTimeout(errors.New("connection reset by peer")) {
+		t.Fatal("did not expect non-timeout error to match")
+	}
+}
+
+func TestIsKnownAppleBackgroundHost(t *testing.T) {
+	t.Parallel()
+
+	if !IsKnownAppleBackgroundHost("GDMF.apple.com.") {
+		t.Fatal("expected normalized Apple background host to match")
+	}
+	if IsKnownAppleBackgroundHost("api.apple.com") {
+		t.Fatal("did not expect unrelated Apple host to match")
+	}
+}
+
 func TestFormatTarget(t *testing.T) {
 	t.Parallel()
 
@@ -67,3 +92,11 @@ func TestFormatTarget(t *testing.T) {
 		t.Fatalf("unexpected raw target %q", got)
 	}
 }
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return false }
+
+var _ net.Error = timeoutErr{}

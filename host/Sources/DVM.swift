@@ -12,11 +12,9 @@ nonisolated(unsafe) var stopRequested = false
 /// Elapsed time since process start, for timestamped log output.
 private let processStartTime = CFAbsoluteTimeGetCurrent()
 
-func tprint(_ message: String) {
+func tprint(_ message: String, tone: ConsoleTone = .plain) {
   let elapsed = CFAbsoluteTimeGetCurrent() - processStartTime
-  let secs = Int(elapsed)
-  let milliseconds = Int((elapsed - Double(secs)) * 1_000)
-  print(String(format: "[%3d.%03ds] %@", secs, milliseconds, message))
+  print(ConsoleStyle.formatTimestampedMessage(elapsed: elapsed, message: message, tone: tone))
 }
 
 // MARK: - Structured logging

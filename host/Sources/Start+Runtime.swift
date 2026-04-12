@@ -31,7 +31,7 @@ extension Start {
       reconciler.start()
       services.portForwarder = forwarder
       services.portForwardReconciler = reconciler
-      tprint("Auto port forwarding enabled.")
+      tprint("Auto port forwarding enabled.", tone: .success)
     }
   }
 
@@ -92,7 +92,7 @@ extension Start {
     )
     if mountExitCode != 0 {
       DVMLog.log(phase: .mounting, level: "error", "one or more runtime mounts failed")
-      tprint("ERROR: One or more runtime mounts failed.")
+      tprint("One or more runtime mounts failed.", tone: .error)
       throw DVMError.setupFailed("one or more runtime mounts failed (see mount logs above)")
     }
     DVMLog.log(phase: .mounting, "all mounts succeeded")
@@ -111,7 +111,7 @@ extension Start {
       )
       if linkExitCode != 0 {
         DVMLog.log(phase: .mounting, level: "error", "one or more home links failed")
-        tprint("ERROR: One or more home links failed to install.")
+        tprint("One or more home links failed to install.", tone: .error)
         throw DVMError.setupFailed("one or more home links failed to install (see mount logs above)")
       }
       DVMLog.log(phase: .mounting, "all home links installed")

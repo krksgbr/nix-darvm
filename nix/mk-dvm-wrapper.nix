@@ -38,6 +38,36 @@ pkgs.writeShellApplication {
     FLAKE_ARG=""
     CONTROL_SOCKET="/tmp/dvm-control.sock"
 
+    if [ -t 2 ] && [ -z "''${NO_COLOR:-}" ]; then
+      C_RESET=$(printf '\033[0m')
+      C_BOLD=$(printf '\033[1m')
+      C_DIM=$(printf '\033[2m')
+      C_GREEN=$(printf '\033[32m')
+      C_YELLOW=$(printf '\033[33m')
+      C_BLUE=$(printf '\033[34m')
+      C_CYAN=$(printf '\033[36m')
+    else
+      C_RESET=""
+      C_BOLD=""
+      C_DIM=""
+      C_GREEN=""
+      C_YELLOW=""
+      C_BLUE=""
+      C_CYAN=""
+    fi
+
+    print_meta() {
+      printf '%s%s:%s %s%s%s\n' "$C_DIM" "$1" "$C_RESET" "$C_BLUE" "$2" "$C_RESET" >&2
+    }
+
+    print_info() {
+      printf '%s%s%s\n' "$C_DIM" "$1" "$C_RESET" >&2
+    }
+
+    print_warning() {
+      printf '%s%sWarning:%s %s\n' "$C_BOLD" "$C_YELLOW" "$C_RESET" "$1" >&2
+    }
+
     # Query VM phase from the control socket. Returns empty if unreachable.
     vm_phase() {
       "$DVM_CORE" status --json 2>/dev/null \
@@ -93,24 +123,24 @@ pkgs.writeShellApplication {
     resolve_flake() {
       # --flake flag (highest priority)
       if [ -n "$FLAKE_ARG" ]; then
-        echo "Flake: $FLAKE_ARG (--flake flag)" >&2
+        print_meta "Flake" "$FLAKE_ARG (--flake flag)"
         echo "$FLAKE_ARG"; return
       fi
       # CWD flake.nix — only use if it actually provides dvmConfigurations
       if [ -f "$PWD/flake.nix" ] && nix eval "$PWD#dvmConfigurations" --apply 'x: true' >/dev/null 2>/dev/null; then
-        echo "Flake: $PWD (current directory)" >&2
+        print_meta "Flake" "$PWD (current directory)"
         echo "$PWD"; return
       fi
       # config.toml flake field
       local cfg_flake
       cfg_flake=$("$DVM_CORE" config-get flake 2>/dev/null || true)
       if [ -n "$cfg_flake" ]; then
-        echo "Flake: $cfg_flake (config.toml)" >&2
+        print_meta "Flake" "$cfg_flake (config.toml)"
         echo "$cfg_flake"; return
       fi
       # Fallback: minimal config from dvm's own flake
-      printf '\033[33mWarning: No user flake found. Using minimal default config.\033[0m\n' >&2
-      printf '\033[33mTo configure: create a flake with dvmConfigurations.default, or set flake in ~/.config/dvm/config.toml\033[0m\n' >&2
+      print_warning "No user flake found. Using minimal default config."
+      printf '%sTo configure:%s create a flake with dvmConfigurations.default, or set flake in %s~/.config/dvm/config.toml%s\n' "$C_BOLD" "$C_RESET" "$C_CYAN" "$C_RESET" >&2
       echo "$DVM_FLAKE_REF"
     }
 
@@ -143,7 +173,7 @@ pkgs.writeShellApplication {
       flake=$(resolve_flake)
       local attr
       attr=$(resolve_config_attr "$flake")
-      echo "Building system closure..." >&2
+      print_info "Building system closure..."
       nix build --impure "$flake#$attr" --no-link --print-out-paths
     }
 
@@ -187,14 +217,14 @@ pkgs.writeShellApplication {
       # (e.g., the boot script expects infrastructure that no longer exists).
       # Run 'dvm init' to rebuild.
       if [ "$ACTUAL_VM" != ${escapeShellArg vmName} ]; then
-        echo "Warning: VM image '$ACTUAL_VM' is outdated (current: ${escapeShellArg vmName})."
-        echo "         The boot script may be incompatible with this version of dvm-core."
-        echo "         Run 'dvm init' to rebuild the image."
+        print_warning "VM image '$ACTUAL_VM' is outdated (current: ${escapeShellArg vmName})."
+        printf '         The boot script may be incompatible with this version of dvm-core.\n' >&2
+        printf '         Run %s%sdvm init%s to rebuild the image.\n' "$C_BOLD" "$C_CYAN" "$C_RESET" >&2
       fi
 
       # Build closure from user's flake
       CLOSURE=$(build_closure)
-      echo "Closure: $CLOSURE"
+      printf '%sClosure:%s %s%s%s\n' "$C_DIM" "$C_RESET" "$C_BLUE" "$CLOSURE" "$C_RESET"
 
       # Extract home-dir mounts from the closure
       HOME_MOUNT_FLAGS=""
@@ -248,7 +278,7 @@ pkgs.writeShellApplication {
 
       # Build closure from user's flake
       CLOSURE=$(build_closure)
-      echo "Closure: $CLOSURE"
+      printf '%sClosure:%s %s%s%s\n' "$C_DIM" "$C_RESET" "$C_BLUE" "$CLOSURE" "$C_RESET"
 
       # Trigger activation via the guest's WatchPaths activator
       local RUN_ID="switch-$$"
@@ -259,7 +289,7 @@ pkgs.writeShellApplication {
       local LOG_OFFSET
       LOG_OFFSET=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)
 
-      echo "Activating..."
+      printf '%sActivating...%s\n' "$C_GREEN" "$C_RESET"
       "$DVM_CORE" exec --no-credentials -- sudo sh -c "printf '%s' '$CLOSURE' > /var/run/dvm-state/closure-path; printf '%s' '$RUN_ID' > /var/run/dvm-state/run-id; touch /var/run/dvm-state/trigger"
 
       # Poll via host filesystem (state dir is VirtioFS-mounted).

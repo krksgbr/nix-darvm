@@ -9,6 +9,14 @@ import (
 	"strings"
 )
 
+var knownAppleBackgroundHosts = map[string]struct{}{
+	"bag.itunes.apple.com":   {},
+	"courier.push.apple.com": {},
+	"gdmf.apple.com":         {},
+	"ocsp2.apple.com":        {},
+	"weatherkit.apple.com":   {},
+}
+
 const relayOutcomeCount = 2
 
 // Result captures the terminal outcome of one relay direction.
@@ -90,6 +98,34 @@ func IsCloseLike(err error) bool {
 		strings.Contains(msg, "endpoint is closed") ||
 		strings.Contains(msg, "use of closed network connection") ||
 		strings.Contains(msg, "broken pipe")
+}
+
+// IsTimeout reports whether err is a network timeout.
+func IsTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	return strings.Contains(strings.ToLower(err.Error()), "timed out")
+}
+
+// IsKnownAppleBackgroundHost reports whether hostname is one of the known
+// guest background Apple endpoints that frequently time out without affecting
+// foreground agent workflows.
+func IsKnownAppleBackgroundHost(hostname string) bool {
+	hostname = normalizeHost(hostname)
+	_, ok := knownAppleBackgroundHosts[hostname]
+	return ok
+}
+
+func normalizeHost(hostname string) string {
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	return strings.TrimRight(hostname, ".")
 }
 
 // FormatTarget prefers hostname plus socket address when both are known.

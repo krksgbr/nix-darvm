@@ -68,7 +68,7 @@ extension Start {
       config: initialNetstackConfig(netstackBinary: netstackBinary)
     ) {
       DVMLog.log(level: "error", "dvm-netstack crashed — networking is down, failing closed")
-      tprint("FATAL: Credential proxy (dvm-netstack) crashed. VM networking is down.")
+      tprint("Credential proxy (dvm-netstack) crashed. VM networking is down.", tone: .error)
     }
   }
 
@@ -163,7 +163,7 @@ extension Start {
       "dvm-netstack sidecar ready (CA: \(caDescription), guest_mac=\(configured.macAddress.string))"
     )
     netstackSupervisor.startMonitoring()
-    tprint("Credential proxy started.")
+    tprint("Credential proxy started.", tone: .success)
     logNetworkConfiguration(configured: configured, netstackSupervisor: netstackSupervisor)
     return caCertPEM
   }

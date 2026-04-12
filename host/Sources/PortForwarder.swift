@@ -101,7 +101,7 @@ final class PortForwarder {
       let isNew = conflicts.insert(port).inserted
       DVMLog.log(level: "warn", "port forward: publish localhost:\(port) failed: \(error)")
       if isNew {
-        tprint("Port conflict: localhost:\(port) — host port already in use")
+        tprint("Port conflict: localhost:\(port) — host port already in use", tone: .warning)
       }
       return false
     }
@@ -122,9 +122,9 @@ final class PortForwarder {
     let recovered = conflicts.remove(port) != nil
     DVMLog.log("port forward: published localhost:\(port)")
     if recovered {
-      tprint("Port forwarding recovered: localhost:\(port) → guest:\(port)")
+      tprint("Port forwarding recovered: localhost:\(port) → guest:\(port)", tone: .success)
     } else {
-      tprint("Port forwarding: localhost:\(port) → guest:\(port)")
+      tprint("Port forwarding: localhost:\(port) → guest:\(port)", tone: .success)
     }
     return true
   }

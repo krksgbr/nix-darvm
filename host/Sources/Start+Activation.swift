@@ -41,7 +41,7 @@ extension Start {
     }
     if !stopRequested, Date() >= deadline {
       DVMLog.log(phase: .activating, level: "error", "activation timed out after 5 min")
-      tprint("Warning: activation did not complete within 5 minutes.")
+      tprint("activation did not complete within 5 minutes.", tone: .warning)
     }
   }
 
@@ -53,7 +53,7 @@ extension Start {
       return
     }
     DVMLog.log(phase: .activating, level: "error", "guest boot failed: \(bootError)")
-    tprint("FATAL: Guest boot failed: \(bootError)")
+    tprint("Guest boot failed: \(bootError)", tone: .error)
     try? await runner.stop()
     throw DVMError.activationFailed("guest boot failed: \(bootError)")
   }
@@ -98,7 +98,7 @@ extension Start {
     if statusText == "done" {
       flushActivationLogBuffer(&logLineBuffer)
       DVMLog.log(phase: .activating, "activation succeeded")
-      tprint("Activation succeeded.")
+      tprint("Activation succeeded.", tone: .success)
       return .succeeded
     }
     guard statusText == "failed" || statusText == "invalid-closure" else {
@@ -111,7 +111,7 @@ extension Start {
       level: "error",
       "activation failed (status=\(statusText), exit=\(exitCode))"
     )
-    tprint("Activation failed (exit code \(exitCode)).")
+    tprint("Activation failed (exit code \(exitCode)).", tone: .error)
     return .failed
   }
 
@@ -166,7 +166,7 @@ extension Start {
           "guest agent unreachable"
         }
       controlSocket.update(.failed, error: message)
-      tprint("Stopping VM.")
+      tprint("Stopping VM.", tone: .warning)
       try? await runner.stop()
       controlSocket.cleanup()
       services.agentProxy.cleanup()
@@ -179,7 +179,7 @@ extension Start {
     }
 
     DVMLog.log(phase: .waitingForAgent, "agent is reachable")
-    tprint("Guest agent connected.")
+    tprint("Guest agent connected.", tone: .success)
     await logGuestNetworkSnapshot(agentClient: services.agentClient)
   }
 
@@ -215,7 +215,7 @@ extension Start {
       )
       if let bootError = bootErrorMonitor.currentError() {
         DVMLog.log(phase: .waitingForAgent, level: "error", "guest boot failed: \(bootError)")
-        tprint("FATAL: Guest boot failed: \(bootError)")
+        tprint("Guest boot failed: \(bootError)", tone: .error)
         return .unreachable
       }
       do {
@@ -319,7 +319,7 @@ extension Start {
   ) async throws -> GuestIP {
     do {
       let guestIP = try await services.agentClient.resolveIP()
-      tprint("VM reachable at \(guestIP)")
+      tprint("VM reachable at \(guestIP)", tone: .success)
       DVMLog.log(phase: .waitingForAgent, "guest IP: \(guestIP)")
       return guestIP
     } catch {
@@ -333,14 +333,14 @@ extension Start {
     controlSocket: ControlSocket
   ) async throws -> GuestIP {
     if let dhcpIP = runner.resolveIP() {
-      tprint("VM reachable at \(dhcpIP) (DHCP fallback)")
+      tprint("VM reachable at \(dhcpIP) (DHCP fallback)", tone: .success)
       return dhcpIP
     }
     let message = "Could not resolve guest IP: \(error)"
     controlSocket.update(.failed, error: message)
     DVMLog.log(phase: .failed, level: "error", message)
-    tprint("Warning: \(message)")
-    tprint("VM running. Press Ctrl-C to stop.")
+    tprint(message, tone: .warning)
+    tprint("VM running. Press Ctrl-C to stop.", tone: .success)
     await runner.waitUntilStopped()
     controlSocket.cleanup()
     tprint("VM stopped.")
