@@ -114,9 +114,7 @@ fi
 
 if [[ ${#swift_files[@]} -gt 0 ]]; then
   echo "lint: swiftlint on changed Swift files"
-  for path in "${swift_files[@]}"; do
-    swiftlint lint --strict --quiet --no-cache --path "$path"
-  done
+  swiftlint lint --strict --quiet --no-cache "${swift_files[@]}"
 fi
 
 if [[ ${#netstack_packages[@]} -gt 0 ]]; then

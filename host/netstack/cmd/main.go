@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/unbody/darvm/netstack/internal/control"
@@ -37,6 +38,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: --control-sock is required")
 		os.Exit(1)
 	}
+
+	diagnosticLogPath := strings.TrimSuffix(*controlSock, ".sock") + ".raw.log"
+	if err := log.SetDiagnosticFile(diagnosticLogPath); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		log.EmitSuppressedSummary()
+		if err := log.CloseDiagnosticFile(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		}
+	}()
 
 	// Wrap the inherited FD into a net.Conn immediately to prevent the GC
 	// from finalizing the os.File and closing the FD before we use it.

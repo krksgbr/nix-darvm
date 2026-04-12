@@ -262,12 +262,13 @@ func (i *Interceptor) tcpPassthrough(guestConn net.Conn, dstIP string, dstPort i
 		0,
 	)
 	for _, result := range relay.ResultsToLog(results) {
-		if relay.IsKnownAppleBackgroundHost(serverName) && relay.IsTimeout(result.Err) {
-			log.Printf("tcp passthrough: background Apple timeout during %s (%s)", result.Operation, displayTarget)
+		message := fmt.Sprintf("tcp passthrough: %s (%s): %v", result.Operation, displayTarget, result.Err)
+		if relay.ShouldSuppressTerminalPassthrough(serverName, result.Err) {
+			log.Suppressedln(message)
 			continue
 		}
 
-		log.Printf("tcp passthrough: %s (%s): %v", result.Operation, displayTarget, result.Err)
+		log.Println(message)
 	}
 }
 

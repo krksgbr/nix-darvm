@@ -27,7 +27,7 @@ func lines(s string) []string {
 func TestNonTTYEachCallWritesOneLine(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	l := newLogger(&buf, false, "x: ")
+	l := newLogger(&buf, nil, false, "x: ")
 
 	l.Printf("hello %s", "world")
 
@@ -43,7 +43,7 @@ func TestNonTTYEachCallWritesOneLine(t *testing.T) {
 func TestNonTTYHasNoEscapeCodes(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	l := newLogger(&buf, false, "x: ")
+	l := newLogger(&buf, nil, false, "x: ")
 
 	l.Printf("msg")
 	l.Printf("msg")
@@ -56,7 +56,7 @@ func TestNonTTYHasNoEscapeCodes(t *testing.T) {
 func TestTTYAlwaysTerminatesEachLine(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	l := newLogger(&buf, true, "x: ")
+	l := newLogger(&buf, nil, true, "x: ")
 
 	l.Printf("first")
 	l.Printf("second")
@@ -70,7 +70,7 @@ func TestTTYAlwaysTerminatesEachLine(t *testing.T) {
 func TestTTYStylesTimestampAndPrefix(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	l := newLogger(&buf, true, "dvm-netstack: ")
+	l := newLogger(&buf, nil, true, "dvm-netstack: ")
 
 	l.Printf("network stack running")
 
@@ -86,7 +86,7 @@ func TestTTYStylesTimestampAndPrefix(t *testing.T) {
 func TestTTYStylesWarningsAndErrors(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	l := newLogger(&buf, true, "dvm-netstack: ")
+	l := newLogger(&buf, nil, true, "dvm-netstack: ")
 
 	l.Printf("Warning: fallback mode")
 	l.Printf("ERROR: boom")
@@ -103,11 +103,87 @@ func TestTTYStylesWarningsAndErrors(t *testing.T) {
 func TestPrintlnWritesMessage(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	l := newLogger(&buf, false, "x: ")
+	l := newLogger(&buf, nil, false, "x: ")
 
 	l.Println("plain message")
 
 	if !strings.Contains(buf.String(), "x: plain message") {
 		t.Fatalf("expected message in output, got %q", buf.String())
+	}
+}
+
+func TestDiagnosticSinkGetsPlainCopyOfTerminalLogs(t *testing.T) {
+	t.Parallel()
+	var terminal bytes.Buffer
+	var diagnostic bytes.Buffer
+	l := newLogger(&terminal, &diagnostic, true, "x: ")
+
+	l.Printf("hello")
+
+	diagLines := lines(diagnostic.String())
+	if len(diagLines) != 1 {
+		t.Fatalf("expected 1 diagnostic line, got %d: %q", len(diagLines), diagnostic.String())
+	}
+	if strings.Contains(diagnostic.String(), "\x1b[") {
+		t.Fatalf("diagnostic output must stay plain, got %q", diagnostic.String())
+	}
+	if !strings.Contains(stripTimestamp(diagLines[0]), "x: hello") {
+		t.Fatalf("unexpected diagnostic content %q", diagLines[0])
+	}
+}
+
+func TestDiagnosticOnlyDoesNotWriteToTerminal(t *testing.T) {
+	t.Parallel()
+	var terminal bytes.Buffer
+	var diagnostic bytes.Buffer
+	l := newLogger(&terminal, &diagnostic, true, "x: ")
+
+	l.Diagnosticln("suppressed noise")
+
+	if terminal.Len() != 0 {
+		t.Fatalf("expected terminal output to stay empty, got %q", terminal.String())
+	}
+	if !strings.Contains(diagnostic.String(), "suppressed noise") {
+		t.Fatalf("expected diagnostic output, got %q", diagnostic.String())
+	}
+}
+
+func TestSuppressedlnIncrementsCounterWithoutWritingTerminal(t *testing.T) {
+	t.Parallel()
+	var terminal bytes.Buffer
+	var diagnostic bytes.Buffer
+	l := newLogger(&terminal, &diagnostic, true, "x: ")
+
+	l.Suppressedln("background noise")
+
+	if got := l.SuppressedCount(); got != 1 {
+		t.Fatalf("expected suppressed count 1, got %d", got)
+	}
+	if terminal.Len() != 0 {
+		t.Fatalf("expected terminal output to stay empty, got %q", terminal.String())
+	}
+	if !strings.Contains(diagnostic.String(), "background noise") {
+		t.Fatalf("expected diagnostic output, got %q", diagnostic.String())
+	}
+}
+
+func TestEmitSuppressedSummaryPrintsTerminalSummary(t *testing.T) {
+	t.Parallel()
+	var terminal bytes.Buffer
+	var diagnostic bytes.Buffer
+	l := newLogger(&terminal, &diagnostic, false, "x: ")
+	l.diagnosticPath = "/tmp/dvm-netstack.raw.log"
+
+	l.Suppressedln("background noise")
+	l.EmitSuppressedSummary()
+
+	if !strings.Contains(terminal.String(), "suppressed 1 background passthrough log(s)") {
+		t.Fatalf("expected terminal summary, got %q", terminal.String())
+	}
+	if !strings.Contains(terminal.String(), "/tmp/dvm-netstack.raw.log") {
+		t.Fatalf("expected diagnostic path in summary, got %q", terminal.String())
+	}
+	if !strings.Contains(diagnostic.String(), "suppressed 1 background passthrough log(s)") {
+		t.Fatalf("expected summary copied to diagnostics, got %q", diagnostic.String())
 	}
 }

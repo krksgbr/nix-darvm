@@ -160,10 +160,11 @@ extension Start {
     let caDescription = caCertPEM.isEmpty ? "none" : "\(caCertPEM.count) bytes"
     DVMLog.log(
       phase: .configuring,
-      "dvm-netstack sidecar ready (CA: \(caDescription), guest_mac=\(configured.macAddress.string))"
+      "dvm-netstack sidecar ready (CA: \(caDescription), guest_mac=\(configured.macAddress.string), raw_log=\(netstackSupervisor.diagnosticLogPath))"
     )
     netstackSupervisor.startMonitoring()
     tprint("Credential proxy started.", tone: .success)
+    tprint("Netstack raw diagnostics: \(netstackSupervisor.diagnosticLogPath)")
     logNetworkConfiguration(configured: configured, netstackSupervisor: netstackSupervisor)
     return caCertPEM
   }

@@ -16,6 +16,9 @@ final class NetstackSupervisor: @unchecked Sendable {
   /// Path to the sidecar's control socket.
   let controlSocketPath: String
 
+  /// Path to the sidecar's raw diagnostic log.
+  let diagnosticLogPath: String
+
   private let process: Process
   private let onCrash: @Sendable () -> Void
 
@@ -84,6 +87,7 @@ final class NetstackSupervisor: @unchecked Sendable {
 
     // Control socket path
     let controlPath = "/tmp/dvm-netstack-\(ProcessInfo.processInfo.processIdentifier).sock"
+    let diagnosticLogPath = controlPath.replacingOccurrences(of: ".sock", with: ".raw.log")
     unlink(controlPath)  // clean up stale socket
 
     // Resolve sidecar binary
@@ -129,6 +133,7 @@ final class NetstackSupervisor: @unchecked Sendable {
     return NetstackSupervisor(
       vmFD: vmFD,
       controlSocketPath: controlPath,
+      diagnosticLogPath: diagnosticLogPath,
       process: process,
       onCrash: onCrash
     )
@@ -137,11 +142,13 @@ final class NetstackSupervisor: @unchecked Sendable {
   private init(
     vmFD: Int32,
     controlSocketPath: String,
+    diagnosticLogPath: String,
     process: Process,
     onCrash: @escaping @Sendable () -> Void
   ) {
     self.vmFD = vmFD
     self.controlSocketPath = controlSocketPath
+    self.diagnosticLogPath = diagnosticLogPath
     self.process = process
     self.onCrash = onCrash
   }

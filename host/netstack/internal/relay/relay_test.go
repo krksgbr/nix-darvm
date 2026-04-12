@@ -57,7 +57,7 @@ func TestResultsToLogKeepsFollowOnNonCloseFailure(t *testing.T) {
 func TestIsTimeout(t *testing.T) {
 	t.Parallel()
 
-	if !IsTimeout(timeoutErr{}) {
+	if !IsTimeout(timeoutError{}) {
 		t.Fatal("expected timeout error to be recognized")
 	}
 	if !IsTimeout(errors.New("read tcp: operation timed out")) {
@@ -74,8 +74,58 @@ func TestIsKnownAppleBackgroundHost(t *testing.T) {
 	if !IsKnownAppleBackgroundHost("GDMF.apple.com.") {
 		t.Fatal("expected normalized Apple background host to match")
 	}
+	if !IsKnownAppleBackgroundHost("api-safari-aeun1a.smoot.apple.com") {
+		t.Fatal("expected known background suffix host to match")
+	}
+	if !IsKnownAppleBackgroundHost("weather-edge.apple.com") {
+		t.Fatal("expected weather-edge.apple.com to match")
+	}
+	if !IsKnownAppleBackgroundHost("gateway.icloud.com") {
+		t.Fatal("expected gateway.icloud.com to match")
+	}
+	if !IsKnownAppleBackgroundHost("news-edge.apple.com") {
+		t.Fatal("expected news-edge.apple.com to match")
+	}
+	if !IsKnownAppleBackgroundHost("c.apple.news") {
+		t.Fatal("expected apple.news suffix host to match")
+	}
 	if IsKnownAppleBackgroundHost("api.apple.com") {
 		t.Fatal("did not expect unrelated Apple host to match")
+	}
+}
+
+func TestShouldSuppressTerminalPassthrough(t *testing.T) {
+	t.Parallel()
+
+	if !ShouldSuppressTerminalPassthrough(
+		"weatherkit.apple.com",
+		errors.New("read tcp 1.2.3.4:443: read: connection reset by peer"),
+	) {
+		t.Fatal("expected known Apple background reset to be terminal-suppressed")
+	}
+	if !ShouldSuppressTerminalPassthrough(
+		"api-glb-aeun1a.smoot.apple.com",
+		errors.New("read tcp: operation timed out"),
+	) {
+		t.Fatal("expected known Apple background timeout to be terminal-suppressed")
+	}
+	if !ShouldSuppressTerminalPassthrough(
+		"gateway.icloud.com",
+		errors.New("read tcp 1.2.3.4:443: read: connection reset by peer"),
+	) {
+		t.Fatal("expected gateway.icloud.com reset to be terminal-suppressed")
+	}
+	if !ShouldSuppressTerminalPassthrough(
+		"c.apple.news",
+		errors.New("read tcp 1.2.3.4:443: read: connection reset by peer"),
+	) {
+		t.Fatal("expected apple.news reset to be terminal-suppressed")
+	}
+	if ShouldSuppressTerminalPassthrough(
+		"api.apple.com",
+		errors.New("read tcp 1.2.3.4:443: read: connection reset by peer"),
+	) {
+		t.Fatal("did not expect unrelated Apple host to be terminal-suppressed")
 	}
 }
 
@@ -93,10 +143,10 @@ func TestFormatTarget(t *testing.T) {
 	}
 }
 
-type timeoutErr struct{}
+type timeoutError struct{}
 
-func (timeoutErr) Error() string   { return "i/o timeout" }
-func (timeoutErr) Timeout() bool   { return true }
-func (timeoutErr) Temporary() bool { return false }
+func (timeoutError) Error() string   { return "i/o timeout" }
+func (timeoutError) Timeout() bool   { return true }
+func (timeoutError) Temporary() bool { return false }
 
-var _ net.Error = timeoutErr{}
+var _ net.Error = timeoutError{}

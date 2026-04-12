@@ -9,14 +9,6 @@ import (
 	"strings"
 )
 
-var knownAppleBackgroundHosts = map[string]struct{}{
-	"bag.itunes.apple.com":   {},
-	"courier.push.apple.com": {},
-	"gdmf.apple.com":         {},
-	"ocsp2.apple.com":        {},
-	"weatherkit.apple.com":   {},
-}
-
 const relayOutcomeCount = 2
 
 // Result captures the terminal outcome of one relay direction.
@@ -83,6 +75,17 @@ func ResultsToLog(results [2]Result) []Result {
 	return loggable
 }
 
+// ShouldSuppressTerminalPassthrough reports whether a passthrough relay error
+// is low-value operator noise that should stay in diagnostics but stay out of
+// the live terminal stream.
+func ShouldSuppressTerminalPassthrough(hostname string, err error) bool {
+	if !IsKnownAppleBackgroundHost(hostname) {
+		return false
+	}
+
+	return IsTimeout(err) || IsCloseLike(err)
+}
+
 // IsCloseLike reports whether err represents expected connection teardown
 // noise rather than a setup or protocol failure.
 func IsCloseLike(err error) bool {
@@ -115,12 +118,41 @@ func IsTimeout(err error) bool {
 }
 
 // IsKnownAppleBackgroundHost reports whether hostname is one of the known
-// guest background Apple endpoints that frequently time out without affecting
+// guest background Apple endpoints that frequently fail without affecting
 // foreground agent workflows.
 func IsKnownAppleBackgroundHost(hostname string) bool {
 	hostname = normalizeHost(hostname)
-	_, ok := knownAppleBackgroundHosts[hostname]
-	return ok
+	if _, ok := knownAppleBackgroundHosts()[hostname]; ok {
+		return true
+	}
+
+	for _, suffix := range knownAppleBackgroundHostSuffixes() {
+		if strings.HasSuffix(hostname, suffix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func knownAppleBackgroundHosts() map[string]struct{} {
+	return map[string]struct{}{
+		"bag.itunes.apple.com":   {},
+		"courier.push.apple.com": {},
+		"gateway.icloud.com":     {},
+		"gdmf.apple.com":         {},
+		"news-edge.apple.com":    {},
+		"ocsp2.apple.com":        {},
+		"weather-edge.apple.com": {},
+		"weatherkit.apple.com":   {},
+	}
+}
+
+func knownAppleBackgroundHostSuffixes() []string {
+	return []string{
+		".apple.news",
+		".smoot.apple.com",
+	}
 }
 
 func normalizeHost(hostname string) string {
