@@ -34,7 +34,12 @@
       treefmtEval = treefmt-nix.lib.evalModule pkgs ./treefmt.nix;
 
       mkDarvmInternal = import ./nix/mk-darvm.nix {
-        inherit nix-darwin determinate hjem system;
+        inherit
+          nix-darwin
+          determinate
+          hjem
+          system
+          ;
         aiAgents = inputs.ai-agents;
       };
       mkDvmWrapper = import ./nix/mk-dvm-wrapper.nix { inherit nixpkgs system; };
@@ -87,7 +92,8 @@
 
       createBaseVm = mkCreateBaseVm { };
 
-      mkDarvm = args:
+      mkDarvm =
+        args:
         mkDarvmInternal (
           {
             inherit darvm-agent dvm-host-cmd;

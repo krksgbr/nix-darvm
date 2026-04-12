@@ -20,10 +20,15 @@ let
   cfg = config.dvm.agents.codex;
   agent = config.hjem.users.${username}.ai.renderedAgents.codex;
   direnvEnabled = config.dvm.integrations.direnv.enable;
-  resumeArgs = [ "resume" "--last" ];
+  resumeArgs = [
+    "resume"
+    "--last"
+  ];
   flags = (lib.optional cfg.fullAccess "--full-auto") ++ cfg.extraArgs;
-  renderedFlagArgs = lib.concatStringsSep "\n" (map (arg: ''args+=(${lib.escapeShellArg arg})'') flags);
-  renderedResumeArgs = lib.concatStringsSep "\n" (map (arg: ''set -- "$@" ${lib.escapeShellArg arg}'') resumeArgs);
+  renderedFlagArgs = lib.concatStringsSep "\n" (map (arg: "args+=(${lib.escapeShellArg arg})") flags);
+  renderedResumeArgs = lib.concatStringsSep "\n" (
+    map (arg: ''set -- "$@" ${lib.escapeShellArg arg}'') resumeArgs
+  );
   globalCredentialsEnv = "/var/run/dvm-state/global-credentials.env";
 
   # When package is set declaratively via ai-agents: bake the nix store path
