@@ -49,15 +49,27 @@ final class VsockDaemonBridge {
     guard let daemonFD = connectToDaemonSocket(path: daemonSocketPath) else {
       return
     }
+    defer {
+      close(daemonFD)
+    }
 
     // Proxy data bidirectionally. Block until both directions finish so that
-    // `connection` stays alive for the duration.
+    // `connection` stays alive for the duration. Preserve half-close semantics:
+    // when one direction reaches EOF, signal EOF on the opposite writer but
+    // keep the session alive until both directions drain.
     let group = DispatchGroup()
-    proxyAsync(group: group, readFD: vsockFD, writeFD: daemonFD, direction: "vsock→daemon")
-    proxyAsync(group: group, readFD: daemonFD, writeFD: vsockFD, direction: "daemon→vsock")
+    proxyAsync(
+      group: group,
+      readFD: vsockFD,
+      writeFD: daemonFD,
+      direction: "vsock→daemon")
+    proxyAsync(
+      group: group,
+      readFD: daemonFD,
+      writeFD: vsockFD,
+      direction: "daemon→vsock")
 
     group.wait()
-    close(daemonFD)
   }
 
   private nonisolated func connectToDaemonSocket(path: String) -> Int32? {
@@ -107,12 +119,18 @@ final class VsockDaemonBridge {
   ) {
     group.enter()
     DispatchQueue.global(qos: .utility).async {
-      defer { group.leave() }
+      defer {
+        group.leave()
+      }
       self.proxy(readFD: readFD, writeFD: writeFD, direction: direction)
     }
   }
 
-  private nonisolated func proxy(readFD: Int32, writeFD: Int32, direction: String) {
+  private nonisolated func proxy(
+    readFD: Int32,
+    writeFD: Int32,
+    direction: String
+  ) {
     let bufferSize = 32_768
     let buffer = UnsafeMutableRawPointer.allocate(byteCount: bufferSize, alignment: 1)
     defer { buffer.deallocate() }
@@ -126,7 +144,7 @@ final class VsockDaemonBridge {
         }
         break
       }
-      guard writeAll(from: buffer, byteCount: bytesRead, to: writeFD, direction: direction) else {
+      guard writeAll(from: buffer, byteCount: bytesRead, to: writeFD) else {
         return
       }
     }
@@ -138,14 +156,14 @@ final class VsockDaemonBridge {
     from buffer: UnsafeMutableRawPointer,
     byteCount: Int,
     to fileDescriptor: Int32,
-    direction: String
+    activity: ProxyActivityTracker
   ) -> Bool {
     var written = 0
     while written < byteCount {
       let bytesWritten = write(fileDescriptor, buffer + written, byteCount - written)
       if bytesWritten <= 0 {
         let err = String(cString: strerror(errno))
-        fputs("Bridge: \(direction) write error: \(err)\n", stderr)
+        fputs("Bridge: write error: \(err)\n", stderr)
         return false
       }
       written += bytesWritten

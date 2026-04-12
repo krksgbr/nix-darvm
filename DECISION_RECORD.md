@@ -197,3 +197,44 @@ standard macOS service model.
 **Consequence:** No SSH dependency for first boot. No orphan process management.
 One activation mechanism for both bootstrap and runtime. Network-independent.
 Credential proxy works from first boot.
+
+---
+
+## DR-008: Do not share `~/.cache/nix` between host and guest by default
+
+**Date:** 2026-04-13
+**Status:** Accepted
+
+**Context:** DVM originally mounted host `~/.cache/nix` into the guest as a
+writable VirtioFS share (`nix-cache`). This looked convenient because host and
+guest could reuse the same Nix caches, but in practice it created a brittle
+cross-boundary mutable cache design.
+
+Concrete failures observed:
+- guest `direnv` / `nix` failures against
+  `/private/var/dvm-mounts/nix-cache/fetcher-cache-v4.sqlite`
+- host-side integrity check confirmed real corruption in
+  `~/.cache/nix/fetcher-cache-v4.sqlite`
+- prior research already documented VirtioFS cache coherency hazards for this
+  mount on first use / empty-directory startup
+- the same general lesson as JJ applied here: sharing source trees may be fine,
+  but sharing mutable metadata/cache across the host↔guest boundary is not
+
+**Decision:** DVM does **not** mount host `~/.cache/nix` into the guest by
+ default. The guest keeps `~/.cache/nix` on its local APFS disk. Only the
+ immutable `/nix/store` remains a built-in shared mount.
+
+**Rationale:**
+- SQLite-backed mutable caches are a bad fit for shared host↔guest mounts
+- guest-local cache state is simpler and more reliable than trying to preserve
+  cross-VM cache reuse
+- a cold guest cache is preferable to silent corruption, stale views, or hidden
+  fallback behavior from `nix-direnv`
+
+**Migration note:** Older guests may still have
+`~/.cache/nix -> /var/dvm-mounts/nix-cache`; activation removes that stale link
+and recreates a real local directory.
+
+**Consequence:** Future work should treat proposals to reintroduce a shared Nix
+cache mount as opt-in experiments requiring fresh evidence, not as a safe
+default to restore.

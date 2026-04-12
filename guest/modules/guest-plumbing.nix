@@ -117,6 +117,18 @@ in
       # readlink -f which may fail on stock macOS (no GNU coreutils in PATH yet).
       ln -sfn /nix/var/nix/profiles/system /run/current-system
 
+      # DVM no longer shares ~/.cache/nix from the host. Older guests may still
+      # have ~/.cache/nix linked to /var/dvm-mounts/nix-cache from a previous
+      # activation; remove that stale link so Nix falls back to the guest-local
+      # APFS directory.
+      if [ -L /Users/${username}/.cache/nix ]; then
+        nix_cache_target="$(readlink /Users/${username}/.cache/nix || true)"
+        if [ "$nix_cache_target" = "/var/dvm-mounts/nix-cache" ]; then
+          rm -f /Users/${username}/.cache/nix
+        fi
+      fi
+      sudo -u ${username} HOME=/Users/${username} mkdir -p /Users/${username}/.cache/nix
+
       # Disable link-nix-apps: it calls `launchctl kickstart gui/501/...` which
       # hangs indefinitely in a headless VM with no GUI login session.
       launchctl bootout gui/501/org.nix.link-nix-apps 2>/dev/null || true

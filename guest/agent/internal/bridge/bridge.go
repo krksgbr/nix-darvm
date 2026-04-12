@@ -6,6 +6,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -105,8 +106,8 @@ func (b *Bridge) handleConn(local net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(copyDirectionCount)
 
-	// local → remote. When this direction closes, close remote to unblock
-	// the remote → local goroutine (which may be blocked on remote.Read).
+	// Preserve half-close semantics: when one direction finishes, signal EOF on
+	// the opposite writer but keep the session alive until both directions drain.
 	go func() {
 		defer wg.Done()
 
@@ -114,11 +115,9 @@ func (b *Bridge) handleConn(local net.Conn) {
 			log.Printf("bridge copy local->remote: %v", err)
 		}
 
-		closeFile(remote)
+		shutdownFileWrite(remote)
 	}()
 
-	// remote → local. When this direction closes, close local to unblock
-	// the local → remote goroutine (which may be blocked on local.Read).
 	go func() {
 		defer wg.Done()
 
@@ -126,7 +125,7 @@ func (b *Bridge) handleConn(local net.Conn) {
 			log.Printf("bridge copy remote->local: %v", err)
 		}
 
-		closeConn(local)
+		closeConnWrite(local)
 	}()
 
 	wg.Wait()
@@ -165,20 +164,55 @@ func nonNegativeIntToUintptr(v int) (uintptr, error) {
 	return uintptr(v), nil
 }
 
+func shutdownFileWrite(file *os.File) {
+	raw, err := file.SyscallConn()
+	if err != nil {
+		log.Printf("bridge file SyscallConn: %v", err)
+
+		return
+	}
+
+	var shutdownErr error
+	if err := raw.Control(func(fd uintptr) {
+		shutdownErr = unix.Shutdown(int(fd), unix.SHUT_WR) //nolint:gosec // G115: file descriptors fit in int
+	}); err != nil {
+		log.Printf("bridge file Control: %v", err)
+
+		return
+	}
+
+	if shutdownErr != nil {
+		log.Printf("bridge file SHUT_WR: %v", shutdownErr)
+	}
+}
+
+func closeConnWrite(conn net.Conn) {
+	writer, ok := conn.(interface{ CloseWrite() error })
+	if !ok {
+		closeConn(conn)
+
+		return
+	}
+
+	if err := writer.CloseWrite(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, unix.ENOTCONN) {
+		log.Printf("bridge conn CloseWrite: %v", err)
+	}
+}
+
 func closeListener(listener net.Listener) {
-	if err := listener.Close(); err != nil {
+	if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		log.Printf("bridge listener close: %v", err)
 	}
 }
 
 func closeConn(conn net.Conn) {
-	if err := conn.Close(); err != nil {
+	if err := conn.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		log.Printf("bridge conn close: %v", err)
 	}
 }
 
 func closeFile(file *os.File) {
-	if err := file.Close(); err != nil {
+	if err := file.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
 		log.Printf("bridge file close: %v", err)
 	}
 }

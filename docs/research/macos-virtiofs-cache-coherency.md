@@ -436,6 +436,10 @@ the server.
 
 ### Observed behavior in DVM
 
+> Note: this describes the historical default before `nix-darvm-65k0`.
+> DVM no longer mounts `~/.cache/nix` from the host by default; the guest now
+> keeps its Nix cache on local APFS specifically to avoid this failure mode.
+
 DVM mounts `~/.cache/nix` as a VirtioFS share (`nix-cache` tag). The guest
 symlinks `~/.cache/nix` → `/var/dvm-mounts/nix-cache`.
 

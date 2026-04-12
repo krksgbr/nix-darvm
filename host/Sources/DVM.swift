@@ -11,10 +11,17 @@ nonisolated(unsafe) var stopRequested = false
 
 /// Elapsed time since process start, for timestamped log output.
 private let processStartTime = CFAbsoluteTimeGetCurrent()
+private let consoleOutputLock = NSLock()
+
+func consolePrintLine(_ line: String) {
+  consoleOutputLock.lock()
+  defer { consoleOutputLock.unlock() }
+  print(line)
+}
 
 func tprint(_ message: String, tone: ConsoleTone = .plain) {
   let elapsed = CFAbsoluteTimeGetCurrent() - processStartTime
-  print(ConsoleStyle.formatTimestampedMessage(elapsed: elapsed, message: message, tone: tone))
+  consolePrintLine(ConsoleStyle.formatTimestampedMessage(elapsed: elapsed, message: message, tone: tone))
 }
 
 // MARK: - Structured logging
@@ -200,20 +207,18 @@ func homeLinksForEffectiveMounts(_ mounts: [MountConfig]) throws -> [HomeLink] {
   return links
 }
 
-private func defaultMounts(hostHome: String) throws -> [MountConfig] {
+private func defaultMounts(hostHome _: String) throws -> [MountConfig] {
   [
     .exact(
       tag: try MountTag("nix-store"),
       hostPath: try AbsolutePath("/nix/store"),
       guestPath: try AbsolutePath("/nix/store"),
       access: .readOnly,
-      transport: .virtiofs),
-    .exact(
-      tag: try MountTag("nix-cache"),
-      hostPath: try AbsolutePath("\(hostHome)/.cache/nix"),
-      guestPath: try AbsolutePath("\(guestHome)/.cache/nix"),
-      access: .readWrite,
       transport: .virtiofs)
+    // Intentionally no built-in `~/.cache/nix` host mount.
+    // See DR-008: sharing host↔guest mutable Nix cache state caused real
+    // SQLite corruption and broader cache-coherency failures. Keep guest
+    // `~/.cache/nix` local unless a future opt-in design proves otherwise.
   ]
 }
 

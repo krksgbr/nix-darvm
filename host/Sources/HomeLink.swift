@@ -4,9 +4,10 @@ import Foundation
 /// absolute paths, and paths that start with `..`.
 struct HomeRelativePath: CustomStringConvertible {
   /// Top-level home subdirectories that must not be mounted from the host.
-  /// `.local` contains state shared across tools (databases, caches, logs)
-  /// and must live on the guest's native APFS for correct fsync semantics.
-  static let reservedLocalPaths: Set<String> = [".local"]
+  /// `.local` contains shared tool state (databases, logs), and `.cache`
+  /// contains mutable caches such as Nix's SQLite-backed eval/fetcher state.
+  /// Both must live on the guest's native APFS for reliable fsync semantics.
+  static let reservedLocalPaths: Set<String> = [".local", ".cache"]
 
   let rawValue: String
 
