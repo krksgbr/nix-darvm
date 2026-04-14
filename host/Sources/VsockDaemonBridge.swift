@@ -155,8 +155,7 @@ final class VsockDaemonBridge {
   private nonisolated func writeAll(
     from buffer: UnsafeMutableRawPointer,
     byteCount: Int,
-    to fileDescriptor: Int32,
-    activity: ProxyActivityTracker
+    to fileDescriptor: Int32
   ) -> Bool {
     var written = 0
     while written < byteCount {

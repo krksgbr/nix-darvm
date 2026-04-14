@@ -12,11 +12,45 @@ nonisolated(unsafe) var stopRequested = false
 /// Elapsed time since process start, for timestamped log output.
 private let processStartTime = CFAbsoluteTimeGetCurrent()
 private let consoleOutputLock = NSLock()
+nonisolated(unsafe) private var consoleHasLiveLine = false
 
 func consolePrintLine(_ line: String) {
   consoleOutputLock.lock()
   defer { consoleOutputLock.unlock() }
-  print(line)
+
+  if consoleHasLiveLine {
+    fputs("\n", stdout)
+    consoleHasLiveLine = false
+  }
+
+  fputs(line + "\n", stdout)
+  fflush(stdout)
+}
+
+func consoleReplaceLiveLine(_ line: String) {
+  consoleOutputLock.lock()
+  defer { consoleOutputLock.unlock() }
+
+  if consoleHasLiveLine {
+    fputs("\r\u{001B}[2K" + line, stdout)
+  } else {
+    fputs(line, stdout)
+    consoleHasLiveLine = true
+  }
+  fflush(stdout)
+}
+
+func consoleCommitLiveLine() {
+  consoleOutputLock.lock()
+  defer { consoleOutputLock.unlock() }
+
+  guard consoleHasLiveLine else {
+    return
+  }
+
+  fputs("\n", stdout)
+  fflush(stdout)
+  consoleHasLiveLine = false
 }
 
 func tprint(_ message: String, tone: ConsoleTone = .plain) {
